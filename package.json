@@ -1,0 +1,48 @@
+{
+  "name": "pico8-music",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Compose PICO-8-flavoured loops or arranged songs as JSON and render them as WAV.",
+  "main": "./dist/app/dsh-plugin.js",
+  "exports": {
+    ".": "./dist/app/dsh-plugin.js"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/check-boundaries.ts && tsc --noEmit && node --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "typebox": "1.3.27"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/app/pi-extension.js"
+    ]
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
+    "@earendil-works/pi-coding-agent": "^1.3.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^5.9.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "cordis.patch.yml"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "bpm": 120,
+  "stepsPerBeat": 4,
+  "bars": 2,
+  "swing": 0.15,
+  "motifs": {
+    "lead_call": "C5:2g3 Ab4:2g3"
+  },
+  "tracks": [
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "volume": 6,
+      "envelope": { "attack": 0.002, "decay": 0.04, "sustain": 0.2, "release": 0.01 },
+      "pattern": "F1:2g1 F1:2g1 C2:2g1 F1:2g1"
+    },
+    {
+      "name": "chords",
+      "role": "pad",
+      "waveform": "triangle",
+      "volume": 4,
+      "envelope": { "attack": 0.02, "decay": 0.2, "sustain": 0.6, "release": 0.08 },
+      "pattern": "[F3,Ab3,C4]:4g8 [D#3,G3,A#3]:4g8"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "waveform": "pulse",
+      "volume": 5,
+      "envelope": { "attack": 0.005, "decay": 0.1, "sustain": 0.5, "release": 0.04 },
+      "pattern": "@lead_call @lead_call.transpose(3) @lead_call.retrograde @lead_call.transpose(-2)"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "mode": "song",
+  "bpm": 128,
+  "stepsPerBeat": 4,
+  "patterns": {
+    "drums.A": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1",
+    "drums.B": "K:1 H:1 S:1 H:1 K:1 K:1 S:1 O:1",
+    "bass.A": "F1:1 F1:1 C2:1 F1:1",
+    "bass.B": "F1:1 F1:1 C2:1 F1:1 D#2:1 F1:1 C2:1 A#1:1",
+    "lead.A": "F4:2 Ab4:2 C5:4 Ab4:2 F4:2",
+    "lead.B": "C5:2 Bb4:2 Ab4:2 F4:2 C5:2 Db5:2 C5:4"
+  },
+  "tracks": [
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "volume": 6,
+      "pan": 0,
+      "send": 0.1,
+      "duck": 0.55,
+      "filter": { "cutoffHz": 700, "resonance": 2.2, "lfoHz": 0.25, "lfoDepth": 1 },
+      "pattern": "F1:1 F1:1 C2:1 F1:1"
+    },
+    {
+      "name": "pad",
+      "role": "pad",
+      "waveform": "triangle",
+      "volume": 4,
+      "pan": 0.45,
+      "send": 0.55,
+      "filter": { "cutoffHz": 1800, "lfoHz": 0.12, "lfoDepth": 0.6 },
+      "pattern": "F3m7:8 Ab3maj7:8"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "waveform": "pulse",
+      "volume": 5,
+      "pan": -0.3,
+      "send": 0.3,
+      "delay": { "steps": 3, "feedback": 0.35, "mix": 0.3 },
+      "filter": { "cutoffHz": 2600, "lfoHz": 0.18, "lfoDepth": 0.5 },
+      "pattern": "F4:2 Ab4:2 C5:4 Ab4:2 F4:2"
+    }
+  ],
+  "arrangement": [
+    {
+      "name": "intro",
+      "bars": 4,
+      "mute": ["drums", "bass"],
+      "filter": { "from": 500, "to": 3000 },
+      "patterns": { "pad": "F3m7:8 Ab3maj7:8", "lead": "lead.A" }
+    },
+    {
+      "name": "build",
+      "bars": 4,
+      "filter": { "from": 600, "to": 12000 },
+      "patterns": { "drums": "drums.A", "bass": "bass.A", "lead": "lead.A" }
+    },
+    {
+      "name": "drop",
+      "bars": 8,
+      "gain": 1.05,
+      "patterns": { "drums": "drums.B", "bass": "bass.B", "lead": "lead.B" }
+    },
+    {
+      "name": "break",
+      "bars": 4,
+      "mute": ["drums", "bass"],
+      "filter": 900,
+      "patterns": { "pad": "Db3maj7:8 C3m7:8", "lead": "lead.A" }
+    },
+    {
+      "name": "drop2",
+      "bars": 8,
+      "patterns": { "drums": "drums.B", "bass": "bass.B", "lead": "lead.B" },
+      "filter": { "from": 2000, "to": 14000 }
+    }
+  ]
+}

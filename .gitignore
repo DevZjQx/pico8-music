@@ -1,0 +1,6 @@
+node_modules/
+*.wav
+test-tmp-*/
+pico8-music.wav
+.DS_Store
+dist/

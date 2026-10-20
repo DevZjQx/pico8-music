@@ -1,0 +1,63 @@
+{
+  "mode": "song",
+  "bpm": 165,
+  "stepsPerBeat": 4,
+  "patterns": {
+    "drums.A": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1",
+    "drums.B": "K:1 H:1 S:1 H:1 K:1 K:1 S:1 H:1",
+    "bass.A": "F1:1 F1:1 C2:1 F1:1",
+    "bass.B": "F1:1 F1:1 C2:1 F1:1 D#2:1 F1:1 C2:1 A#1:1",
+    "lead.A": "F4:4 Ab4:4 C5:4 Ab4:4",
+    "lead.B": "F4:2 Ab4:2 C5:2 Bb4:2 Ab4:4 F4:4"
+  },
+  "tracks": [
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "volume": 6,
+      "envelope": { "attack": 0.002, "decay": 0.06, "sustain": 0.35, "release": 0.01 },
+      "pattern": "F1:1 F1:1 C2:1 F1:1"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "waveform": "pulse",
+      "volume": 5,
+      "envelope": { "attack": 0.01, "decay": 0.12, "sustain": 0.45, "release": 0.05 },
+      "pattern": "F4:4 Ab4:4 C5:4 Ab4:4"
+    }
+  ],
+  "arrangement": [
+    {
+      "name": "intro",
+      "bars": 4,
+      "mute": ["drums", "bass"],
+      "filter": 1200,
+      "patterns": { "lead": "lead.A" }
+    },
+    {
+      "name": "build",
+      "bars": 4,
+      "patterns": { "drums": "drums.A", "bass": "bass.A", "lead": "lead.A" }
+    },
+    {
+      "name": "drop",
+      "bars": 4,
+      "gain": 1.05,
+      "patterns": { "drums": "drums.B", "bass": "bass.B", "lead": "lead.B" }
+    },
+    {
+      "name": "break",
+      "bars": 4,
+      "mute": ["drums", "bass"],
+      "filter": 600,
+      "patterns": { "lead": "lead.A" }
+    }
+  ]
+}

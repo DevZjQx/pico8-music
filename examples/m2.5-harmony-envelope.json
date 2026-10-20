@@ -1,0 +1,40 @@
+{
+  "bpm": 124,
+  "stepsPerBeat": 4,
+  "bars": 2,
+  "swing": 0.1,
+  "seed": 11,
+  "envelopes": {
+    "pluck": { "attack": 0.002, "decay": 0.07, "sustain": 0.08, "release": 0.03 },
+    "pad": { "attack": 0.03, "decay": 0.25, "sustain": 0.55, "release": 0.12 },
+    "stab": { "attack": 0.001, "decay": 0.05, "sustain": 0, "release": 0.02 }
+  },
+  "tracks": [
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "volume": 6,
+      "pattern": "Fm2:2~pluck Fm2:2~pluck Cm2:2~pluck Fm2:2~pluck"
+    },
+    {
+      "name": "chords",
+      "role": "pad",
+      "waveform": "triangle",
+      "volume": 4,
+      "pattern": "F3m7:8~pad Db3maj7:8~pad"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "waveform": "pulse",
+      "volume": 5,
+      "pattern": "C5:2~vib(0.35,6) Ab4:2~slide(0.5) C5:2g1~stab Ab4:2"
+    }
+  ]
+}
