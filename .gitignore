@@ -4,3 +4,6 @@ test-tmp-*/
 pico8-music.wav
 .DS_Store
 dist/
+
+# local secrets
+.env
