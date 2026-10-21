@@ -4,6 +4,46 @@ export interface DecodedWav {
   readonly rate: number;
 }
 
+/**
+ * Generator state for the 16-bit conversion dither. One instance per file, so a
+ * streamed render and a one-shot encode of the same audio produce the same
+ * bytes even though they are quantised in different chunk sizes.
+ */
+export interface DitherState {
+  seed: number;
+}
+
+export const DEFAULT_DITHER_SEED = 0x5eed1a7e;
+
+export function createDitherState(seed: number = DEFAULT_DITHER_SEED): DitherState {
+  return { seed: seed >>> 0 };
+}
+
+/** mulberry32: tiny, deterministic, and good enough for a noise floor. */
+function nextRandom(state: DitherState): number {
+  state.seed = (state.seed + 0x6d2b79f5) >>> 0;
+  let t = Math.imul(state.seed ^ (state.seed >>> 15), state.seed | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+/** Triangular PDF noise in (-1, 1) LSB: the difference of two uniforms. */
+function tpdf(state: DitherState): number {
+  return nextRandom(state) - nextRandom(state);
+}
+
+/**
+ * Float to int16 with 2 LSB peak-to-peak TPDF dither. Dither decorrelates the
+ * quantisation error from the signal, which trades a flat -96 dBFS hiss for the
+ * distortion harmonics plain rounding leaves on quiet tails and fades.
+ * Rounding is symmetric (half away from zero); `Math.round` is not.
+ */
+function quantize(value: number, dither: DitherState): number {
+  const jittered = value * 32767 + tpdf(dither);
+  const rounded = jittered < 0 ? -Math.floor(-jittered + 0.5) : Math.floor(jittered + 0.5);
+  return rounded < -32768 ? -32768 : rounded > 32767 ? 32767 : rounded;
+}
+
 function ascii(bytes: Uint8Array, offset: number, length: number): string {
   let text = '';
   for (let i = 0; i < length; i += 1) text += String.fromCharCode(bytes[offset + i] ?? 0);
@@ -93,12 +133,17 @@ export function encodeWavHeader(frames: number, rate: number): Uint8Array {
   return new Uint8Array(buffer);
 }
 
-/** Interleaves one frame range; callers append these chunks after {@link encodeWavHeader}. */
+/**
+ * Interleaves one frame range; callers append these chunks after {@link encodeWavHeader}.
+ * Pass the same `dither` state across chunks (in increasing `start` order) to keep
+ * the noise continuous and the output identical to a single-call encode.
+ */
 export function encodeWavFrames(
   left: Float32Array,
   right: Float32Array,
   start: number,
   frames: number,
+  dither: DitherState = createDitherState(),
 ): Uint8Array {
   const buffer = new ArrayBuffer(frames * 4);
   const view = new DataView(buffer);
@@ -107,8 +152,8 @@ export function encodeWavFrames(
     const index = start + i;
     const l = Math.max(-1, Math.min(1, left[index] ?? 0));
     const r = Math.max(-1, Math.min(1, right[index] ?? 0));
-    view.setInt16(i * 4, Math.round(l * 32767), true);
-    view.setInt16(i * 4 + 2, Math.round(r * 32767), true);
+    view.setInt16(i * 4, quantize(l, dither), true);
+    view.setInt16(i * 4 + 2, quantize(r, dither), true);
   }
   return new Uint8Array(buffer);
 }
@@ -116,7 +161,7 @@ export function encodeWavFrames(
 export function encodeWav(left: Float32Array, right: Float32Array, rate: number): Uint8Array {
   const frames = Math.min(left.length, right.length);
   const header = encodeWavHeader(frames, rate);
-  const body = encodeWavFrames(left, right, 0, frames);
+  const body = encodeWavFrames(left, right, 0, frames, createDitherState());
   const output = new Uint8Array(header.length + body.length);
   output.set(header, 0);
   output.set(body, header.length);

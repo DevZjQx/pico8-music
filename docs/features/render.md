@@ -6,8 +6,9 @@ measures.
 
 **Owns.** PICO-8-flavoured synthesis (eight timbres, per-note volume, track or
 named ADSR envelopes, note effects and their parameters), the instrument layer
-(`chip` / band-limited `additive` / two-operator `fm`, unison detune, drive, and
-per-note filter envelopes), polyphonic event scheduling (chords and legato
+(`chip` / band-limited `additive` / two-operator `fm` / persisted `sample`,
+unison detune, drive, per-note filter envelopes, sample pitch/loop/gain, and
+drum sample replacement), polyphonic event scheduling (chords and legato
 gates overlap without voice stealing), swing offsets, deterministic
 `humanize` timing/velocity, synthetic drum voices and their articulations
 (`ghost`, `flam`, `roll`) and per-hit `pitch` / `decay` / `tone`, arrangement
@@ -27,9 +28,11 @@ width, onsets, section energies, warnings), cooperative abort checks, and WAV
 decoding for `p8_analyze`.
 
 **Does not own.** Score validation, note/drum naming, or arrangement
-resolution — that is `score`'s contract. Writing files, choosing an output
-path, and formatting the report as tool text: `app/render-service.ts` /
-`app/dsh-plugin.ts` do that. Playback is not part of the loop; loudness
+resolution — that is `score`'s contract. Reading or decoding sample files is
+`app`'s job: the renderer receives a decoded `samples` map on `RenderOptions`
+and never touches disk. Writing files, choosing an output path, and formatting
+the report as tool text belong to `app/render-service.ts` /
+`app/dsh-plugin.ts`. Playback is not part of the loop; loudness
 normalisation is, as an explicit `loudness` post step.
 
 **Depends on.** `score` through its single public entry, for the `Score` type
@@ -39,23 +42,6 @@ only.
 
 **Owner.** Unassigned.
 
-**Rejected.** Shelling out to `ffmpeg`/`sox`: it would make installation depend
-on binaries that are absent in some DSH profiles, and steady-state loop
-extraction needs sample-accurate control that a filter graph makes awkward.
-Official PICO-8 `export foo.wav`: it requires a licensed, interactive editor
-and only exports one pattern at a time. Sample playback and user wavetables:
-licensed or user-supplied assets would break the single-file plugin and
-reproducible-render guarantees, so non-chip voices are synthesized instead.
-This does not rule out a model-designed shape: an additive table is built from
-numbers in the score (amplitudes plus per-harmonic phase), carries no asset, and
-stays byte-reproducible, so `partials` is where wave design lives.
-Bit-exact PICO-8 sfx emulation: the
-score carries musical effects (`slide`, `vibrato`, `arpfast`), not PICO-8's
-32-note sfx memory layout, so the effects are musical approximations rather
-than the original state machine. Sample-based drums were rejected for M1: they
-would add assets and licensing, while short synthesized transients already give
-the spectral separation the arrangement needs.
-
 **Exceptions.** The reverb tunings are a port of the Freeverb comb/allpass
 table; there is no runtime dependency on Freeverb itself. Drum synthesis uses
 deterministic LCG noise, so renders stay reproducible; the score `seed` is
@@ -63,12 +49,17 @@ folded into that seed and the noise waveform. A drum articulation only changes
 the per-hit plan (extra hits, velocity, decay, tone, pitch) and never adds a
 new render path; a `~pitch` suffix multiplies only the pitched components, so
 noise-based hats keep their spectrum; and an explicit `chip` instrument reuses
-`waveform.ts` so it stays sample-identical to the legacy `waveform` field. An
-additive table is rebuilt per note from the score's harmonics, band-limited at
-that pitch, and scaled by its measured peak rather than by the amplitude sum:
-phase then changes the shape without moving the level, and every voice type
-anchors at ~0.25 peak (chip, FM, additive), so swapping voice types does not
-jump the mix. The cost is a deliberate level shift for scores written before
+`waveform.ts` so it stays sample-identical to the legacy `waveform` field. A
+static additive voice rebuilds its table per note from the score's harmonics,
+band-limited at that pitch, and scales it by a measured peak rather than by the
+amplitude sum: phase and tilt then change the shape without moving the level,
+and every voice type anchors at ~0.25 peak (chip, FM, additive), so swapping
+voice types does not jump the mix. `stretch` (0-1) sharpens upper harmonics
+without detuning the fundamental, and a third partial item is an exponential
+decay time constant. Either one switches the note to per-partial synthesis with
+per-unison-voice phase and gain state; that path is still band-limited and still
+uses the cycle table only as its level reference, but a decayed gain is one
+multiply per partial per sample instead of an `exp()` call. The cost is a deliberate level shift for scores written before
 this: a peak-normalised additive voice sits about 2.6 dB above the old
 sum-normalised one.  a `roll` subdivides the event's slot, and a `flam` offsets the
 second hit by milliseconds, so both wrap at the loop seam with the same
@@ -91,6 +82,14 @@ envelope rather than the shared `limitPeak` trim, which stays last as a
 power weighting lets one loud kick hide the hats that decide whether a loop is
 actually dark. The DC block runs before the first master step so the limiter
 sees the final signal rather than a high-pass overshoot of it.
+
+A sample voice advances a read position by `frequency / rootFrequency`, so the
+existing slide/vibrato/arp paths work unchanged; a one-shot stops at the file
+end and a loop wraps at the sample's length. Drum samples force one-shot
+playback (a looping kick must still decay), honor `~pitch`/`~tone`, and ignore
+`~decay`, which has no sample equivalent. Linear interpolation is deliberate:
+the feature is asset playback, not a resampling library. Sample playback is
+deterministic from the file bytes and score, like every other voice.
 
 **Boundary evidence.** Deleting this folder breaks `app/render-service.ts`, `app/dsh-plugin.ts`, and `app/pi-extension.ts`; the app adapters reach it through `render-service.ts`.
 A second output format (FLAC, MP3) belongs here, next to `wav.ts`, not in the

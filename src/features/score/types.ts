@@ -64,10 +64,27 @@ export type DrumEffect =
 /**
  * How an instrument turns a pitch into a waveform. `chip` is the historical
  * PICO-8 path; `additive` builds a band-limited harmonic table; `fm` is a
- * two-operator phase-modulation voice. All three share unison, drive, and the
- * optional per-note filter envelope.
+ * two-operator phase-modulation voice; `sample` plays a persisted WAV from the
+ * score's `samples` table. The first three share unison, drive, and the
+ * optional per-note filter envelope; `sample` keeps only the table reference.
  */
-export type InstrumentType = 'chip' | 'fm' | 'additive';
+export type InstrumentType = 'chip' | 'fm' | 'additive' | 'sample';
+
+/**
+ * A persisted audio asset in the workspace. The file is read by the app layer
+ * on every render (with a content cache), never by the score parser, so the
+ * composition remains pure JSON.
+ */
+export interface SampleSpec {
+  /** Workspace-relative `.wav` path; only 16-bit PCM mono/stereo is supported. */
+  readonly file: string;
+  /** MIDI note the file plays at its original speed; default C4 (60). */
+  readonly rootMidi: number;
+  /** Repeat the sample for the whole gate instead of stopping at its end. */
+  readonly loop: boolean;
+  /** Linear gain applied before the track mix; default 1. */
+  readonly gain: number;
+}
 
 /** Per-note low-pass envelope; `envAmount` opens the cutoff in octaves. */
 export interface InstrumentFilter {
@@ -89,6 +106,12 @@ export interface Partial {
   readonly amplitude: number;
   /** Radians; a negative score amplitude becomes π, mirroring the waveform. */
   readonly phase: number;
+  /**
+   * Exponential decay time constant in seconds. The harmonic starts at full
+   * amplitude and fades with `exp(-seconds / decay)`; absent or 0 keeps it
+   * static, which is the table path.
+   */
+  readonly decay?: number;
 }
 
 /**
@@ -98,10 +121,20 @@ export interface Partial {
  */
 export interface Instrument {
   readonly type: InstrumentType;
-  /** Chip waveform; ignored by `fm` and `additive`. */
+  /** Chip waveform; ignored by `fm`, `additive`, and `sample`. */
   readonly waveform: Waveform;
+  /** Name in the score-level `samples` table; present only for `sample`. */
+  readonly sample?: string;
   /** Additive harmonics, fundamental first; this is the model-designed shape. */
   readonly partials?: readonly Partial[];
+  /**
+   * Additive inharmonicity, 0..1. Harmonic n runs at
+   * `n * f0 * sqrt(1 + stretch * (n^2 - 1))`, so the fundamental stays in tune
+   * and upper harmonics sharpen (bell/metal). 0 is the harmonic series.
+   */
+  readonly stretch?: number;
+  /** Additive spectral tilt, 0..4; harmonic n is scaled by `n^-tilt`. */
+  readonly tilt?: number;
   readonly ratio?: number;
   readonly index?: number;
   readonly indexDecay?: number;
@@ -157,7 +190,7 @@ export interface NoteEvent {
   /** Precomputed equal-tempered frequency in Hz. */
   readonly frequency: number;
   readonly effect: Effect;
-  /** PICO-8-style per-note volume 0..7; `@volume` overrides the track default. */
+  /** PICO-8-style per-note volume 0..7, one decimal allowed; `@volume` overrides the track default. */
   readonly volume: number;
   /** Present only when the token used a parameterised effect such as `~vib(0.4,6)`. */
   readonly effectParams?: EffectParams;
@@ -190,7 +223,7 @@ export interface ScoreTrack {
   readonly waveform: Waveform;
   /** Resolved instrument; absent keeps the historical waveform path. */
   readonly instrument?: Instrument;
-  /** 0..7, the default per-note volume when a token has no `@volume` suffix. */
+  /** 0..7 (one decimal allowed), the default per-note volume when a token has no `@volume` suffix. */
   readonly volume: number;
   /** ADSR applied to every note in the track. Drum hits ignore it. */
   readonly envelope: Envelope;
@@ -243,6 +276,8 @@ export interface Score {
   readonly mode: ScoreMode;
   readonly bpm: number;
   readonly stepsPerBeat: number;
+  /** Beats per bar; 4 is the PICO-8 default, 3 gives 3/4. */
+  readonly beatsPerBar: number;
   readonly bars: number;
   readonly totalSteps: number;
   readonly stepSeconds: number;
@@ -258,6 +293,10 @@ export interface Score {
   readonly sections: readonly ScoreSection[];
   /** Extra seconds rendered after the last step so reverb and one-shots ring out. */
   readonly tailSeconds: number;
+  /** Persisted WAV assets keyed by name; empty when the score uses none. */
+  readonly samples: ReadonlyMap<string, SampleSpec>;
+  /** Optional per-drum-voice sample replacements; unmapped voices stay synthetic. */
+  readonly drumSamples: ReadonlyMap<DrumName, string>;
   /** Parse-time advisories that are not fatal, e.g. a pattern that does not fill the section. */
   readonly warnings: readonly string[];
 }

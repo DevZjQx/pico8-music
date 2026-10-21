@@ -20,7 +20,7 @@ Song mode adds patterns and an arrangement:
 {"mode":"song","tracks":[{"name":"drums","role":"drums","pattern":"K:1 -:1 H:1 -:1"}],"patterns":{"drums.B":"K:1 H:1 S:1 H:1"},"arrangement":[{"name":"intro","bars":4,"mute":["drums"]},{"name":"drop","bars":8,"patterns":{"drums":"drums.B"}}]}
 
 ## Score fields
-- bpm 30-300 (default 90), stepsPerBeat 1-8 (default 4), loop bars 1-64 (default 4); song sections use bars 1-64 and the optional total bars 1-256
+- bpm 30-300 (default 90), stepsPerBeat 1-8 (default 4), beatsPerBar 1-16 (default 4; 3 for 3/4), loop bars 1-64 (default 4); song sections use bars 1-64 and the optional total bars 1-256
 - swing 0-0.5 delays odd steps; seed varies noise timbres, drum transients, and humanize
 - humanize {timingMs 0-50, velocity 0-1} adds deterministic timing and gain variation; 0 is neutral
 - tail 0-15 seconds renders extra song time after the last step so reverb and one-shots ring out; song mode only
@@ -28,22 +28,29 @@ Song mode adds patterns and an arrangement:
 - a chord lives inside one track; use separate tracks for separate parts (drums, bass, pad, lead, FX), not for chord voices
 - motifs: {"A":"C4:1 E4:1"}, played as "@A.transpose(2).retrograde"; transforms are transpose(n), invert, retrograde, augment(n), diminish(n)
 - envelopes: {"pluck":{"attack":0.002,"decay":0.07,"sustain":0.08,"release":0.03}}, used as "C4:4~pluck"
-- instruments: named voice definitions, used as "instrument":"name" on a track. type chip keeps the eight PICO-8 waveforms; additive sums band-limited harmonic partials; fm is two-operator phase modulation. All types accept unison 1-4, detune 0-50 cents, drive 0-1, and filter {cutoffHz,resonance,envAmount,attack,decay,sustain,release}. chip adds waveform; additive adds partials (1-16 harmonics, harmonic 1 first; a harmonic is an amplitude 0-1, a negative amplitude for the mirrored wave, or [amplitude, phaseDegrees]): {"type":"additive","partials":[1,-0.5,[0.25,90]]} designs a shape, the table is band-limited and peak-normalised; fm adds ratio 0.25-8, index 0-12, indexDecay 0.01-4 s
+- samples: persisted workspace WAV assets: {"hit":"assets/hit.wav"} or {"vox":{"file":"assets/vox.wav","root":"C4","loop":false,"gain":1}}. Only 16-bit PCM WAV; root defaults C4, gain 0-4, at most 16 samples, 30 s each
+- drumSamples: optional replacements by drum voice, e.g. {"kick":"hit","snare":"hit2"}; unmapped voices stay synthetic
+- instruments: named voice definitions, used as "instrument":"name" on a track. type chip keeps the eight PICO-8 waveforms; additive sums band-limited harmonic partials; fm is two-operator phase modulation; sample plays an entry from the score's samples table. chip/additive/fm accept unison 1-4, detune 0-50 cents, drive 0-1, and filter {cutoffHz,resonance,envAmount,attack,decay,sustain,release}. chip adds waveform; additive adds partials (1-16 harmonics, harmonic 1 first; a harmonic is an amplitude 0-1, a negative amplitude for the mirrored wave, [amplitude, phaseDegrees], or [amplitude, phaseDegrees, decaySeconds 0-8]): {"type":"additive","partials":[1,-0.5,[0.25,90,1.5]]} designs a shape, partials are band-limited and peak-normalised; fm adds ratio 0.25-8, index 0-12, indexDecay 0.01-4 s; sample adds sample: "name" and no other voice fields
+- additive extras: stretch 0-1 runs harmonic n at n*f0*sqrt(1+stretch*(n^2-1)) (fundamental stays in tune, highs sharpen for bells); tilt 0-4 scales harmonic n by n^-tilt (higher is darker); a third partial item is its decay time constant in seconds (0 keeps it static). Static partials still use the fast band-limited table; stretch or any nonzero decay renders each partial per sample, still band-limited and peak-normalised
 
 ## Track fields
 - pattern: inline tokens, or the name of a pattern in the track's patterns or in top-level patterns; without it the first track-local pattern is used
-- name (sections target it), role (drums, bass, lead, pad, ...), volume 0-7, waveform: triangle, tilted_saw, saw, square, pulse, organ, noise, phaser
-- instrument: a name from the top-level instruments table, an inline definition, or chip/fm/additive/drums. An explicit instrument outranks a style's role default; without one the legacy waveform path renders
+- name (sections target it), role (drums, bass, lead, pad, ...), volume 0-7 (one decimal allowed), waveform: triangle, tilted_saw, saw, square, pulse, organ, noise, phaser
+- instrument: a name from the top-level instruments table, an inline definition, or chip/fm/additive/drums; sample voices are named instruments or inline {"type":"sample","sample":"name"}. An explicit instrument outranks a style's role default; without one the legacy waveform path renders
 - mix-stage fields are flat track fields, never nested under "mix": pan -1..1, send 0..1 (reverb send), duck 0..1 (kick sidechain), filter ({cutoffHz,resonance,lfoHz,lfoDepth} or a cutoff number), delay ({steps,feedback,mix}); a delay at least one loop long folds through the loop seam
 
 ## Pattern tokens
 NOTE:STEPS[gGATE] or DRUM:STEPS; gate defaults to the slot, shorter is staccato, longer is legato.
-- "-" is a rest; "@volume" 0-7 overrides the track volume
+- "-" is a rest; "@volume" 0-7 (one decimal allowed) overrides the track volume
 - "~effect": slide, vibrato, drop, fadein, fadeout, arpfast, arpslow; slide(steps 0.05-8) and vib(depth 0-2 semitones[, rateHz 0.1-20]) take parameters
 - Drum tracks use drum articulations instead of pitched effects: ~ghost (quieter, shorter, darker), ~flam[(offsetMs 5-40)] (second hit 16 ms later by default), ~roll[(hits 2-8)] or ~roll4 (subdivide the slot; 4 hits by default)
 - Drum hits also take ~pitch(semitones -12..12), ~decay(scale 0.25..4), and ~tone(cutoffHz 200..16000), on their own or after an articulation: "K:1~ghost~pitch(-2)~decay(1.4)"
 - Chords: [C4,E4,G4]:4 (up to 4 voices) or names like Cmaj7, Fm, Fm/E, {C7}
-- Each pattern should fill whole bars (stepsPerBeat * 4 steps per bar) so sections stay in phase; the parser warns when the section length is not a multiple of the pattern length
+- Each pattern should fill whole bars (stepsPerBeat * beatsPerBar steps per bar) so sections stay in phase; the parser warns when the section length is not a multiple of the pattern length
+
+## Samples
+Samples are files, not inline data: put a 16-bit PCM WAV in the workspace and reference it from the top-level samples table. Paths are workspace-relative (not relative to scoreFile), must end in .wav, and cannot escape the workspace. The app reads every declared sample before rendering and caches decoded PCM until the file's size or mtime changes. A sample instrument starts at the file head for every note, plays at the file's native speed when the note equals root, and stops at the file end unless loop is true. ~slide/~vibrato/~arp change playback speed; ~decay and per-note filter fields are not available on sample instruments. For drums, ~pitch retunes and ~tone low-passes the sample; ~decay has no sample equivalent and is ignored. A drum replacement never loops, so a looping sample used as a kick still decays.
+{"samples":{"hit":"assets/hit.wav","vox":{"file":"assets/vox.wav","root":"A3","loop":true}},"instruments":{"choir":{"type":"sample","sample":"vox"}},"drumSamples":{"kick":"hit"},"tracks":[{"instrument":"choir","pattern":"A3:8"},{"role":"drums","pattern":"K:1 -:1 S:1 -:1"}]}
 
 ## Drums
 A track with role "drums" uses K kick, S snare, H closed hat, O open hat, C clap, T tom, R rim, X crash. Single-letter tokens are case-insensitive except r, which is a rest; R is the rim. Add ~ghost, ~flam, or ~roll to a hit, plus optional ~pitch, ~decay, and ~tone; a rest and pitched effects reject them.

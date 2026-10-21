@@ -6,7 +6,16 @@
 export { renderLoop } from './render.ts';
 export { analyseAudio, formatReport, sectionEnergies } from './analyze.ts';
 export { integratedLufs } from './loudness.ts';
-export { decodeWav, encodeWavFrames, encodeWavHeader } from './wav.ts';
+export {
+  createDitherState,
+  decodeWav,
+  encodeWav,
+  encodeWavFrames,
+  encodeWavHeader,
+} from './wav.ts';
+export type { DitherState } from './wav.ts';
+export { SampleVoice, renderSampleOneShot } from './sample.ts';
+export type { SampleSource } from './sample.ts';
 export { PRESETS } from './presets.ts';
 export { STYLES } from './styles.ts';
 export type { PresetName } from './presets.ts';

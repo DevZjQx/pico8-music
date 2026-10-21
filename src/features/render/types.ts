@@ -1,5 +1,6 @@
 import type { Analysis } from './analyze.ts';
 import type { PresetName } from './presets.ts';
+import type { SampleSource } from './sample.ts';
 
 /** One step in the post chain. An empty chain means a dry render. */
 export type PostStep =
@@ -46,6 +47,8 @@ export interface RenderOptions {
   readonly toneHz?: number;
   /** Requested output length in minutes for loop mode. */
   readonly minutes?: number;
+  /** Decoded workspace WAVs keyed by the score's `samples` names. */
+  readonly samples?: ReadonlyMap<string, SampleSource>;
   /** Cooperative cancellation checked between render stages and inner loops. */
   readonly signal?: AbortSignal;
   /**

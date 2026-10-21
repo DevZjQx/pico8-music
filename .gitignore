@@ -1,5 +1,6 @@
 node_modules/
 *.wav
+!examples/assets/*.wav
 test-tmp-*/
 pico8-music.wav
 .DS_Store

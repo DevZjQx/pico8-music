@@ -1,0 +1,33 @@
+{
+  "bpm": 100,
+  "stepsPerBeat": 4,
+  "bars": 2,
+  "samples": {
+    "pluck": { "file": "examples/assets/pluck.wav", "root": "C4", "gain": 0.9 },
+    "hit": "examples/assets/hit.wav"
+  },
+  "instruments": {
+    "sampledPluck": { "type": "sample", "sample": "pluck" }
+  },
+  "drumSamples": { "kick": "hit" },
+  "tracks": [
+    {
+      "name": "lead",
+      "instrument": "sampledPluck",
+      "volume": 6,
+      "pattern": "C4:2 E4:2 G4:2 C5:2 G4:2 E4:2 D4:2 G4:2"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "triangle",
+      "volume": 5,
+      "pattern": "C2:4 G2:4 A2:4 F2:4"
+    },
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    }
+  ]
+}

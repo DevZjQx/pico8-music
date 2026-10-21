@@ -17,6 +17,7 @@ export type {
   InstrumentType,
   NoteEvent,
   Partial,
+  SampleSpec,
   Score,
   ScoreMode,
   ScoreSection,

@@ -1,6 +1,6 @@
 # pico8-music
 
-DSH / Pi 插件：模型用 JSON 作曲，插件默认合成 PICO-8 风格的声音，输出 44.1 kHz 立体声 WAV；需要别的音色时用 `instrument` 换成 additive/FM 音源，additive 也可以用谐波振幅 + 相位自己设计波形。支持两种模式：
+DSH / Pi 插件：模型用 JSON 作曲，插件默认合成 PICO-8 风格的声音，输出 44.1 kHz 立体声 WAV；需要别的音色时用 `instrument` 换成 additive/FM 音源：additive 可以用谐波振幅 + 相位自己设计波形，也可以用 `stretch` 做非谐钟声、`tilt` 压暗、逐谐波衰减做拨弦，或者把工作区里的 WAV 采样素材作为音源。支持两种模式：
 
 - `loop`：一条 pattern 循环，可选降速、低通、混响，输出无缝循环。
 - `song`：用 `arrangement` 拼出 intro / build / drop / break，渲染完整结构。
@@ -27,6 +27,9 @@ examples/m2.5-harmony-envelope.json # 命名和弦、命名包络、效果参数
 examples/m3-space-motion.json # pan/send/duck/filter LFO/delay/段落扫频示例
 examples/m6-instruments.json # 命名 instrument、additive/FM、鼓参数示例
 examples/m7-wave-shapes.json # 模型自己设计的波形：脉冲、相位阶梯、反向锯齿
+examples/m8-samples.json   # 工作区 WAV 采样：sample 音源 + 鼓声替换
+examples/m9-additive-textures.json # additive 非谐、tilt、逐谐波衰减：钟声/拨弦/暗垫
+examples/assets/           # m8 引用的 16-bit PCM WAV 素材
 scripts/check-boundaries.ts  # shared -> features -> app 的零依赖检查
 test/
 ```
@@ -78,7 +81,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 }
 ```
 
-`score` 是 JSON 字符串，不是嵌套对象：这样在 DSH 和 Pi 两种宿主的参数校验下行为一致。`scoreFile` 是相对工作区的路径，省略 `.json` 后缀时自动补上，每次渲染都会重新读取文件；`score` 和 `scoreFile` 只能给一个。`post`、`preset`、`style`、`speed`、`wet`、`toneHz`、`minutes`、`out` 都是 `p8_music` 工具参数，和 `score` / `scoreFile` 平级；不要写进 score JSON，否则会报 `unknown field` 并提示它们属于工具参数。更多示例见 `examples/m1-16bar.json`、`examples/motifs.json`、`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`、`examples/m3-space-motion.json`、`examples/m5-drums-fill.json`、`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`。
+`score` 是 JSON 字符串，不是嵌套对象：这样在 DSH 和 Pi 两种宿主的参数校验下行为一致。`scoreFile` 是相对工作区的路径，省略 `.json` 后缀时自动补上，每次渲染都会重新读取文件；`score` 和 `scoreFile` 只能给一个。`post`、`preset`、`style`、`speed`、`wet`、`toneHz`、`minutes`、`out` 都是 `p8_music` 工具参数，和 `score` / `scoreFile` 平级；不要写进 score JSON，否则会报 `unknown field` 并提示它们属于工具参数。更多示例见 `examples/m1-16bar.json`、`examples/motifs.json`、`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`、`examples/m3-space-motion.json`、`examples/m5-drums-fill.json`、`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`、`examples/m8-samples.json`。
 
 ### Loop 模式
 
@@ -87,6 +90,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `mode` | `loop` / `song` | 没有 `arrangement` 时为 `loop` |
 | `bpm` | 30-300 | 90 |
 | `stepsPerBeat` | 1-8 整数 | 4 |
+| `beatsPerBar` | 1-16 整数；3 表示 3/4，6 配 `stepsPerBeat:2` 表示 6/8 | 4 |
 | `bars` | 1-64 整数（song 模式的 section 也是 1-64，可选总 `bars` 为 1-256） | 4 |
 | `swing` | 0-0.5 | 0 |
 | `humanize` | `{timingMs:0-50, velocity:0-1}`；确定性时序/力度扰动，0 不改变旧渲染 | 关闭 |
@@ -95,6 +99,8 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `motifs` | 可选，命名动机：`{"A":"C4:1 E4:1"}` | 空 |
 | `envelopes` | 可选，命名 ADSR：`{"pluck":{"attack":0.001,...}}` | 空 |
 | `tracks` | 1-32 个；每条轨是独立总线，轨数由编曲需要决定 | 必填 |
+| `samples` | 可选，命名 WAV 素材：`{"hit":"assets/hit.wav"}` 或 `{"vox":{"file":"assets/vox.wav","root":"C4","loop":false,"gain":1}}` | 空 |
+| `drumSamples` | 可选，按鼓声替换素材：`{"kick":"hit","snare":"hit2"}`；没映射的鼓仍用合成音 | 空 |
 
 每个 track：
 
@@ -106,8 +112,8 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `patterns` | 可选，本轨的命名 pattern：`{"A":"...","B":"..."}` |
 | `motifs` | 可选，本轨的命名动机；同名时覆盖顶层 `motifs` |
 | `waveform` | `0-7` 或 `triangle`、`tilted_saw`、`saw`、`square`、`pulse`、`organ`、`noise`、`phaser`，默认 `pulse`；只在没有 `instrument` 或 chip instrument 时生效 |
-| `instrument` | 可选，顶层 `instruments` 里的名字、内联定义，或 `chip`/`fm`/`additive`/`drums`；显式写入时优先于 style 的 role 默认值 |
-| `volume` | 0-7 整数，默认 5。没有 `@力度` 的音符用它 |
+| `instrument` | 可选，顶层 `instruments` 里的名字、内联定义，或 `chip`/`fm`/`additive`/`drums`，也可以引用 `samples` 里的素材；显式写入时优先于 style 的 role 默认值 |
+| `volume` | 0-7（可带一位小数），默认 5。没有 `@力度` 的音符用它 |
 | `envelope` | 可选 ADSR：`{attack, decay, sustain, release}`，单位秒（`sustain` 是 0-1 电平） |
 | `pan` | -1（左）..1（右），默认 0；等功率，居中不改变音量 |
 | `send` | 0-1，送入轨道混响 send；默认 0 |
@@ -116,7 +122,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `delay` | `{steps, feedback, mix}`，按 step 计时的轨道延迟；loop 中延迟不短于一圈时按循环折叠，song 中超过歌曲长度则为静音；默认无 |
 
 - 音符：`C4`、`F#3`、`Bb2`；范围 C1-C8。
-- 力度：`C4:4@6`，0-7；写 `@6~slide` 或 `~slide@6` 都可以。
+- 力度：`C4:4@6`，0-7，可带一位小数（`@4.5`）；写 `@6~slide` 或 `~slide@6` 都可以。
 - 效果：`slide`、`vibrato`、`drop`、`fadein`、`fadeout`、`arpfast`、`arpslow`。`slide(n)` / `vib(depth[,rateHz])` 可带参数。鼓轨不用这些效果，改用 `~ghost` / `~flam` / `~roll`（见下文）。
 - 门限：`C4:4g2` 占 4 步、只响 2 步（staccato）；`C4:4g6` 响 6 步，会盖住下一格（legato）。省略 `g` 时门限等于占位长度。
 - 和弦：`[C4,E4,G4]:4` 或命名和弦 `Cmaj7`、`Fm/E`，最多 4 个音；和弦级 `@力度`/`~效果` 作用于所有声部。
@@ -126,7 +132,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - `swing`：0-0.5，奇数 step 延后 `swing * stepSeconds`；同一输入渲染确定。
 - `humanize`：`timingMs` 让每个事件有 ±N 毫秒的确定性偏移，`velocity` 让力度有 ±50% 的确定性起伏；两者都由 `seed` 和事件位置决定，loop 内每个 pass 完全一致。默认 0，旧 score 逐样本不变。
 - `tail`：只在 song 模式有效，在最后一个 step 之后多渲染 N 秒（最多 15 秒），让 send/post 混响和鼓的 one-shot 自然收尾；loop 模式禁止 `tail`，否则会破坏无缝循环。
-- 每个 pattern 会重复填满 `bars`；四拍一小节，循环长度 = `bars * 4 * stepsPerBeat` 步。
+- 每个 pattern 会重复填满 `bars`；每小节 `beatsPerBar` 拍（默认 4），循环长度 = `bars * beatsPerBar * stepsPerBeat` 步。
 - 单轨可写和弦，最多 4 个同时发声的声部；一条 track 是一个编曲声部/总线，和弦声部不要各占一条轨。需要更多层次时增加 track。鼓轨的 one-shot 独立渲染，尾音可以和后续 hit 重叠。
 
 ### 和弦、包络与效果参数
@@ -165,7 +171,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | 类型 | 必填/可选字段 | 声音 |
 | --- | --- | --- |
 | `chip` | `waveform` | 原来的 8 个 PICO-8 波形，逐样本兼容 |
-| `additive` | `partials`：1-16 个谐波，第 1 个是基频；元素是振幅 `0-1`、负振幅（同一形状镜像）、或 `[振幅, 相位度数]` | 按音符频率做带限波表并峰值归一化；模型可以用 `partials` 自己设计波形（例如 25% 占空比脉冲、阶梯谐波） |
+| `additive` | `partials`：1-16 个谐波，第 1 个是基频；元素是振幅 `0-1`、负振幅（同一形状镜像）、`[振幅, 相位度数]` 或 `[振幅, 相位度数, 衰减秒数]`；另外可选 `stretch` 0-1（非谐）和 `tilt` 0-4（压暗） | 默认按音符频率做带限波表并峰值归一化；`stretch` 或逐谐波衰减时改为逐 partial 合成。模型可以用 `partials` 自己设计波形（25% 占空比脉冲、阶梯谐波），也可以用 `stretch` 做钟/金属、用逐谐波衰减做拨弦/电钢 |
 | `fm` | `ratio` 0.25-8、`index` 0-12、`indexDecay` 0.01-4 秒 | 两算子相位调制，电钢/钟/贝斯类音色 |
 
 三种类型共用：`unison` 1-4、`detune` 0-50 音分、`drive` 0-1，以及逐音滤波包络 `filter: {cutoffHz, resonance, envAmount, attack, decay, sustain, release}`；`envAmount` 是截止频率被包络推开的八度数（0-6）。
@@ -187,8 +193,48 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - 不写 `instrument` 时仍走 `waveform` 的旧路径；写 `instrument: {"type":"chip","waveform":"saw"}` 与直接写 `waveform: "saw"` 渲染结果逐样本相同。
 - 显式 `track.instrument` 优先于 style 的 role 默认音色；没有匹配的 role 时用 style 的 `default`。
 - `style: "studio"` 与 `style: "lofi"` 会按 role（`bass`、`lead`、`pad`、`keys`、`default`）填入非芯片音色，所以同一份 score 换 style 就能离开芯片听感。
-- 谐波表按音符频率带限，高音不会像朴素锯齿那样叠混叠；FM 不做过采样。
-- `partials` 是分数里的数字，不是外部波形文件：负振幅等价于 `[振幅, 180]`，相位让模型能做只有相位才能表达的波形（占空比脉冲、非对称/阶梯形状）。换相位只移动形状、不移动电平，因为波表按实测峰值归一化。完整示例见 `examples/m7-wave-shapes.json`。
+- 谐波按音符频率带限，高音不会像朴素锯齿那样叠混叠；FM 不做过采样。
+- `partials` 是分数里的数字，不是外部波形文件：负振幅等价于 `[振幅, 180]`，相位让模型能做只有相位才能表达的波形（占空比脉冲、非对称/阶梯形状）。换相位只移动形状、不移动电平，因为电平锚定在实测峰值。完整示例见 `examples/m7-wave-shapes.json`。
+- `stretch` 让第 n 个谐波跑在 `n·f0·√(1+stretch·(n²−1))`：基频保持音准，高次谐波变尖，0 是普通谐波列，0.2-0.5 接近钟/金属。`tilt` 把第 n 个谐波乘上 `n^-tilt`，适合不写 `partials`、只把默认的 1/n 谐波列压暗。
+- 逐谐波衰减写作 `[振幅, 相位度数, 秒数]`，是 `exp(-t/秒数)` 的时间常数；0 或省略表示不衰减。高次谐波先死适合钟、拨弦、电钢。
+- 没有 `stretch`、也没有任何逐谐波衰减时仍走原来的波表路径，旧 score 逐样本不变。出现两者之一时改为逐 partial 合成：仍按音符带限、仍把初始峰值锚在 0.25，但每个 partial 每采样一次 `sin`，所以适合 lead/pad/bell，不适合 8 声部以上的密集和弦。
+- 不做数学公式/表达式音源：周期公式与 `partials` 表达力重叠，非周期音色用 `samples`（工作区脚本生成任意 WAV）质量更高；这里只加数值参数。完整示例见 `examples/m9-additive-textures.json`。
+
+### 采样素材（samples）
+
+`instruments` 解决的是“合成什么音色”，`samples` 解决的是“复用一段已经存在的 WAV”。素材文件放在工作区里，score 只保存引用，所以素材和 `scoreFile` 一样会持久化；每次渲染都会重新核对文件，进程内再按 `path + size + mtime` 缓存解码后的 PCM。
+
+```json
+{
+  "samples": {
+    "hit": "assets/hit.wav",
+    "vox": { "file": "assets/vox.wav", "root": "A3", "loop": true, "gain": 0.8 }
+  },
+  "instruments": {
+    "choir": { "type": "sample", "sample": "vox" }
+  },
+  "drumSamples": { "kick": "hit", "snare": "hit" },
+  "tracks": [
+    { "name": "choir", "instrument": "choir", "pattern": "A3:8 C4:8" },
+    { "name": "drums", "role": "drums", "pattern": "K:1 -:1 S:1 -:1" }
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `file` | 必填，工作区相对路径，必须以 `.wav` 结尾；不能是绝对路径或包含 `..` 逃出工作区 |
+| `root` | 可选，素材原速播放时的音名，默认 `C4`；音符相对它做变速，不改变音色长度以外的语义 |
+| `loop` | 可选，`true` 时素材在 gate 内循环；默认 `false`，到文件结尾就停 |
+| `gain` | 可选，0-4 的线性增益，默认 1 |
+
+- 只接受 16-bit PCM WAV（mono/stereo）。stereo 会先平均成 mono，再进入轨道 pan/send/filter；这与 `p8_analyze` 的解码器是同一套，不引入 ffmpeg 或额外编解码依赖。
+- 每个素材最长 30 秒、文件最大 32 MB、最多 16 个；上限是渲染预算，不是音乐规则。
+- 素材路径相对于**工作区根目录**，不是 `scoreFile` 所在目录。`scoreFile` 每次重读，素材也每次按文件状态重新校验；文件被替换后下一次渲染就会用新内容。
+- `instrument: {"type":"sample","sample":"名字"}` 只接受 `type` 和 `sample`，不接受 `waveform`/`partials`/`stretch`/`tilt`/`unison`/`drive`/`filter`；需要滤波时用 track 级 `filter`。
+- 每个音符都从素材开头播放；`~slide`、`~vibrato`、`~arpfast/arpslow` 通过改变播放速度生效。`~fadein`/`~fadeout`、track/named envelope 仍然作用在采样输出的增益上。
+- 鼓映射是逐声替换：`~pitch` 改播放速度，`~tone` 加低通，`~ghost`/`~flam`/`~roll` 继续生效；`~decay` 对采样没有等价语义，会被忽略。鼓素材永远按 one-shot 播放，即使素材写了 `loop: true`，也不会无限循环。
+- 未使用的 `samples` 也会被读取和校验：这样路径写错时会在渲染前失败，而不是等到某条轨第一次发声。错误信息会带上素材名、路径和解码原因。
 
 ### 动机与变换
 
@@ -226,7 +272,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `R` | rim（必须大写；小写 `r` 仍是休止） |
 | `X` | crash |
 
-也接受 `kick`、`snare`、`open-hat`、`rim` 等全名。单字母 token 大小写不敏感，只有小写 `r` 仍是休止、大写 `R` 是 rim。鼓轨渲染时忽略 `waveform`、`envelope` 和 `instrument`，每个 hit 有独立的瞬态包络；`@力度` 改变 hit 的振幅。
+也接受 `kick`、`snare`、`open-hat`、`rim` 等全名。单字母 token 大小写不敏感，只有小写 `r` 仍是休止、大写 `R` 是 rim。鼓轨渲染时忽略 `waveform`、`envelope` 和 `instrument`，每个 hit 有独立的瞬态包络；`@力度` 改变 hit 的振幅。`drumSamples` 可以把某个鼓声换成 `samples` 里的 WAV；没映射的鼓声继续用合成瞬态。
 
 鼓的发音法写在 token 的 `~` 后缀上；一个 token 只能带一个鼓效果，但可以叠加音高/衰减/音色参数：
 
@@ -317,7 +363,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 
 ### 输出
 
-loop 模式默认 2 分钟，WAV 由整数个循环单元重复而成，首尾可直接无缝循环。各轨求和后用共享增益把峰值压到 -1 dBFS 以下，多轨满音量也不会削波。song 模式输出整首一次。
+loop 模式默认 2 分钟，WAV 由整数个循环单元重复而成，首尾可直接无缝循环。各轨求和后用共享增益把峰值压到 -1 dBFS 以下，多轨满音量也不会削波。song 模式输出整首一次。16-bit 转换前加 2 LSB 峰峰值的 TPDF 抖动（三角分布噪声），把量化误差变成约 −96 dBFS 的平坦噪声，而不是和信号相关的失真谐波；抖动序列由固定种子生成，所以同一份 score 的任何两次渲染仍然逐字节相同，流式分块写文件也与一次性编码一致。
 
 ### 渲染报告与 `p8_analyze`
 
@@ -358,14 +404,15 @@ bun run check      # 边界检查 + 类型检查 + 测试
 
 ## 已知限制
 
-- 音源有三类：8 个内置 chip 波形、带限 additive 谐波表、两算子 FM。没有采样播放、物理建模或任意波表文件；波形由分数里的谐波（振幅 + 相位）定义，所以不需要外部资产，也不支持用户上传的 wavetable。
+- 音源有四类：8 个内置 chip 波形、带限 additive 谐波（静态波表或逐 partial 合成）、两算子 FM，以及工作区里的 16-bit PCM WAV 素材。采样只做线性插值变速和可选的整段循环，不做切片、反向、多采样映射或 wavetable；`root` 之外没有 per-zone 映射。物理建模仍不做。
 - PICO-8 在这里是音色与编曲风格，不是硬件复刻：单轨和弦加 legato 可以同时超过 4 个声部，输出是 44.1 kHz 立体声，而不是 22050 Hz / 4 单声部通道。没有严格 `pico` 模式。
 - 效果是音乐语义的近似，不是 PICO-8 sfx 状态机的逐样本复刻。
-- 鼓是合成瞬态，不是采样；`~ghost` / `~flam` / `~roll` 与 per-hit `~pitch` / `~decay` / `~tone` 已支持，但没有独立的鼓采样或逐 hit 滤波包络。
+- 鼓默认是合成瞬态；`drumSamples` 可以按声替换成 WAV，`~ghost` / `~flam` / `~roll` 与 per-hit `~pitch` / `~tone` 仍生效，但采样鼓的 `~decay` 会被忽略，也没有逐 hit 滤波包络。
 - M2 和声/发音法已做：显式与命名和弦、斜杠低音、gate、swing、命名 per-note 包络、参数化 slide/vibrato、seed。仍不做 `key`/`scale` 度数记谱与 voice leading：命名和弦已覆盖大部分和声写法，voice leading 需要跨段和声状态且验收主观。
 - M3 已做：per-track filter（带 LFO/共振）、段落滤波扫频、pan、send、duck（kick 触发）、step 计时 delay。M8 追加了独立的段落 `riser`、`tail` 与 `humanize`；仍不做任意 sidechain 源和 impact/sub-drop 采样 FX。
 - M4 已做：渲染报告（peak/RMS/LUFS/频谱/宽度/onset/分段/警告）、`p8_analyze`、`tilt`/`saturate`/`compress`/`loudness`/`limiter` 五个 master 步骤。
-- M6 已做：命名/内联 `instruments`（chip / additive / FM）、unison 失谐、drive、逐音滤波包络、鼓的 per-hit pitch/decay/tone、`studio`/`lofi` 两个换音色的 style。仍不做采样/波表文件、任意 FM 算子矩阵、per-note pan。
+- M6 已做：命名/内联 `instruments`（chip / additive / FM）、unison 失谐、drive、逐音滤波包络、鼓的 per-hit pitch/decay/tone、`studio`/`lofi` 两个换音色的 style。采样素材（`samples` / `drumSamples`）已支持 16-bit PCM WAV；仍不做切片/多采样映射/任意波表、任意 FM 算子矩阵、per-note pan。
+- additive 扩展已做：`stretch` 非谐、`tilt` 频谱倾斜、逐谐波衰减；静态路径逐样本兼容。仍不做公式/表达式音源、任意 FM 算子矩阵和波表文件。
 - 轨数上限是 32，不是音乐规则：每条轨都要一整段 buffer 和一次逐样本混音，所以长歌 + 很多轨会明显变慢。需要更多层次时优先增加 track，而不是把和弦塞到 8 个声部以上。
 - `humanize` 只改时序和力度，不做 probability/ratchet；`tuplet` 仍不做：三连音需要分数 step 网格，会同时影响 parser、swing、段落对齐和循环接缝，收益低于成本。
 - song 模式的 `send` 混响和 `post` 混响尾音默认会在歌曲结束时截断；设置顶层 `tail` 可以留出收尾时间，或用 `send: 0` + `post: []` 做紧结尾。

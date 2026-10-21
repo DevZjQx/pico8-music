@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parseScore } from '../src/features/score/feature.ts';
-import { renderLoop } from '../src/features/render/feature.ts';
+import { renderLoop, type SampleSource } from '../src/features/render/feature.ts';
 
 const score = parseScore({
   bpm: 120,
@@ -223,7 +223,8 @@ test('four loud tracks are attenuated instead of hard-clipped', () => {
     const wav = renderLoop(fourLoudTracks, { preset, speed: 1, minutes: 0.05 }).wav;
     const level = peak(wav);
     assert.equal(fullScaleSamples(wav), 0, `${preset}: samples at full scale`);
-    assert.ok(level <= Math.ceil(0.89 * 32767), `${preset}: peak ${level}`);
+    // The ceiling is -1 dBFS plus one LSB of 16-bit TPDF dither.
+    assert.ok(level <= Math.ceil(0.89 * 32767) + 1, `${preset}: peak ${level}`);
     // The sum of four full-volume tracks needs the trim, so the ceiling should
     // actually be reached rather than the test passing on a quiet render.
     assert.ok(level > 25000, `${preset}: peak ${level} never needed limiting`);
@@ -868,6 +869,86 @@ test('renders the M7 model-designed waveform example', async () => {
   assert.ok(output.report.peakDb <= -0.9);
 });
 
+test('renders the M9 inharmonic and decaying additive example', async () => {
+  const raw = await readFile(new URL('../examples/m9-additive-textures.json', import.meta.url), 'utf8');
+  const example = parseScore(raw);
+  const instrumentOf = (name: string) =>
+    example.tracks.find((track) => track.name === name)?.instrument;
+
+  const bell = instrumentOf('lead');
+  assert.equal(bell?.stretch, 0.35);
+  assert.ok(bell?.partials?.every((partial) => (partial.decay ?? 0) > 0), 'bell highs decay first');
+  const pluck = instrumentOf('bass');
+  assert.ok(pluck?.partials?.some((partial) => (partial.decay ?? 0) > 0), 'pluck uses partial decay');
+  const pad = instrumentOf('pad');
+  assert.equal(pad?.tilt, 1.4);
+  assert.equal(pad?.partials, undefined, 'tilt alone stays on the default series');
+
+  const output = renderLoop(example, { post: [], minutes: 0.05 });
+  assert.ok(output.durationSeconds >= 10, `duration ${output.durationSeconds}`);
+  assert.ok(peak(output.wav) > 1000, 'M9 example must be audible');
+  assert.ok(output.report.peakDb <= -0.9);
+});
+
+function renderAdditiveNote(definition: Record<string, unknown>, pattern = 'A4:16'): Float32Array {
+  return monoOf(
+    renderLoop(
+      parseScore({
+        bpm: 120,
+        stepsPerBeat: 4,
+        bars: 1,
+        tracks: [{ instrument: { type: 'additive', ...definition }, pattern }],
+      }),
+      { post: [], minutes: 0.05 },
+    ).wav,
+  );
+}
+
+test('explicit zero stretch and decay keep the static additive table path', () => {
+  const base = { partials: [1, 0.5, [0.25, 90]] };
+  const plain = renderAdditiveNote(base);
+  const zeroed = renderAdditiveNote({ ...base, stretch: 0, partials: [1, 0.5, [0.25, 90, 0]] });
+  assert.deepEqual(Array.from(plain), Array.from(zeroed));
+});
+
+test('stretch keeps the fundamental in tune and sharpens upper harmonics', () => {
+  const harmonic = renderAdditiveNote({ partials: [1, 0.8] });
+  const stretched = renderAdditiveNote({ partials: [1, 0.8], stretch: 0.4 });
+  const f0 = 440;
+  const stampedSecond = 2 * Math.sqrt(1 + 0.4 * (2 * 2 - 1)) * f0;
+
+  const harmonicSecond = magnitudeBetween(harmonic, 2 * f0, 0.2, 1.8);
+  const stretchedSecond = magnitudeBetween(stretched, 2 * f0, 0.2, 1.8);
+  const shiftedSecond = magnitudeBetween(stretched, stampedSecond, 0.2, 1.8);
+  const harmonicFundamental = magnitudeBetween(harmonic, f0, 0.2, 1.8);
+  const stretchedFundamental = magnitudeBetween(stretched, f0, 0.2, 1.8);
+
+  assert.ok(harmonicSecond > harmonicFundamental * 0.5, 'the stock second harmonic is present');
+  assert.ok(stretchedSecond < harmonicSecond * 0.1, 'stretch must move energy off 2*f0');
+  assert.ok(shiftedSecond > stretchedSecond * 5, `shifted ${shiftedSecond} vs 2f0 ${stretchedSecond}`);
+  assert.ok(stretchedFundamental > harmonicFundamental * 0.3, 'stretch must not detune the fundamental');
+});
+
+test('tilt rolls off upper harmonics relative to the fundamental', () => {
+  const flat = renderAdditiveNote({ partials: [1, 0.8, 0.6, 0.4, 0.2] });
+  const tilted = renderAdditiveNote({ partials: [1, 0.8, 0.6, 0.4, 0.2], tilt: 2 });
+  const ratioOf = (samples: Float32Array) =>
+    magnitudeBetween(samples, 4 * 440, 0.2, 1.8) / magnitudeBetween(samples, 440, 0.2, 1.8);
+
+  assert.ok(ratioOf(tilted) < ratioOf(flat) * 0.5, `tilted ${ratioOf(tilted)} vs flat ${ratioOf(flat)}`);
+});
+
+test('per-harmonic decay lets highs die before the fundamental', () => {
+  const voice = renderAdditiveNote({ partials: [[1, 0, 4], [0.8, 0, 0.25]] });
+  const earlyHigh = magnitudeBetween(voice, 880, 0.15, 0.35);
+  const lateHigh = magnitudeBetween(voice, 880, 1.2, 1.9);
+  const earlyLow = magnitudeBetween(voice, 440, 0.15, 0.35);
+  const lateLow = magnitudeBetween(voice, 440, 1.2, 1.9);
+
+  assert.ok(lateHigh < earlyHigh * 0.2, `high early ${earlyHigh} late ${lateHigh}`);
+  assert.ok(lateLow > earlyLow * 0.3, `low early ${earlyLow} late ${lateLow}`);
+});
+
 test('send and delay keep the loop seam seamless', () => {
   const wetLoop = renderLoop(
     parseScore({
@@ -977,6 +1058,30 @@ test('a section riser sweeps upward into the next section', () => {
   );
 });
 
+test('riser length follows beatsPerBar', () => {
+  const output = renderLoop(
+    parseScore({
+      mode: 'song',
+      bpm: 120,
+      beatsPerBar: 3,
+      tracks: [{ waveform: 'triangle', pattern: '-:24' }],
+      arrangement: [
+        { name: 'build', bars: 2, riser: 1 },
+        { name: 'drop', bars: 1 },
+      ],
+    }),
+    { post: [] },
+  );
+
+  // 3/4 at 120 bpm: one step is 0.125 s, one bar is 1.5 s, the build is 3 s.
+  // The riser covers only the last bar (1.5-3 s), so the first bar stays silent.
+  // With a hard-coded four-beat bar it would start at 1 s and leak into this window.
+  const beforeRiser = highBandBetween(output.left, 0.3, 1.4);
+  const endOfBuild = highBandBetween(output.left, 2.6, 2.9);
+  assert.equal(beforeRiser, 0, 'the riser must not start before the last bar');
+  assert.ok(endOfBuild > 0, 'the riser should be audible at the section boundary');
+});
+
 test('tail extends a song so the send reverb can ring out', () => {
   const song = parseScore({
     mode: 'song',
@@ -1059,4 +1164,89 @@ test('renders an arrangement with more than four tracks', () => {
     { post: [], minutes: 0.05 },
   );
   assert.ok(peak(output.wav) > 1000);
+});
+
+
+function sampleSource(loop: boolean): SampleSource {
+  const audio = new Float32Array(2205);
+  for (let i = 0; i < audio.length; i += 1) {
+    audio[i] = Math.sin((2 * Math.PI * 440 * i) / 44100) * 0.5;
+  }
+  return { name: 'tone', audio, rate: 44100, rootMidi: 60, loop, gain: 1 };
+}
+
+function rms(left: Float32Array, from = 0, to = left.length): number {
+  let sum = 0;
+  let count = 0;
+  for (let i = from; i < to; i += 1) {
+    const value = left[i] ?? 0;
+    sum += value * value;
+    count += 1;
+  }
+  return count === 0 ? 0 : Math.sqrt(sum / count);
+}
+
+test('plays a persisted sample instrument at the note pitch', () => {
+  const parsed = parseScore({
+    samples: { tone: 'assets/tone.wav' },
+    tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:4' }],
+  });
+  const bank = new Map([['tone', sampleSource(false)]]);
+  const output = renderLoop(parsed, { post: [], minutes: 0.05, samples: bank });
+
+  assert.ok(rms(output.left) > 0.001, 'expected the sample to be audible');
+  assert.ok(output.left.some((value) => value !== 0), 'expected non-silent samples');
+  assert.deepEqual(output.left, output.right, 'a centred mono sample stays centred');
+
+  const again = renderLoop(parsed, { post: [], minutes: 0.05, samples: bank });
+  assert.deepEqual(output.left, again.left, 'sample playback is deterministic');
+});
+
+test('a looped sample fills its gate and a one-shot stops at the file end', () => {
+  const parsed = parseScore({
+    bpm: 120,
+    bars: 1,
+    samples: { tone: 'assets/tone.wav' },
+    tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:8' }],
+  });
+  const oneShot = renderLoop(parsed, {
+    post: [],
+    minutes: 0.05,
+    samples: new Map([['tone', sampleSource(false)]]),
+  });
+  const looped = renderLoop(parsed, {
+    post: [],
+    minutes: 0.05,
+    samples: new Map([['tone', sampleSource(true)]]),
+  });
+
+  // The file is 0.05 s and the first gate is 1 s at 120 bpm, so only the looped
+  // version still has energy in the second half of that gate.
+  const start = Math.round(0.5 * 44100);
+  const end = Math.round(0.95 * 44100);
+  assert.ok(rms(oneShot.left, start, end) < 1e-4, 'one-shot should have stopped');
+  assert.ok(rms(looped.left, start, end) > 1e-4, 'looped sample should still be playing');
+});
+
+test('a drum replacement sample renders alongside synthetic voices', () => {
+  const parsed = parseScore({
+    samples: { hit: 'assets/hit.wav' },
+    drumSamples: { kick: 'hit' },
+    tracks: [{ role: 'drums', pattern: 'K:1 S:1 K:1 S:1' }],
+  });
+  const output = renderLoop(parsed, {
+    post: [],
+    minutes: 0.05,
+    samples: new Map([['hit', sampleSource(false)]]),
+  });
+  assert.ok(rms(output.left) > 0.001);
+  assert.deepEqual(output.left, output.right);
+});
+
+test('a sample instrument without a loaded bank fails explicitly', () => {
+  const parsed = parseScore({
+    samples: { tone: 'assets/tone.wav' },
+    tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:4' }],
+  });
+  assert.throws(() => renderLoop(parsed, { post: [], minutes: 0.05 }), /missing from the render bank/);
 });

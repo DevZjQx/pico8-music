@@ -1,9 +1,10 @@
-import { mkdir, open, readFile, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, stat } from 'node:fs/promises';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
-import { parseScore } from '../features/score/feature.ts';
+import { parseScore, type SampleSpec, type Score } from '../features/score/feature.ts';
 import {
   PRESETS,
   analyseAudio,
+  createDitherState,
   decodeWav,
   encodeWavFrames,
   encodeWavHeader,
@@ -12,6 +13,7 @@ import {
   type PostStep,
   type PresetName,
   type RenderOutput,
+  type SampleSource,
   type StyleName,
 } from '../features/render/feature.ts';
 
@@ -55,8 +57,26 @@ function workspaceDirectory(exec: ToolExecution): string {
 }
 
 /** Labels with a fixed extension; `path` is left to the caller's format check. */
-const PATH_EXTENSIONS = { out: '.wav', scoreFile: '.json' } as const;
-type PathLabel = 'out' | 'path' | 'scoreFile';
+const PATH_EXTENSIONS = { out: '.wav', scoreFile: '.json', sample: '.wav' } as const;
+type PathLabel = 'out' | 'path' | 'scoreFile' | 'sample';
+
+/** One sample asset cap; a huge file is a budget error, not a silent memory spike. */
+const MAX_SAMPLE_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_SAMPLE_SECONDS = 30;
+const DECODED_SAMPLE_CACHE_ENTRIES = 32;
+
+interface DecodedSample {
+  readonly key: string;
+  readonly audio: Float32Array;
+  readonly rate: number;
+}
+
+/**
+ * Decoded PCM is process-local state, revalidated by path + size + mtime. It
+ * makes repeated renders that share a sample bank cheap without pretending the
+ * cache is durable: the WAV files and the score remain the persisted material.
+ */
+const decodedSampleCache = new Map<string, DecodedSample>();
 
 /**
  * The manifest grants workspace-scoped read/write, so the service enforces the
@@ -88,6 +108,89 @@ function workspacePath(requested: string, label: PathLabel, cwd: string): string
     throw new Error(`${label} must stay inside the workspace (${root}), got ${candidate}`);
   }
   return candidate;
+}
+
+async function decodeSampleAsset(path: string): Promise<DecodedSample> {
+  let info;
+  try {
+    info = await stat(path);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot stat ${path}: ${reason}`);
+  }
+  if (!info.isFile()) throw new Error(`${path} is not a file`);
+  if (info.size > MAX_SAMPLE_FILE_BYTES) {
+    throw new Error(
+      `${path} is ${(info.size / (1024 * 1024)).toFixed(1)} MB; samples are limited to ${MAX_SAMPLE_FILE_BYTES / (1024 * 1024)} MB`,
+    );
+  }
+
+  const key = `${path}\0${info.size}\0${info.mtimeMs}`;
+  const cached = decodedSampleCache.get(key);
+  if (cached !== undefined) return cached;
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read ${path}: ${reason}`);
+  }
+
+  const decoded = decodeWav(bytes);
+  if (!Number.isFinite(decoded.rate) || decoded.rate < 8000 || decoded.rate > 192000) {
+    throw new Error(`unsupported sample rate ${decoded.rate} Hz; use 8000-192000 Hz`);
+  }
+  const frames = Math.min(decoded.left.length, decoded.right.length);
+  if (frames / decoded.rate > MAX_SAMPLE_SECONDS) {
+    throw new Error(
+      `${path} is ${(frames / decoded.rate).toFixed(1)} s long; samples are limited to ${MAX_SAMPLE_SECONDS} s`,
+    );
+  }
+
+  const audio = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    audio[i] = ((decoded.left[i] ?? 0) + (decoded.right[i] ?? 0)) * 0.5;
+  }
+
+  const asset: DecodedSample = { key, audio, rate: decoded.rate };
+  decodedSampleCache.set(key, asset);
+  while (decodedSampleCache.size > DECODED_SAMPLE_CACHE_ENTRIES) {
+    const oldest = decodedSampleCache.keys().next().value;
+    if (oldest === undefined) break;
+    decodedSampleCache.delete(oldest);
+  }
+  return asset;
+}
+
+/** Reads every declared sample before rendering; unused declarations are still validated. */
+async function loadSampleBank(
+  score: Score,
+  cwd: string,
+): Promise<ReadonlyMap<string, SampleSource>> {
+  const bank = new Map<string, SampleSource>();
+  for (const [name, spec] of score.samples) {
+    const path = workspacePath(spec.file, 'sample', cwd);
+    try {
+      const asset = await decodeSampleAsset(path);
+      bank.set(name, sourceOf(name, spec, asset));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`sample ${JSON.stringify(name)} (${spec.file}): ${reason}`);
+    }
+  }
+  return bank;
+}
+
+function sourceOf(name: string, spec: SampleSpec, asset: DecodedSample): SampleSource {
+  return {
+    name,
+    audio: asset.audio,
+    rate: asset.rate,
+    rootMidi: spec.rootMidi,
+    loop: spec.loop,
+    gain: spec.gain,
+  };
 }
 
 function optionalNumber(value: unknown, field: string): number | undefined {
@@ -145,11 +248,14 @@ async function writeWaveFile(
   try {
     const header = encodeWavHeader(output.frames, output.rate);
     await file.write(header, 0, header.length, null);
+    // One dither state for the whole file: chunk boundaries must not restart
+    // the noise sequence, or it would repeat every 16384 frames.
+    const dither = createDitherState();
     for (let repeat = 0; repeat < output.repeats; repeat += 1) {
       for (let start = 0; start < output.left.length; start += WRITE_CHUNK_FRAMES) {
         if (signal?.aborted) throw new Error('render aborted');
         const frames = Math.min(WRITE_CHUNK_FRAMES, output.left.length - start);
-        const chunk = encodeWavFrames(output.left, output.right, start, frames);
+        const chunk = encodeWavFrames(output.left, output.right, start, frames, dither);
         await file.write(chunk, 0, chunk.length, null);
       }
     }
@@ -194,6 +300,7 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
 
   const cwd = workspaceDirectory(exec);
   const score = parseScore(await scoreJsonOf(args, cwd));
+  const sampleBank = await loadSampleBank(score, cwd);
   const preset = presetOf(args.preset);
   const style = styleOf(args.style);
   const outputPath = workspacePath(args.out ?? 'pico8-music.wav', 'out', cwd);
@@ -206,6 +313,7 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
     toneHz: optionalNumber(args.toneHz, 'toneHz'),
     minutes: optionalNumber(args.minutes, 'minutes'),
     signal: exec.signal,
+    samples: sampleBank,
     withWav: false,
   });
 
@@ -219,6 +327,9 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
     `Rendered ${outputPath}`,
     `duration ${output.durationSeconds.toFixed(1)} s · loop ${output.loopSeconds.toFixed(2)} s × ${repeats} · ${output.rate} Hz stereo`,
     `mode ${score.mode} · ${chain.mode} · speed ${output.speed.toFixed(2)} · score ${score.bpm} bpm, ${score.bars} bars, ${score.tracks.length} tracks`,
+    ...(score.samples.size === 0
+      ? []
+      : [`samples ${score.samples.size} · ${[...score.samples.keys()].join(', ')}`]),
     `post ${chain.post}`,
     formatReport(output.report),
   ].join('\n');

@@ -89,14 +89,32 @@ test('parses an envelope and defaults it to the declick edges', () => {
   assert.equal(partial.tracks[0]?.envelope.attack, 0.004);
 });
 
+test('accepts fractional per-note and track volumes', () => {
+  const parsed = parseScore({ tracks: [{ volume: 4.5, pattern: 'C4:4@6.5 E4:4' }] });
+  assert.deepEqual(
+    parsed.tracks[0]?.events.map((event) => event.volume),
+    [6.5, 4.5],
+  );
+});
+
 test('rejects invalid per-note volumes and envelopes', () => {
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4@8' }] }), /volume must be between 0 and 7/);
-  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4@x' }] }), /volume must be an integer/);
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4@x' }] }),
+    /volume must be a number between 0 and 7/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4@4.55' }] }),
+    /volume must be a number between 0 and 7/,
+  );
   assert.throws(() => parseScore({ tracks: [{ pattern: '-:4@3' }] }), /rest cannot carry/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4@3@4' }] }), /at most one/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { sustain: 2 } }] }), /\.sustain/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { attack: -1 } }] }), /\.attack/);
-  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', volume: 5.5 }] }), /integer/);
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', volume: 7.5 }] }),
+    /between 0 and 7/,
+  );
 });
 
 test('reports the failing field for bad input', () => {
@@ -420,7 +438,7 @@ test('rejects malformed instrument definitions', () => {
   );
   assert.throws(
     withTrack({ instrument: { type: 'chip', partials: [1] }, pattern: 'C4:4' }),
-    /partials only applies to additive/,
+    /only apply to additive/,
   );
   assert.throws(
     withTrack({ instrument: { type: 'additive', ratio: 2 }, pattern: 'C4:4' }),
@@ -436,27 +454,57 @@ test('rejects malformed instrument definitions', () => {
   );
 });
 
-test('reads additive harmonics as amplitude, or amplitude and phase degrees', () => {
+test('reads additive harmonics as amplitude, phase degrees, and decay', () => {
   const partialsOf = (partials: unknown) =>
     parseScore({ tracks: [{ instrument: { type: 'additive', partials }, pattern: 'C4:4' }] })
       .tracks[0]?.instrument?.partials;
 
-  assert.deepEqual(partialsOf([1, -0.5, [0.25, 90]]), [
+  assert.deepEqual(partialsOf([1, -0.5, [0.25, 90], [0.5, 0, 2]]), [
     { amplitude: 1, phase: 0 },
     { amplitude: 0.5, phase: Math.PI },
     { amplitude: 0.25, phase: Math.PI / 2 },
+    { amplitude: 0.5, phase: 0, decay: 2 },
   ]);
   // Degrees wrap, so a model can write 450 without a special case.
   assert.deepEqual(partialsOf([[0.5, 450]]), partialsOf([[0.5, 90]]));
+  // A decay of 0 is the same as omitting the third item.
+  assert.deepEqual(partialsOf([[0.5, 90, 0]]), partialsOf([[0.5, 90]]));
 
   assert.throws(() => partialsOf([1.5]), /must be between -1 and 1/);
-  assert.throws(() => partialsOf([[0.5, 90, 3]]), /got 3 items/);
+  assert.throws(() => partialsOf([[0.5, 90, 3, 1]]), /got 4 items/);
+  assert.throws(() => partialsOf([[0.5, 90, -1]]), /\[2\] must be between 0 and 8/);
   assert.throws(() => partialsOf([[1.2, 0]]), /\[0\] must be between 0 and 1/);
   assert.throws(() => partialsOf([[0.5, 'fast']]), /\[1\] must be a number/);
   assert.throws(() => partialsOf([]), /1-16 harmonics/);
   assert.throws(
     () => partialsOf(new Array(17).fill(0.1)),
     /1-16 harmonics/,
+  );
+});
+
+test('reads additive stretch and tilt and rejects them on other voice types', () => {
+  const instrumentOf = (instrument: unknown) =>
+    parseScore({ tracks: [{ instrument, pattern: 'C4:4' }] }).tracks[0]?.instrument;
+
+  const additive = instrumentOf({ type: 'additive', stretch: 0.3, tilt: 1.5 });
+  assert.equal(additive?.stretch, 0.3);
+  assert.equal(additive?.tilt, 1.5);
+
+  assert.throws(
+    () => instrumentOf({ type: 'additive', stretch: 1.5 }),
+    /stretch must be between 0 and 1/,
+  );
+  assert.throws(
+    () => instrumentOf({ type: 'additive', tilt: 5 }),
+    /tilt must be between 0 and 4/,
+  );
+  assert.throws(
+    () => instrumentOf({ type: 'fm', stretch: 0.3 }),
+    /only apply to additive/,
+  );
+  assert.throws(
+    () => instrumentOf({ type: 'chip', tilt: 1 }),
+    /only apply to additive/,
   );
 });
 
@@ -1036,6 +1084,52 @@ test('warns when a pattern does not fill its loop or section', () => {
   assert.deepEqual(aligned.warnings, []);
 });
 
+test('beatsPerBar changes the bar length without changing the step grid', () => {
+  const threeFour = parseScore({ beatsPerBar: 3, bars: 1, tracks: [{ pattern: 'C4:12' }] });
+  assert.equal(threeFour.beatsPerBar, 3);
+  assert.equal(threeFour.totalSteps, 12);
+  assert.equal(threeFour.durationSeconds, 12 * (60 / 90 / 4));
+  assert.deepEqual(threeFour.warnings, []);
+
+  const defaultMeter = parseScore({ bars: 1, tracks: [{ pattern: 'C4:16' }] });
+  assert.equal(defaultMeter.beatsPerBar, 4);
+  assert.equal(defaultMeter.totalSteps, 16);
+
+  const sixEight = parseScore({ beatsPerBar: 6, stepsPerBeat: 2, bars: 1, tracks: [{ pattern: 'C4:12' }] });
+  assert.equal(sixEight.totalSteps, 12);
+
+  assert.throws(() => parseScore({ beatsPerBar: 17, tracks: [{ pattern: 'C4:4' }] }), /beatsPerBar/);
+  assert.throws(() => parseScore({ beatsPerBar: 3.5, tracks: [{ pattern: 'C4:4' }] }), /beatsPerBar/);
+});
+
+test('song sections and fills use beatsPerBar', () => {
+  const song = parseScore({
+    mode: 'song',
+    bpm: 120,
+    beatsPerBar: 3,
+    tracks: [{ name: 'lead', pattern: 'C4:12' }],
+    arrangement: [
+      { name: 'a', bars: 2 },
+      { name: 'b', bars: 2, fill: { bars: 1, patterns: { lead: 'C4:3' } } },
+    ],
+  });
+  assert.equal(song.totalSteps, 48);
+  assert.equal(song.bars, 4);
+  assert.deepEqual(song.warnings, []);
+
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        beatsPerBar: 3,
+        bars: 3,
+        tracks: [{ pattern: 'C4:4' }],
+        arrangement: [{ name: 'a', bars: 2 }],
+      }),
+    /arrangement totals 2 bars/,
+  );
+});
+
 test('bounds the total arrangement length and section count', () => {
   const tooLong = {
     mode: 'song',
@@ -1117,5 +1211,87 @@ test('rejects humanize, riser, and tail values outside their range', () => {
   assert.throws(
     () => parseScore({ tail: 2, tracks: [{ pattern: 'C4:4' }] }),
     /tail requires mode "song"/,
+  );
+});
+
+test('resolves persisted sample instruments and drum replacements', () => {
+  const parsed = parseScore({
+    samples: {
+      hit: 'assets/hit.wav',
+      vox: { file: 'assets/vox.wav', root: 'A3', loop: true, gain: 0.5 },
+    },
+    drumSamples: { K: 'hit', snare: 'hit' },
+    instruments: {
+      voice: { type: 'sample', sample: 'vox' },
+    },
+    tracks: [
+      { name: 'lead', instrument: 'voice', pattern: 'C4:4' },
+      { name: 'drums', role: 'drums', pattern: 'K:1 S:1' },
+    ],
+  });
+
+  assert.equal(parsed.samples.get('hit')?.file, 'assets/hit.wav');
+  assert.equal(parsed.samples.get('hit')?.rootMidi, 60);
+  assert.equal(parsed.samples.get('hit')?.loop, false);
+  assert.equal(parsed.samples.get('vox')?.rootMidi, 57);
+  assert.equal(parsed.samples.get('vox')?.loop, true);
+  assert.equal(parsed.samples.get('vox')?.gain, 0.5);
+  assert.equal(parsed.tracks[0]?.instrument?.type, 'sample');
+  assert.equal(parsed.tracks[0]?.instrument?.sample, 'vox');
+  assert.equal(parsed.drumSamples.get('kick'), 'hit');
+  assert.equal(parsed.drumSamples.get('snare'), 'hit');
+});
+
+test('rejects malformed samples and sample instruments', () => {
+  const parse = (score: unknown) => () => parseScore(score);
+
+  assert.throws(
+    parse({ samples: { hit: '../outside.wav' }, tracks: [{ pattern: 'C4:4' }] }),
+    /must stay inside the workspace/,
+  );
+  assert.throws(
+    parse({ samples: { hit: '/absolute.wav' }, tracks: [{ pattern: 'C4:4' }] }),
+    /must be workspace-relative/,
+  );
+  assert.throws(
+    parse({ samples: { hit: 'assets/hit.mp3' }, tracks: [{ pattern: 'C4:4' }] }),
+    /must end in \.wav/,
+  );
+  assert.throws(
+    parse({
+      tracks: [{ instrument: { type: 'sample', sample: 'missing' }, pattern: 'C4:4' }],
+    }),
+    /unknown sample "missing"/,
+  );
+  assert.throws(
+    parse({
+      samples: { hit: 'assets/hit.wav' },
+      tracks: [
+        { instrument: { type: 'sample', sample: 'hit', waveform: 'pulse' }, pattern: 'C4:4' },
+      ],
+    }),
+    /sample instruments do not accept waveform/,
+  );
+  assert.throws(
+    parse({
+      samples: { hit: 'assets/hit.wav' },
+      tracks: [{ instrument: { type: 'chip', sample: 'hit' }, pattern: 'C4:4' }],
+    }),
+    /sample only applies to sample instruments/,
+  );
+  assert.throws(
+    parse({
+      samples: { hit: 'assets/hit.wav' },
+      drumSamples: { NOPE: 'hit' },
+      tracks: [{ role: 'drums', pattern: 'K:1' }],
+    }),
+    /unknown drum voice/,
+  );
+  assert.throws(
+    parse({
+      drumSamples: { kick: 'missing' },
+      tracks: [{ role: 'drums', pattern: 'K:1' }],
+    }),
+    /unknown sample "missing"/,
   );
 });

@@ -395,9 +395,10 @@ test('the render service validates style names and post types', async () => {
 
 test('fixed renders keep their golden hashes', () => {
   const hashes = {
-    dry: '2e20c6aab672c83476543299d3625ba0e99fcf8368e8720cebbf0a5687e8ac58',
-    classic: '79663abacb6006e93cd2edd25a0bc89c666184b4cfe9411421dd295d631332f4',
-    hitech: '4175722226ad6c64df040b610e075cbb40e575f55c9e66c6f1f470c327a68ff6',
+    // Hashes moved once when the 16-bit conversion gained TPDF dither.
+    dry: 'f1a890a827943d9ad16ad97ee6467725e88b5f8e7dd59ea4f5977274a8e21034',
+    classic: 'b12781ebc8051b4f67b205c6932a309a5b1e57efe8e9239767d818448ac32316',
+    hitech: '009d6c31cc7b17eed665695c3ebbae7696f223c9c1a7c4503edf5119d13be704',
   };
   const digest = (options: Parameters<typeof renderLoop>[1]) =>
     createHash('sha256').update(renderLoop(mixed, options).wav).digest('hex');

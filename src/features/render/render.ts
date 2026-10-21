@@ -437,7 +437,7 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   const signal = options.signal;
   const roleInstruments = options.style === undefined ? undefined : STYLES[options.style].instruments;
   throwIfAborted(signal);
-  const song = renderScore(score, RATE, signal, roleInstruments);
+  const song = renderScore(score, RATE, signal, roleInstruments, options.samples);
   throwIfAborted(signal);
   if (song.sendBus) addSendReverb(song, score.mode === 'song' ? 1 : RENDER_LOOPS);
   const sourceLeft = loops > 1 ? repeat(song.left, loops) : song.left;

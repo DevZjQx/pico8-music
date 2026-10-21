@@ -525,7 +525,7 @@ M5 把 P0-1 的鼓效果尾巴和 P0-2 的 `fill`/`energy` 作为一个包做，
 
 编曲和混音早就不是芯片限制，限制只剩「一个音怎么发声」。M6 把发声器从 8 个公式里拆出来：
 
-- `instruments`：命名/内联 voice，`chip`（原 8 波形，逐样本兼容）、`additive`（带限谐波表）、`fm`（两算子）。共用 `unison`/`detune`/`drive` 和逐音滤波包络。
+- `instruments`：命名/内联 voice，`chip`（原 8 波形，逐样本兼容）、`additive`（带限谐波，M9 起支持逐 partial 合成）、`fm`（两算子）。共用 `unison`/`detune`/`drive` 和逐音滤波包络。
 - 鼓：`~pitch` / `~decay` / `~tone` 与 `~ghost`/`~flam`/`~roll` 正交叠加，不再抢同一个后缀槽。
 - style：新增 `studio` 与 `lofi`，按 role（bass/lead/pad/keys/default）填非芯片音色；显式 `track.instrument` 优先。
 - 验证：显式 chip instrument 与旧 `waveform` 逐字节一致；additive/FM 与 chip 的渲染 hash 不同；`~pitch(12)` 抬高 kick 质心、`~decay(4)` 降低尾音 RMS；`studio`/`lofi` 不改变 loop 长度。
@@ -544,6 +544,20 @@ M8 处理的是「四条轨排满之后」的问题：纵向不够宽、节奏�
 - `tail`：顶层 0-15 秒，仅 song 模式。`renderScore` 在音乐内容后多分配 N 秒，send/post 混响和鼓 one-shot 可以继续响；最后 20 ms 线性淡出。section 能量统计会扣掉 tail，避免最后一段 RMS 被稀释。
 - 验证：12 轨可解析、33 轨报预算错误；riser 末段高频带能量显著高于起始段；tail 使输出长度增加且在音乐结束后仍有衰减中的音频；humanize 同 seed 逐样本一致、换 seed 改变、深度 0 与省略逐样本一致、velocity 让重复 hit 的 RMS 离散。
 - 仍不做：独立 `impact`/`sub_drop` FX、概率/ratchet、tuplet、`key`/`scale` 与 voice leading。
+
+### 7.8 M9：additive 的非谐、倾斜与逐谐波衰减
+
+M7 让模型用振幅 + 相位设计周期波形，但 additive 仍然只有「一个周期、所有谐波同生共死」这一种形态。M9 补上三个纯数值参数，不引入表达式语言：
+
+- `stretch` 0-1：第 n 个谐波跑在 `n·f0·√(1+stretch·(n²−1))`，基频不动、高次谐波变尖，0.2-0.5 就能做出钟/金属感。
+- `tilt` 0-4：第 n 个谐波乘上 `n^-tilt`，不写 `partials` 时把默认的 1/n 列压暗。
+- 逐谐波衰减：`[振幅, 相位度数, 秒数]`，`exp(-t/秒数)` 时间常数；高次先死，适合拨弦、电钢、钟。
+
+实现上，没有 `stretch` 且没有衰减时仍走 M7 的带限波表，逐样本不变；否则每个 unison voice 持有逐 partial 的相位和增益，增益用每采样一次乘法递推，仍按音符带限、仍用基频周期表测峰值并把初始电平锚在 0.25。代价是每 partial 每采样一次 `sin`，所以定位是 lead/pad/bell，而不是密集和弦。
+
+验证：`stretch` 把能量从 `2·f0` 移到 `2·f0·√(1+3·stretch)`，基频幅度保持；`tilt` 降低第 4 谐波与基频的幅度比；逐谐波衰减让高次谐波在音尾消失而基频仍在；显式写 `stretch: 0` / 衰减 0 与省略字段逐字节相同；旧静态 additive 的 InstrumentVoice 输出与改动前逐样本一致。示例：`examples/m9-additive-textures.json`。
+
+仍不做：公式/表达式音源、任意 FM 算子矩阵、波表文件、per-note pan。
 
 ## 8. 一句话总结
 

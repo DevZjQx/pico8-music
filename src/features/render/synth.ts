@@ -12,6 +12,7 @@ import { applyAutomatedLowpass, filterTrack } from './filters.ts';
 import { addSectionRisers } from './fx.ts';
 import { InstrumentVoice } from './instrument.ts';
 import { applyDelay, applyDuck, panGains } from './mix.ts';
+import { SampleVoice, renderSampleOneShot, type SampleSource } from './sample.ts';
 import { createWaveState, sampleWaveform } from './waveform.ts';
 
 export interface SongAudio {
@@ -204,11 +205,22 @@ function renderMelodicNote(
   rate: number,
   loopSamples: number,
   wrap: boolean,
+  sampleBank: ReadonlyMap<string, SampleSource> | undefined,
   signal?: AbortSignal,
 ): void {
   const { track, event } = note;
   const wave = createWaveState(note.seed);
-  const voice = note.instrument === undefined ? undefined : new InstrumentVoice(note.instrument, event.midi, rate, note.seed);
+  const sampleName = note.instrument?.type === 'sample' ? note.instrument.sample : undefined;
+  const sampleSource = sampleName === undefined ? undefined : sampleBank?.get(sampleName);
+  if (sampleName !== undefined && sampleSource === undefined) {
+    throw new Error(`sample ${JSON.stringify(sampleName)} is missing from the render bank`);
+  }
+  const sampleVoice =
+    sampleSource === undefined ? undefined : new SampleVoice(sampleSource, rate);
+  const voice =
+    note.instrument === undefined || note.instrument.type === 'sample'
+      ? undefined
+      : new InstrumentVoice(note.instrument, event.midi, rate, note.seed);
   let phase = 0;
   const noteDuration = note.gateSamples / rate;
   const envelope = event.envelope ?? track.envelope;
@@ -268,6 +280,11 @@ function renderMelodicNote(
     const gain = (event.volume / 7) * level * (event.gain ?? 1) * note.humanizeGain;
     if (gain <= 0) continue;
 
+    if (sampleVoice !== undefined) {
+      samples[index] = (samples[index] ?? 0) + sampleVoice.sample(frequency) * gain;
+      continue;
+    }
+
     if (voice !== undefined) {
       samples[index] = (samples[index] ?? 0) + voice.sample(frequency, noteSeconds, noteDuration) * gain;
       continue;
@@ -290,6 +307,8 @@ interface DrumHit {
   readonly decayScale?: number;
   readonly toneHz?: number;
   readonly pitchSemitones?: number;
+  /** Present when `drumSamples` maps this voice to a persisted WAV. */
+  readonly sample?: SampleSource;
 }
 
 function buildDrumHits(
@@ -297,12 +316,18 @@ function buildDrumHits(
   rate: number,
   track: ScoreTrack,
   trackIndex: number,
+  sampleBank: ReadonlyMap<string, SampleSource> | undefined,
   signal?: AbortSignal,
 ): readonly DrumHit[] {
   const hits: DrumHit[] = [];
   buildTimeline(score, track, signal).forEach((event, eventIndex) => {
     const drum = event.drum;
     if (!drum) return;
+    const mappedSample = score.drumSamples.get(drum);
+    const sample = mappedSample === undefined ? undefined : sampleBank?.get(mappedSample);
+    if (mappedSample !== undefined && sample === undefined) {
+      throw new Error(`sample ${JSON.stringify(mappedSample)} for drum ${drum} is missing from the render bank`);
+    }
     const startSeconds = event.step * score.stepSeconds + swingSeconds(score, event.step);
     const slotSeconds = Math.max(0, event.steps * score.stepSeconds);
     const effect = event.drumEffect;
@@ -337,6 +362,7 @@ function buildDrumHits(
         ...(decayScale === undefined ? {} : { decayScale }),
         ...(toneHz === undefined ? {} : { toneHz }),
         ...(pitchSemitones === undefined ? {} : { pitchSemitones }),
+        ...(sample === undefined ? {} : { sample }),
       });
     };
 
@@ -378,11 +404,20 @@ function addDrumHits(
       : Math.max(0, hit.offset);
     if (!wrap && start >= samples.length) continue;
 
-    const audio = renderDrumHit(hit.drum, rate, hit.velocity, hit.seed, {
-      ...(hit.decayScale === undefined ? {} : { decayScale: hit.decayScale }),
-      ...(hit.toneHz === undefined ? {} : { toneHz: hit.toneHz }),
-      ...(hit.pitchSemitones === undefined ? {} : { pitchSemitones: hit.pitchSemitones }),
-    });
+    const audio =
+      hit.sample === undefined
+        ? renderDrumHit(hit.drum, rate, hit.velocity, hit.seed, {
+            ...(hit.decayScale === undefined ? {} : { decayScale: hit.decayScale }),
+            ...(hit.toneHz === undefined ? {} : { toneHz: hit.toneHz }),
+            ...(hit.pitchSemitones === undefined ? {} : { pitchSemitones: hit.pitchSemitones }),
+          })
+        : renderSampleOneShot(
+            hit.sample,
+            rate,
+            hit.velocity,
+            hit.pitchSemitones ?? 0,
+            hit.toneHz,
+          );
     for (let i = 0; i < audio.length; i += 1) {
       let index = start + i;
       if (index >= loopSamples) {
@@ -432,11 +467,16 @@ function applySectionFilter(samples: Float32Array, score: Score, rate: number): 
   applyAutomatedLowpass(samples, cutoffAt, rate);
 }
 
-function collectKickOffsets(score: Score, rate: number, signal?: AbortSignal): readonly number[] {
+function collectKickOffsets(
+  score: Score,
+  rate: number,
+  sampleBank: ReadonlyMap<string, SampleSource> | undefined,
+  signal?: AbortSignal,
+): readonly number[] {
   const offsets: number[] = [];
   score.tracks.forEach((track, index) => {
     if (!track.isDrums) return;
-    for (const hit of buildDrumHits(score, rate, track, index, signal)) {
+    for (const hit of buildDrumHits(score, rate, track, index, sampleBank, signal)) {
       if (hit.drum === 'kick') offsets.push(hit.offset);
     }
   });
@@ -467,6 +507,7 @@ export function renderScore(
   rate: number,
   signal?: AbortSignal,
   roleInstruments?: RoleInstruments,
+  sampleBank?: ReadonlyMap<string, SampleSource>,
 ): SongAudio {
   const musicSamples = Math.max(1, Math.round(score.durationSeconds * rate));
   const tailSamples = score.mode === 'song' ? Math.max(0, Math.round(score.tailSeconds * rate)) : 0;
@@ -476,7 +517,7 @@ export function renderScore(
   const right = new Float32Array(loopSamples);
   const hasSend = score.tracks.some((track) => track.send > 0);
   const sendBus = hasSend ? new Float32Array(loopSamples) : undefined;
-  const kicks = collectKickOffsets(score, rate, signal);
+  const kicks = collectKickOffsets(score, rate, sampleBank, signal);
 
   score.tracks.forEach((track, trackIndex) => {
     throwIfAborted(signal);
@@ -485,7 +526,7 @@ export function renderScore(
     if (track.isDrums) {
       addDrumHits(
         buffer,
-        buildDrumHits(score, rate, track, trackIndex, signal),
+        buildDrumHits(score, rate, track, trackIndex, sampleBank, signal),
         rate,
         loopSamples,
         wrap,
@@ -494,7 +535,7 @@ export function renderScore(
     } else {
       const instrument = instrumentFor(track, roleInstruments);
       for (const note of buildMelodicNotes(score, rate, track, trackIndex, instrument, signal)) {
-        renderMelodicNote(buffer, note, score, rate, loopSamples, wrap, signal);
+        renderMelodicNote(buffer, note, score, rate, loopSamples, wrap, sampleBank, signal);
       }
     }
 

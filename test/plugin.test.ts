@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools';
 import { apply, name } from '../src/app/dsh-plugin.ts';
 import { executeRender } from '../src/app/render-service.ts';
-import { renderLoop } from '../src/features/render/feature.ts';
+import { encodeWav, renderLoop } from '../src/features/render/feature.ts';
 import { parseScore } from '../src/features/score/feature.ts';
 
 const score = JSON.stringify({
@@ -286,4 +286,57 @@ test('rejects non-wav output, path escapes, and renders before validating out', 
     () => executeRender({ score, out: '/tmp/escape.wav' }),
     /must stay inside the workspace/,
   );
+});
+
+
+test('loads a persisted sample asset from the workspace and renders it', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-samples-'));
+  try {
+    const tone = new Float32Array(2205);
+    for (let i = 0; i < tone.length; i += 1) {
+      tone[i] = Math.sin((2 * Math.PI * 440 * i) / 44100) * 0.5;
+    }
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(directory, 'tone.wav'), encodeWav(tone, tone, 44100));
+
+    const sampled = JSON.stringify({
+      samples: { tone: 'tone.wav' },
+      tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:4' }],
+    });
+    const summary = await executeRender(
+      { score: sampled, post: [], minutes: 0.05, out: 'sampled' },
+      { cwd: directory },
+    );
+    assert.match(summary, /samples 1 · tone/);
+    assert.match(summary, /Rendered/);
+    const written = await readFile(join(directory, 'sampled.wav'));
+    assert.equal(written.subarray(0, 4).toString('ascii'), 'RIFF');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('sample paths stay inside the workspace and missing files fail clearly', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-samples-'));
+  try {
+    const escaping = JSON.stringify({
+      samples: { tone: '../outside.wav' },
+      tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:4' }],
+    });
+    await assert.rejects(
+      () => executeRender({ score: escaping, post: [], out: 'out' }, { cwd: directory }),
+      /must stay inside the workspace/,
+    );
+
+    const missing = JSON.stringify({
+      samples: { tone: 'missing.wav' },
+      tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:4' }],
+    });
+    await assert.rejects(
+      () => executeRender({ score: missing, post: [], out: 'out' }, { cwd: directory }),
+      /sample "tone" \(missing\.wav\): cannot stat/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
