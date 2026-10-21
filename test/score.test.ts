@@ -159,6 +159,58 @@ test('rejects pitched notes and unknown tokens on drum tracks', () => {
   );
 });
 
+test('parses drum articulations and carries them through motifs', () => {
+  const parsed = parseScore({
+    motifs: { fill: 'S:1~flam(20)' },
+    tracks: [{ role: 'drums', pattern: 'K:1~ghost S:1~flam(20) H:1~roll4 T:1~roll(3) @fill' }],
+  });
+  assert.deepEqual(
+    parsed.tracks[0]?.events.map((event) => [event.drum, event.drumEffect]),
+    [
+      ['kick', { kind: 'ghost' }],
+      ['snare', { kind: 'flam', offsetMs: 20 }],
+      ['hat', { kind: 'roll', hits: 4 }],
+      ['tom', { kind: 'roll', hits: 3 }],
+      ['snare', { kind: 'flam', offsetMs: 20 }],
+    ],
+  );
+});
+
+test('rejects drum articulations in the wrong place', () => {
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:1~ghost' }] }),
+    /only for drum tracks/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'K:1~slide' }] }),
+    /use ~ghost, ~flam, or ~roll/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: '-:1~ghost' }] }),
+    /rest cannot carry a drum effect/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'K:1~ghost~flam' }] }),
+    /at most one drum effect/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'K:1~roll(1)' }] }),
+    /roll hits must be an integer between 2 and 8/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'K:1~flam(100)' }] }),
+    /flam offset must be between 5 and 40 ms/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        envelopes: { ghost: { attack: 0.001 } },
+        tracks: [{ pattern: 'C4:1' }],
+      }),
+    /collides with the ghost effect/,
+  );
+});
+
 const songScore = {
   mode: 'song',
   bpm: 120,
@@ -698,6 +750,44 @@ test('parses the score seed and mix-stage track fields', () => {
   assert.equal(defaults.tracks[0]?.delay, undefined);
 });
 
+test('rejects unknown fields instead of silently dropping them', () => {
+  // The old bug: mix-stage fields nested under "mix" parsed as centred and
+  // dry, so pan/send/duck looked like no-ops in the renderer.
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', mix: { pan: -1 } }] }),
+    (error: unknown) =>
+      error instanceof ScoreError &&
+      /tracks\[0\]: unknown field "mix"/.test(error.message) &&
+      /flat: pan, send, duck, filter, delay/.test(error.message),
+  );
+  assert.throws(
+    () => parseScore({ tempo: 120, tracks: [{ pattern: 'C4:4' }] }),
+    /score: unknown field "tempo"/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        tracks: [{ pattern: 'C4:4', delay: { steps: 2, wet: 0.5 } }],
+      }),
+    /tracks\[0\]\.delay: unknown field "wet"/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        tracks: [{ name: 'lead', pattern: 'C4:4' }],
+        arrangement: [{ bars: 1, mute: [], sideways: true }],
+      }),
+    /arrangement\[0\]: unknown field "sideways"/,
+  );
+  // Known fields and aliases still parse.
+  const parsed = parseScore({
+    tracks: [{ pattern: 'C4:4', pan: -1, filter: { cutoff: 800, q: 2 } }],
+  });
+  assert.equal(parsed.tracks[0]?.pan, -1);
+  assert.equal(parsed.tracks[0]?.filter?.cutoffHz, 800);
+});
+
 test('parses a section filter sweep', () => {
   const parsed = parseScore({
     mode: 'song',
@@ -711,6 +801,73 @@ test('parses a section filter sweep', () => {
   assert.equal(parsed.sections[0]?.filterEndHz, 8000);
   assert.equal(parsed.sections[1]?.filterHz, 1200);
   assert.equal(parsed.sections[1]?.filterEndHz, undefined);
+});
+
+test('parses section energy and replaces the last bar with a fill pattern', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    bpm: 120,
+    stepsPerBeat: 4,
+    patterns: {
+      main: 'K:1 -:1 H:1 -:1',
+      fill: 'S:1 S:1 S:1 S:1',
+    },
+    tracks: [
+      { name: 'drums', role: 'drums', pattern: 'main' },
+      { name: 'bass', role: 'bass', pattern: 'C2:4' },
+    ],
+    arrangement: [
+      { name: 'quiet', bars: 2, energy: 0.25, filter: 800 },
+      { name: 'drop', bars: 2, energy: 1, fill: { bars: 1, patterns: { drums: 'fill' } } },
+    ],
+  });
+
+  assert.deepEqual(
+    parsed.sections.map((section) => [section.name, section.energy, section.filterHz]),
+    [
+      ['quiet', 0.25, 800],
+      ['drop', 1, undefined],
+    ],
+  );
+  assert.equal(parsed.tracks[1]?.timeline?.[0]?.gain, 0.625);
+
+  const drums = parsed.tracks[0]?.timeline ?? [];
+  assert.ok(
+    drums.some((event) => event.step >= 32 && event.step < 48 && event.drum === 'kick'),
+    'normal pattern should still play before the fill window',
+  );
+  const fillBar = drums.filter((event) => event.step >= 48);
+  assert.equal(fillBar.length, 16);
+  assert.ok(fillBar.every((event) => event.drum === 'snare'));
+});
+
+test('validates section fills', () => {
+  const base = {
+    mode: 'song',
+    tracks: [{ name: 'drums', role: 'drums', pattern: 'K:4' }],
+  };
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, fill: { bars: 2, patterns: { drums: 'S:4' } } }] }),
+    /do not fit/,
+  );
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, fill: { bars: 1, patterns: { nope: 'S:4' } } }] }),
+    /unknown track or role "nope"/,
+  );
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, fill: { patterns: {} } }] }),
+    /must name at least one track or role/,
+  );
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, energy: 2 }] }),
+    /\.energy must be between 0 and 1/,
+  );
+
+  const misaligned = parseScore({
+    ...base,
+    arrangement: [{ bars: 1, fill: { bars: 1, patterns: { drums: 'S:3' } } }],
+  });
+  assert.match(misaligned.warnings.join(' | '), /fill-misaligned/);
 });
 
 test('rejects out-of-range mix fields', () => {

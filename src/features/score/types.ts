@@ -51,6 +51,16 @@ export interface EffectParams {
   readonly slideSteps?: number;
 }
 
+/**
+ * Drum-only articulations. `ghost` is a quiet, shorter, darker hit; `flam`
+ * doubles a hit a few milliseconds later; `roll` subdivides the slot into
+ * evenly spaced hits with a deterministic velocity decay.
+ */
+export type DrumEffect =
+  | { readonly kind: 'ghost' }
+  | { readonly kind: 'flam'; readonly offsetMs: number }
+  | { readonly kind: 'roll'; readonly hits: number };
+
 /** Per-track low-pass with optional resonance and a cutoff LFO. */
 export interface TrackFilter {
   /** Base cutoff in Hz. */
@@ -92,6 +102,8 @@ export interface NoteEvent {
   readonly envelope?: Envelope;
   /** Present only on drum tracks. */
   readonly drum?: DrumName;
+  /** Present only when a drum token carries `~ghost`, `~flam`, or `~roll`. */
+  readonly drumEffect?: DrumEffect;
   /** Section gain multiplier; defaults to 1 when absent. */
   readonly gain?: number;
 }
@@ -142,6 +154,8 @@ export interface ScoreSection {
   readonly filterHz?: number;
   /** Sweep target in Hz; when present the cutoff glides from `filterHz` to this. */
   readonly filterEndHz?: number;
+  /** 0..1 macro that scales the section gain and filter cutoff; 1 is neutral. */
+  readonly energy?: number;
 }
 
 export interface Score {

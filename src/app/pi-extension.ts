@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { SCORE_BRIEF, SCORE_HELP } from '../features/score/feature.ts';
 import { executeAnalyze, executeRender, type RenderArgs } from './render-service.ts';
 import { analyzeParameters, helpParameters, musicParameters } from './tool-schemas.ts';
@@ -13,6 +13,9 @@ interface PiToolResult {
   readonly content: [{ readonly type: 'text'; readonly text: string }];
   readonly details: { readonly text: string };
 }
+
+/** The execute context is optional for direct/headless calls; only cwd is used. */
+type PiToolContext = Pick<ExtensionToolContext, 'cwd'>;
 
 // Compile-time check against the installed Pi SDK: the structural adapter must
 // accept the real ExtensionAPI. The import is type-only, so it adds no runtime
@@ -56,9 +59,11 @@ export default function pico8Music(pi: PiApi): void {
       _toolCallId: string,
       args: RenderArgs,
       signal?: AbortSignal,
+      _onUpdate?: unknown,
+      ctx?: PiToolContext,
     ): Promise<PiToolResult> {
       try {
-        const text = await executeRender(args, { signal });
+        const text = await executeRender(args, { signal, cwd: ctx?.cwd });
         return { content: [{ type: 'text', text }], details: { text } };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -73,8 +78,14 @@ export default function pico8Music(pi: PiApi): void {
     description:
       'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, and warnings.',
     parameters: analyzeParameters,
-    execute(_toolCallId: string, args: { path: string }, signal?: AbortSignal): Promise<PiToolResult> {
-      return executeAnalyze(args, { signal }).then((text) => ({
+    execute(
+      _toolCallId: string,
+      args: { path: string },
+      signal?: AbortSignal,
+      _onUpdate?: unknown,
+      ctx?: PiToolContext,
+    ): Promise<PiToolResult> {
+      return executeAnalyze(args, { signal, cwd: ctx?.cwd }).then((text) => ({
         content: [{ type: 'text' as const, text }],
         details: { text },
       }));

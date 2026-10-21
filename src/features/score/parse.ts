@@ -10,6 +10,7 @@ import {
   parseWaveform,
 } from './notes.ts';
 import type {
+  DrumEffect,
   DrumName,
   Effect,
   EffectParams,
@@ -61,6 +62,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * A plain field-by-field parser silently drops anything it does not read, so a
+ * typo or a nested `"mix": {"pan": -1}` used to render as a centred, dry track.
+ * Reject unknown keys instead: the caller gets a fixable error rather than an
+ * unchanged mix that looks like an engine bug.
+ */
+function rejectUnknownKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+): void {
+  const known = new Set(allowed);
+  const unknown = Object.keys(value)
+    .filter((key) => !known.has(key))
+    .sort();
+  if (unknown.length === 0) return;
+  const fields = unknown.map((key) => JSON.stringify(key)).join(', ');
+  const mixHint = unknown.includes('mix')
+    ? '; mix-stage fields are flat: pan, send, duck, filter, delay (never nested under "mix")'
+    : '';
+  const subject = path === '' ? 'score' : path;
+  throw new ScoreError(
+    `${subject}: unknown field${unknown.length > 1 ? 's' : ''} ${fields}${mixHint}`,
+  );
+}
+
 function readNumber(
   value: unknown,
   path: string,
@@ -100,6 +127,7 @@ function parseEnvelope(value: unknown, path: string): Envelope {
   if (!isRecord(value)) {
     throw new ScoreError(`${path} must be an object with attack, decay, sustain, and release`);
   }
+  rejectUnknownKeys(value, ['attack', 'decay', 'sustain', 'release'], path);
   return {
     attack: readNumber(value.attack, `${path}.attack`, DEFAULT_ENVELOPE.attack, 0, 5),
     decay: readNumber(value.decay, `${path}.decay`, DEFAULT_ENVELOPE.decay, 0, 5),
@@ -131,11 +159,13 @@ interface PatternToken {
   readonly volume?: number;
   readonly effect: Effect;
   readonly effectParams?: EffectParams;
+  readonly drumEffect?: DrumEffect;
   readonly envelopeName?: string;
 }
 
 type EffectSuffix =
   | { readonly kind: 'effect'; readonly effect: Effect; readonly params?: EffectParams }
+  | { readonly kind: 'drum'; readonly drum: DrumEffect }
   | { readonly kind: 'envelope'; readonly name: string };
 
 const SUFFIX_RE = /^([A-Za-z_][A-Za-z0-9_-]*)(?:\(([^)]*)\))?$/;
@@ -192,6 +222,54 @@ function parseEffectParams(
   throw new ScoreError(`${where}: ${EFFECT_NAMES[effect]} takes no parameters`);
 }
 
+const DRUM_EFFECT_RE = /^(ghost|flam|roll)(\d*)$/;
+
+/** True for names that belong to the drum vocabulary, including `roll4`. */
+function isDrumEffectName(name: string): boolean {
+  return DRUM_EFFECT_RE.test(name.trim().toLowerCase().replace(/[_-]/g, ''));
+}
+
+function parseDrumEffectSuffix(
+  rawName: string,
+  argsText: string | undefined,
+  where: string,
+): DrumEffect | undefined {
+  const name = rawName.trim().toLowerCase().replace(/[_-]/g, '');
+  const match = DRUM_EFFECT_RE.exec(name);
+  if (!match) return undefined;
+
+  const kind = match[1];
+  const trailing = match[2] ?? '';
+
+  if (kind === 'ghost') {
+    if (argsText !== undefined || trailing !== '') {
+      throw new ScoreError(`${where}: ghost takes no parameters`);
+    }
+    return { kind: 'ghost' };
+  }
+
+  if (kind === 'flam') {
+    if (trailing !== '') {
+      throw new ScoreError(`${where}: flam takes an offset in milliseconds, e.g. ~flam(18)`);
+    }
+    const offsetMs = argsText === undefined ? 16 : parseNumberArguments(argsText, where, 1)[0] ?? 16;
+    if (offsetMs < 5 || offsetMs > 40) {
+      throw new ScoreError(`${where}: flam offset must be between 5 and 40 ms, got ${offsetMs}`);
+    }
+    return { kind: 'flam', offsetMs };
+  }
+
+  if (argsText !== undefined && trailing !== '') {
+    throw new ScoreError(`${where}: roll takes one hit count, not both "roll${trailing}" and "roll(...)"`);
+  }
+  const rawHits = argsText ?? trailing;
+  const hits = rawHits === '' ? 4 : parseNumberArguments(rawHits, where, 1)[0] ?? 4;
+  if (!Number.isInteger(hits) || hits < 2 || hits > 8) {
+    throw new ScoreError(`${where}: roll hits must be an integer between 2 and 8, got ${hits}`);
+  }
+  return { kind: 'roll', hits };
+}
+
 function parseEffectSuffix(text: string, where: string): EffectSuffix {
   const raw = text.trim();
   if (raw === '') {
@@ -207,6 +285,8 @@ function parseEffectSuffix(text: string, where: string): EffectSuffix {
   const argsText = match[2];
   const effect = parseEffect(name);
   if (effect === undefined) {
+    const drum = parseDrumEffectSuffix(name, argsText, where);
+    if (drum !== undefined) return { kind: 'drum', drum };
     if (argsText !== undefined) {
       throw new ScoreError(`${where}: envelope ${JSON.stringify(name)} takes no parameters`);
     }
@@ -236,6 +316,7 @@ function parsePatternToken(token: string, where: string): PatternToken {
   const suffixParts = `${body}${trailingSuffix}`.split('~');
   let effect: Effect = 0;
   let effectParams: EffectParams | undefined;
+  let drumEffect: DrumEffect | undefined;
   let envelopeName: string | undefined;
   let sawEffect = false;
   for (const part of suffixParts.slice(1)) {
@@ -247,6 +328,13 @@ function parsePatternToken(token: string, where: string): PatternToken {
       effect = suffix.effect;
       effectParams = suffix.params;
       sawEffect = true;
+      continue;
+    }
+    if (suffix.kind === 'drum') {
+      if (drumEffect !== undefined) {
+        throw new ScoreError(`${where}: use at most one drum effect (~ghost, ~flam, or ~roll)`);
+      }
+      drumEffect = suffix.drum;
       continue;
     }
     if (envelopeName !== undefined) {
@@ -293,6 +381,7 @@ function parsePatternToken(token: string, where: string): PatternToken {
     ...(volumeText === undefined ? {} : { volume: parseNoteVolume(volumeText.trim(), where) }),
     effect,
     ...(effectParams === undefined ? {} : { effectParams }),
+    ...(drumEffect === undefined ? {} : { drumEffect }),
     ...(envelopeName === undefined ? {} : { envelopeName }),
   };
 }
@@ -307,13 +396,21 @@ function formatEffectParams(effect: Effect, params: EffectParams): string {
   return '';
 }
 
+function formatDrumEffect(effect: DrumEffect | undefined): string {
+  if (effect === undefined) return '';
+  if (effect.kind === 'ghost') return '~ghost';
+  if (effect.kind === 'flam') return `~flam(${String(effect.offsetMs)})`;
+  return `~roll(${String(effect.hits)})`;
+}
+
 function formatPatternToken(token: PatternToken): string {
   const gate = token.gateSteps === undefined ? '' : `g${token.gateSteps}`;
   const volume = token.volume === undefined ? '' : `@${token.volume}`;
   const params = token.effectParams === undefined ? '' : formatEffectParams(token.effect, token.effectParams);
   const effect = token.effect === 0 ? '' : `~${EFFECT_NAMES[token.effect]}${params}`;
+  const drumEffect = formatDrumEffect(token.drumEffect);
   const envelope = token.envelopeName === undefined ? '' : `~${token.envelopeName}`;
-  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${envelope}`;
+  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${envelope}`;
 }
 
 type MotifTransformName = 'transpose' | 'invert' | 'retrograde' | 'augment' | 'diminish';
@@ -625,6 +722,9 @@ function parsePattern(
       if (parsed.volume !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry "@volume"`);
       }
+      if (parsed.drumEffect !== undefined) {
+        throw new ScoreError(`${where}: a rest cannot carry a drum effect`);
+      }
       cursor += steps;
       return;
     }
@@ -640,9 +740,18 @@ function parsePattern(
         );
       }
     }
+    if (isDrums && parsed.effect !== 0) {
+      throw new ScoreError(
+        `${where}: drum tokens use ~ghost, ~flam, or ~roll, not ~${EFFECT_NAMES[parsed.effect]}`,
+      );
+    }
+    if (!isDrums && parsed.drumEffect !== undefined) {
+      throw new ScoreError(`${where}: ~ghost, ~flam, and ~roll are only for drum tracks`);
+    }
     const effectFields = {
       effect: parsed.effect,
       ...(parsed.effectParams === undefined ? {} : { effectParams: parsed.effectParams }),
+      ...(parsed.drumEffect === undefined ? {} : { drumEffect: parsed.drumEffect }),
       ...(envelope === undefined ? {} : { envelope }),
     };
 
@@ -753,6 +862,7 @@ function parseTrackFilter(value: unknown, path: string): TrackFilter | undefined
   if (!isRecord(value)) {
     throw new ScoreError(`${path} must be a cutoff number or an object with cutoffHz, resonance, lfoHz, lfoDepth`);
   }
+  rejectUnknownKeys(value, ['cutoffHz', 'cutoff', 'resonance', 'q', 'lfoHz', 'lfoDepth'], path);
   return {
     cutoffHz: readRequiredNumber(value.cutoffHz ?? value.cutoff, `${path}.cutoffHz`, 100, 20000),
     resonance: readNumber(value.resonance ?? value.q, `${path}.resonance`, 0.707, 0.5, 20),
@@ -766,6 +876,7 @@ function parseTrackDelay(value: unknown, path: string): TrackDelay | undefined {
   if (!isRecord(value)) {
     throw new ScoreError(`${path} must be an object with steps, feedback, and mix`);
   }
+  rejectUnknownKeys(value, ['steps', 'feedback', 'mix'], path);
   return {
     steps: readRequiredNumber(value.steps, `${path}.steps`, 1, 64, true),
     feedback: readNumber(value.feedback, `${path}.feedback`, 0.35, 0, 0.95),
@@ -785,8 +896,31 @@ function parseTrack(
     throw new ScoreError(`${path} must be an object with role, waveform, volume, and pattern`);
   }
 
+  rejectUnknownKeys(
+    value,
+    [
+      'name',
+      'role',
+      'instrument',
+      'waveform',
+      'volume',
+      'envelope',
+      'pan',
+      'send',
+      'duck',
+      'filter',
+      'delay',
+      'motifs',
+      'patterns',
+      'pattern',
+    ],
+    path,
+  );
   const role = readString(value.role, `${path}.role`, 'melodic');
   const instrument = value.instrument;
+  if (isRecord(instrument)) {
+    rejectUnknownKeys(instrument, ['type', 'waveform'], `${path}.instrument`);
+  }
   const instrumentType =
     typeof instrument === 'string'
       ? instrument
@@ -931,12 +1065,75 @@ function parseSectionFilter(value: unknown, path: string): SectionFilter | undef
   if (!isRecord(value)) {
     throw new ScoreError(`${path} must be a cutoff number or {"from": 800, "to": 12000}`);
   }
+  rejectUnknownKeys(value, ['from', 'fromHz', 'to', 'toHz'], path);
   const from = value.from ?? value.fromHz;
   const to = value.to ?? value.toHz;
   return {
     fromHz: readRequiredNumber(from, `${path}.from`, 100, 20000),
     ...(to === undefined ? {} : { toHz: readRequiredNumber(to, `${path}.to`, 100, 20000) }),
   };
+}
+
+interface SectionFill {
+  readonly bars: number;
+  readonly patterns: Readonly<Record<string, string>>;
+}
+
+function parseSectionFill(value: unknown, path: string): SectionFill | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with bars and patterns`);
+  }
+  rejectUnknownKeys(value, ['bars', 'patterns'], path);
+  const bars = readNumber(value.bars, `${path}.bars`, 1, 1, 2, true);
+  const patterns = parseStringRecord(value.patterns, `${path}.patterns`);
+  if (Object.keys(patterns).length === 0) {
+    throw new ScoreError(`${path}.patterns must name at least one track or role`);
+  }
+  return { bars, patterns };
+}
+
+/** Resolves a section/fill pattern reference the same way a track default does. */
+function resolvePatternForTrack(
+  reference: string,
+  where: string,
+  track: ScoreTrack,
+  cache: Map<string, TrackPattern>,
+  globalPatterns: ReadonlyMap<string, string>,
+  motifs: ReadonlyMap<string, string>,
+  envelopes: ReadonlyMap<string, Envelope>,
+): TrackPattern {
+  const local = track.patterns[reference];
+  if (local !== undefined) return local;
+
+  const cached = cache.get(reference);
+  if (cached !== undefined) return cached;
+
+  const source = globalPatterns.get(reference);
+  if (source !== undefined) {
+    const pattern = parsePattern(
+      source,
+      `patterns.${reference}`,
+      track.volume,
+      track.isDrums,
+      motifs,
+      envelopes,
+    );
+    cache.set(reference, pattern);
+    return pattern;
+  }
+
+  const looksInline = /[:\s~@\[\]/]/.test(reference);
+  try {
+    const pattern = parsePattern(reference, `${where} (inline)`, track.volume, track.isDrums, motifs, envelopes);
+    cache.set(reference, pattern);
+    return pattern;
+  } catch (error) {
+    if (looksInline) throw error;
+    throw new ScoreError(
+      `${where}: unknown pattern ${JSON.stringify(reference)} for track ${track.name}; define it in tracks[].patterns or top-level patterns`,
+    );
+  }
 }
 
 function parseArrangement(
@@ -966,8 +1163,15 @@ function parseArrangement(
   value.forEach((raw, index) => {
     const path = `arrangement[${index}]`;
     if (!isRecord(raw)) {
-      throw new ScoreError(`${path} must be an object with bars, patterns, mute, gain, or filter`);
+      throw new ScoreError(
+        `${path} must be an object with bars, patterns, mute, gain, filter, energy, or fill`,
+      );
     }
+    rejectUnknownKeys(
+      raw,
+      ['name', 'bars', 'mute', 'gain', 'gains', 'filter', 'patterns', 'fill', 'energy'],
+      path,
+    );
 
     const name = readString(raw.name, `${path}.name`, `section${index}`);
     const bars = readRequiredNumber(raw.bars, `${path}.bars`, 1, 64, true);
@@ -978,7 +1182,26 @@ function parseArrangement(
     const gain = readNumber(raw.gain, `${path}.gain`, 1, 0, 4);
     const gains = parseNumberRecord(raw.gains, `${path}.gains`, 0, 4);
     const filter = parseSectionFilter(raw.filter, `${path}.filter`);
+    const energy = readNumber(raw.energy, `${path}.energy`, 1, 0, 1);
     const patternOverrides = parseStringRecord(raw.patterns, `${path}.patterns`);
+    const fill = parseSectionFill(raw.fill, `${path}.fill`);
+    const fillSteps = fill === undefined ? 0 : fill.bars * 4 * stepsPerBeat;
+    if (fill !== undefined && fillSteps > sectionSteps) {
+      throw new ScoreError(
+        `${path}.fill: ${fill.bars} fill bar(s) do not fit in a ${bars}-bar section`,
+      );
+    }
+    if (fill !== undefined) {
+      for (const target of Object.keys(fill.patterns)) {
+        if (!tracks.some((track) => track.name === target || track.role === target)) {
+          throw new ScoreError(`${path}.fill.patterns: unknown track or role ${JSON.stringify(target)}`);
+        }
+      }
+    }
+    const fillStartStep = sectionSteps - fillSteps;
+    // energy is a macro: at 0 the section is 6 dB quieter and its filter is
+    // about 1.5 octaves lower; at 1 it changes nothing.
+    const energyGain = 0.5 + 0.5 * energy;
 
     tracks.forEach((track, trackIndex) => {
       const muted = mute.some((entry) => entry === track.name || entry === track.role);
@@ -988,72 +1211,76 @@ function parseArrangement(
       const cache = patternCaches[trackIndex];
       if (!cache) throw new Error(`missing pattern cache for track ${trackIndex}`);
 
-      let pattern: TrackPattern;
-      if (reference === undefined) {
-        pattern = { patternSteps: track.patternSteps, events: track.events };
-      } else {
-        const local = track.patterns[reference];
-        if (local) {
-          pattern = local;
-        } else {
-          const cached = cache.get(reference);
-          if (cached) {
-            pattern = cached;
-          } else {
-            const source = globalPatterns.get(reference);
-            if (source !== undefined) {
-              pattern = parsePattern(
-                source,
-                `patterns.${reference}`,
-                track.volume,
-                track.isDrums,
-                motifMaps[trackIndex],
-                envelopes,
-              );
-              cache.set(reference, pattern);
-            } else {
-              const looksInline = /[:\s~@\[\]/]/.test(reference);
-              try {
-                pattern = parsePattern(
-                  reference,
-                  `${path}.patterns (inline)`,
-                  track.volume,
-                  track.isDrums,
-                  motifMaps[trackIndex],
-                  envelopes,
-                );
-                cache.set(reference, pattern);
-              } catch (error) {
-                if (looksInline) throw error;
-                throw new ScoreError(
-                  `${path}.patterns: unknown pattern ${JSON.stringify(reference)} for track ${track.name}; define it in tracks[].patterns or top-level patterns`,
-                );
-              }
-            }
-          }
-        }
-      }
+      const pattern =
+        reference === undefined
+          ? { patternSteps: track.patternSteps, events: track.events }
+          : resolvePatternForTrack(
+              reference,
+              `${path}.patterns`,
+              track,
+              cache,
+              globalPatterns,
+              motifMaps[trackIndex] ?? new Map(),
+              envelopes,
+            );
+
+      const fillReference = fill?.patterns[track.name] ?? fill?.patterns[track.role];
+      const fillPattern =
+        fillReference === undefined
+          ? undefined
+          : resolvePatternForTrack(
+              fillReference,
+              `${path}.fill.patterns`,
+              track,
+              cache,
+              globalPatterns,
+              motifMaps[trackIndex] ?? new Map(),
+              envelopes,
+            );
 
       if (sectionSteps % pattern.patternSteps !== 0) {
         warnings.push(
           `pattern-misaligned: ${path} (${name}) uses a ${pattern.patternSteps}-step pattern for track ${track.name}, but the section is ${sectionSteps} steps; its last repetition is truncated and the next section restarts at step 0`,
         );
       }
-      const trackGain = gain * (gains[track.name] ?? gains[track.role] ?? 1);
+      if (fillPattern !== undefined && fillSteps % fillPattern.patternSteps !== 0) {
+        warnings.push(
+          `fill-misaligned: ${path} (${name}) fill uses a ${fillPattern.patternSteps}-step pattern for track ${track.name}, but the fill is ${fillSteps} steps; its last repetition is truncated`,
+        );
+      }
+
+      const trackGain = gain * (gains[track.name] ?? gains[track.role] ?? 1) * energyGain;
+      const pushEvent = (event: NoteEvent, localStep: number): void => {
+        const slot = Math.min(event.steps, sectionSteps - localStep);
+        const gateSteps = Math.min(event.gateSteps ?? event.steps, sectionSteps - localStep);
+        if (slot <= 0 || gateSteps <= 0) return;
+        timelines[trackIndex]?.push({
+          ...event,
+          step: cursor + localStep,
+          steps: slot,
+          gateSteps,
+          gain: (event.gain ?? 1) * trackGain,
+        });
+      };
+
       for (let repeat = 0; repeat * pattern.patternSteps < sectionSteps; repeat += 1) {
         for (const event of pattern.events) {
           const localStep = event.step + repeat * pattern.patternSteps;
           if (localStep >= sectionSteps) continue;
-          const slot = Math.min(event.steps, sectionSteps - localStep);
-          const gateSteps = Math.min(event.gateSteps ?? event.steps, sectionSteps - localStep);
-          if (slot <= 0 || gateSteps <= 0) continue;
-          timelines[trackIndex]?.push({
-            ...event,
-            step: cursor + localStep,
-            steps: slot,
-            gateSteps,
-            gain: (event.gain ?? 1) * trackGain,
-          });
+          // The fill owns its window; the normal pattern hands over completely
+          // so the two do not double-hit the same step.
+          if (fillPattern !== undefined && localStep >= fillStartStep) continue;
+          pushEvent(event, localStep);
+        }
+      }
+
+      if (fillPattern !== undefined) {
+        for (let repeat = 0; repeat * fillPattern.patternSteps < fillSteps; repeat += 1) {
+          for (const event of fillPattern.events) {
+            const localStep = fillStartStep + event.step + repeat * fillPattern.patternSteps;
+            if (localStep >= sectionSteps) continue;
+            pushEvent(event, localStep);
+          }
         }
       }
     });
@@ -1062,6 +1289,7 @@ function parseArrangement(
       name,
       startStep: cursor,
       steps: sectionSteps,
+      energy,
       ...(filter === undefined ? {} : { filterHz: filter.fromHz }),
       ...(filter?.toHz === undefined ? {} : { filterEndHz: filter.toHz }),
     });
@@ -1093,7 +1321,7 @@ function parseEnvelopes(value: unknown): ReadonlyMap<string, Envelope> {
     if (!ENVELOPE_NAME_RE.test(name)) {
       throw new ScoreError(`envelopes.${name}: names use letters, digits, "_" or "-"`);
     }
-    if (parseEffect(name) !== undefined) {
+    if (parseEffect(name) !== undefined || isDrumEffectName(name)) {
       throw new ScoreError(
         `envelopes.${name}: name collides with the ${name} effect; choose another envelope name`,
       );
@@ -1127,6 +1355,23 @@ export function parseScore(input: string | unknown): Score {
   if (!isRecord(raw)) {
     throw new ScoreError('score must be a JSON object');
   }
+  rejectUnknownKeys(
+    raw,
+    [
+      'bpm',
+      'stepsPerBeat',
+      'swing',
+      'seed',
+      'envelopes',
+      'mode',
+      'arrangement',
+      'tracks',
+      'motifs',
+      'patterns',
+      'bars',
+    ],
+    '',
+  );
 
   const bpm = readNumber(raw.bpm, 'bpm', DEFAULTS.bpm, 30, 300);
   const stepsPerBeat = readNumber(raw.stepsPerBeat, 'stepsPerBeat', DEFAULTS.stepsPerBeat, 1, 8, true);

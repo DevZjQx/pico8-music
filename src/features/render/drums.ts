@@ -30,11 +30,26 @@ function highpassCoefficient(cutoffHz: number, rate: number): number {
   return Math.exp((-2 * Math.PI * cutoffHz) / rate);
 }
 
-export function renderDrumHit(name: DrumName, rate: number, velocity: number, seed: number): Float32Array {
+/** Per-hit timbre overrides used by `~ghost`; absent values keep the voice unchanged. */
+export interface DrumHitOptions {
+  /** Multiplies every amplitude decay rate; 1 is the normal voice. */
+  readonly decayScale?: number;
+  /** Post-voice one-pole low-pass cutoff in Hz. */
+  readonly toneHz?: number;
+}
+
+export function renderDrumHit(
+  name: DrumName,
+  rate: number,
+  velocity: number,
+  seed: number,
+  options: DrumHitOptions = {},
+): Float32Array {
   const length = Math.max(1, Math.round(DURATION[name] * rate));
   const output = new Float32Array(length);
   const noise = noiseSource(seed);
   const level = Math.max(0, velocity);
+  const decay = options.decayScale ?? 1;
 
   let phase = 0;
   let highpassIn = 0;
@@ -67,31 +82,32 @@ export function renderDrumHit(name: DrumName, rate: number, velocity: number, se
       case 'kick': {
         const frequency = 45 + 105 * Math.exp(-t * 22);
         phase += (2 * Math.PI * frequency) / rate;
-        const body = Math.sin(phase) * Math.exp(-t * 7.5);
-        const click = Math.sin(2 * Math.PI * 180 * t) * Math.exp(-t * 120) * 0.16;
+        const body = Math.sin(phase) * Math.exp(-t * 7.5 * decay);
+        const click = Math.sin(2 * Math.PI * 180 * t) * Math.exp(-t * 120 * decay) * 0.16;
         sample = body * 0.95 + click;
         break;
       }
       case 'snare': {
-        const body = Math.sin(2 * Math.PI * 185 * t) * Math.exp(-t * 18) * 0.38;
-        const overtone = Math.sin(2 * Math.PI * 330 * t) * Math.exp(-t * 28) * 0.14;
-        const rattle = lowpass2(highpass(noise(), snareHighpass), 900) * Math.exp(-t * 13) * 0.55;
+        const body = Math.sin(2 * Math.PI * 185 * t) * Math.exp(-t * 18 * decay) * 0.38;
+        const overtone = Math.sin(2 * Math.PI * 330 * t) * Math.exp(-t * 28 * decay) * 0.14;
+        const rattle =
+          lowpass2(highpass(noise(), snareHighpass), 900) * Math.exp(-t * 13 * decay) * 0.55;
         sample = body + overtone + rattle;
         break;
       }
       case 'hat': {
-        sample = highpass(noise(), hatHighpass) * Math.exp(-t * 90) * 0.5;
+        sample = highpass(noise(), hatHighpass) * Math.exp(-t * 90 * decay) * 0.5;
         break;
       }
       case 'openhat': {
-        sample = highpass(noise(), hatHighpass) * Math.exp(-t * 14) * 0.42;
+        sample = highpass(noise(), hatHighpass) * Math.exp(-t * 14 * decay) * 0.42;
         break;
       }
       case 'clap': {
         const offsets = [0, 0.009, 0.018] as const;
         let bursts = 0;
         for (const offset of offsets) {
-          if (t >= offset) bursts += Math.exp(-(t - offset) * 120);
+          if (t >= offset) bursts += Math.exp(-(t - offset) * 120 * decay);
         }
         sample = lowpass2(highpass(noise(), clapHighpass), 600) * bursts * 4;
         break;
@@ -99,24 +115,33 @@ export function renderDrumHit(name: DrumName, rate: number, velocity: number, se
       case 'tom': {
         const frequency = 170 - 75 * Math.min(1, t / 0.16);
         phase += (2 * Math.PI * frequency) / rate;
-        sample = Math.sin(phase) * Math.exp(-t * 11) * 0.6;
+        sample = Math.sin(phase) * Math.exp(-t * 11 * decay) * 0.6;
         break;
       }
       case 'rim': {
-        const body = Math.sin(2 * Math.PI * 1750 * t) * Math.exp(-t * 90) * 0.34;
-        const click = Math.exp(-t * 200) * 0.2;
+        const body = Math.sin(2 * Math.PI * 1750 * t) * Math.exp(-t * 90 * decay) * 0.34;
+        const click = Math.exp(-t * 200 * decay) * 0.2;
         sample = body + click;
         break;
       }
       case 'crash': {
-        const noisePart = highpass(noise(), crashHighpass) * Math.exp(-t * 3.2) * 0.34;
-        const shimmer = Math.sin(2 * Math.PI * 6100 * t) * Math.exp(-t * 5) * 0.05;
+        const noisePart = highpass(noise(), crashHighpass) * Math.exp(-t * 3.2 * decay) * 0.34;
+        const shimmer = Math.sin(2 * Math.PI * 6100 * t) * Math.exp(-t * 5 * decay) * 0.05;
         sample = noisePart + shimmer;
         break;
       }
     }
 
     output[i] = sample * level;
+  }
+
+  if (options.toneHz !== undefined) {
+    const coefficient = 1 - Math.exp((-2 * Math.PI * options.toneHz) / rate);
+    let state = 0;
+    for (let i = 0; i < length; i += 1) {
+      state += coefficient * ((output[i] ?? 0) - state);
+      output[i] = state;
+    }
   }
 
   // A one-shot that ends at a non-zero sample would click and spray broadband

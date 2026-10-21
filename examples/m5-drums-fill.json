@@ -1,0 +1,45 @@
+{
+  "mode": "song",
+  "bpm": 165,
+  "stepsPerBeat": 4,
+  "seed": 1234,
+  "patterns": {
+    "drums.main": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1",
+    "drums.build": "K:1 -:1 H:1 H:1 S:1 -:1 H:1 H:1",
+    "drums.fill": "S:1 S:1 S:1 S:1 T:1~ghost T:1~ghost T:1 T:1 K:2~roll4 S:1~flam -:1 X:1 -:1 -:1 -:1",
+    "bass.main": "F1:1 F1:1 C2:1 F1:1 D#2:1 F1:1 C2:1 A#1:1"
+  },
+  "tracks": [
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "drums.main"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "volume": 5,
+      "pattern": "bass.main",
+      "filter": { "cutoffHz": 900, "resonance": 2.5 },
+      "duck": 0.25
+    }
+  ],
+  "arrangement": [
+    { "name": "intro", "bars": 4, "energy": 0.3, "filter": 900, "mute": ["drums"] },
+    {
+      "name": "build",
+      "bars": 4,
+      "energy": 0.65,
+      "filter": { "from": 700, "to": 9000 },
+      "patterns": { "drums": "drums.build" }
+    },
+    {
+      "name": "drop",
+      "bars": 4,
+      "energy": 1,
+      "fill": { "bars": 1, "patterns": { "drums": "drums.fill" } }
+    },
+    { "name": "break", "bars": 2, "energy": 0.2, "filter": 600, "mute": ["drums"] }
+  ]
+}

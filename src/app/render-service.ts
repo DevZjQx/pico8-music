@@ -35,6 +35,20 @@ export interface AnalyzeArgs {
 
 export interface ToolExecution {
   readonly signal?: AbortSignal;
+  /** Workspace root supplied by the host; Pi exposes it as `ctx.cwd`. */
+  readonly cwd?: string;
+  /** DSH hands the calling agent to tool bodies; its session header owns the workspace root. */
+  readonly agent?: {
+    readonly session?: {
+      readonly header?: { readonly cwd?: string };
+    };
+  };
+}
+
+/** Resolve paths against the session workspace, never the host process cwd. */
+function workspaceDirectory(exec: ToolExecution): string {
+  const cwd = exec.cwd ?? exec.agent?.session?.header?.cwd;
+  return typeof cwd === 'string' && cwd.trim() !== '' ? cwd : process.cwd();
 }
 
 /**
@@ -139,7 +153,7 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
   const score = parseScore(args.score);
   const preset = presetOf(args.preset);
   const style = styleOf(args.style);
-  const outputPath = workspacePath(args.out ?? 'pico8-music.wav', 'out', process.cwd());
+  const outputPath = workspacePath(args.out ?? 'pico8-music.wav', 'out', workspaceDirectory(exec));
   const output = renderLoop(score, {
     preset,
     style,
@@ -174,7 +188,7 @@ export async function executeAnalyze(args: AnalyzeArgs, exec: ToolExecution = {}
     throw new Error('path must point at a 16-bit PCM WAV file');
   }
 
-  const inputPath = workspacePath(args.path, 'path', process.cwd());
+  const inputPath = workspacePath(args.path, 'path', workspaceDirectory(exec));
   const bytes = await readFile(inputPath);
   const decoded = decodeWav(bytes);
   const analysis = analyseAudio(decoded.left, decoded.right, decoded.rate);

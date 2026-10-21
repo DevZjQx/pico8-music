@@ -1,6 +1,6 @@
 import type { ToolDefinition as DshToolDefinition } from '@deepseek-ai/dsh-tools';
 import { SCORE_HELP } from '../features/score/feature.ts';
-import { analyzeParameters, helpParameters, musicParameters } from './tool-schemas.ts';
+import { analyzeParameters, dshParameters, helpParameters, musicParameters } from './tool-schemas.ts';
 import {
   executeAnalyze,
   executeRender,
@@ -52,7 +52,12 @@ type ToolDefinitionInput = Omit<DshToolDefinition, 'parameters'> & { readonly pa
 
 function registerTools(tools: ToolRuntime): void {
   const register = (definition: ToolDefinitionInput): void => {
-    tools.register(definition as DshToolDefinition);
+    tools.register({
+      ...definition,
+      // TypeBox metadata is non-enumerable and its `anyOf` is outside DSH's schema
+      // subset; project once here so both PTC and native schema reads are lossless.
+      parameters: dshParameters(definition.parameters),
+    } as DshToolDefinition);
   };
   register({
     name: 'p8_help',

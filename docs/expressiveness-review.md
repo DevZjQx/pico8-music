@@ -100,8 +100,8 @@ renderScore
 
 | 缺口 | 优先级 | 现状 |
 | --- | --- | --- |
-| [鼓与打击乐](#p0-1-鼓与打击乐) | P0 | 基础鼓已实现（M1），鼓效果未做 |
-| [段落与编曲](#p0-2-段落与编曲) | P0 | 基础段落已实现（M1），fill/riser/tail/energy 未做 |
+| [鼓与打击乐](#p0-1-鼓与打击乐) | P0 | 基础鼓与 `~ghost`/`~flam`/`~roll` 已实现；per-hit pitch/decay 未做 |
+| [段落与编曲](#p0-2-段落与编曲) | P0 | 基础段落、`fill`、`energy` 已实现；`riser`/`tail` 未做 |
 | [复音与和声](#p0-3-复音与和声) | P0 | 显式与命名和弦已实现，`voices`、`key`/`scale`、voice leading 未做 |
 | [发音法、门限、动态](#p0-4-发音法门限动态) | P0 | slot/gate、命名包络、参数化 slide/vib 已实现；参数化 arp、力度映射未做 |
 | [旋律、动机与乐句](#p0-5-旋律动机与乐句) | P0 | motif 引用与变换已实现，乐句级与和声进行未做 |
@@ -135,7 +135,7 @@ renderScore
 
 **验收：** kick 的 body 基频 < 200 Hz，snare 的谱质心高于 kick，hat 高于 snare；pattern 的 hit 数与 onset 数一致；roll/flam 不产生 click。
 
-**现状：基础鼓已实现（M1）。** 8 个合成鼓 voice、`K/S/H/O/C/T/R/X` token、`@力度`、one-shot 尾音重叠已落地；`~roll4` / `~flam` / `~ghost` 等鼓效果尚未实现。
+**现状：基础鼓与鼓效果已实现。** 8 个合成鼓 voice、`K/S/H/O/C/T/R/X` token、`@力度`、one-shot 尾音重叠已落地；M5 追加了 `~ghost`（降力度、缩短衰减、加低通）、`~flam[(ms)]`（5-40 ms 的第二下）和 `~roll[(hits)]` / `~roll4`（2-8 次均分 slot、力度递减）。鼓效果会过 motif 的 retrograde/augment/diminish，并在 loop 接缝内 wrap；独立 per-hit `~pitch` / `~decay` 仍不做，因为 `H`/`O` 已覆盖开闭镲差异，收益低于新增参数面。示例：`examples/m5-drums-fill.json`。
 
 #### P0-2 段落与编曲
 
@@ -151,7 +151,7 @@ renderScore
 
 **验收：** 段落边界采样级精确；mute/unmute 正确；总小节数正确；loop 模式与旧 score 完全兼容。
 
-**现状：基础段落已实现（M1）。** section 支持 `bars`、`patterns`、`mute`、`gain`/`gains`、`filter`；`fill`/`riser`/`tail` 和 `energy` 宏尚未实现。
+**现状：段落、`fill` 与 `energy` 已实现。** section 支持 `bars`、`patterns`、`mute`、`gain`/`gains`、`filter`、`energy`（0-1，缩放段增益与滤波截止）和 `fill`（用指定 pattern 替换最后 1-2 小节的普通 pattern，可按 track name/role 指定）。`riser`/`tail` 仍不做：riser 继续用 section `filter` 的 `{from,to}` 指数扫频表达，song 结尾的混响 tail 尚未实现。
 
 #### P0-3 复音与和声
 
@@ -317,7 +317,7 @@ renderScore
 
 保持向后兼容：旧 score 不写新字段时，行为不变。新字段全部可选。
 
-> 本节是提案，不是当前的 wire format：示例里的 `key`、`voices`、`glide`、`energy`、`fill`、`riser`、`tail`，以及 `post` 的 `{ "type": "limiter" }`、`timeStretch`、`varispeed` 目前都还不被 `parse.ts` 接受。已实现的字段以 [`../README.md`](../README.md) 的字段表与 `p8_help` 为准。
+> 本节是提案，不是当前的 wire format：示例里的 `key`、`voices`、`glide`、`riser`、`tail`、`timeStretch`、`varispeed` 目前仍不被 `parse.ts` 接受；`energy`、`fill` 和 `post` 的 `{ "type": "limiter" }` 已实现，但 `fill` 的实际写法是 `{"bars":1,"patterns":{...}}`，不是单个数字。已实现的字段以 [`../README.md`](../README.md) 的字段表与 `p8_help` 为准。
 
 ### 5.1 Loop 模式的扩展
 
@@ -460,7 +460,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 - 示例：`examples/m1-16bar.json`，4 段 × 4 小节，intro/break 静音鼓和 bass 并加低通，build/drop 全编制。
 - 验证：当前测试全过，覆盖 drum token、arrangement 解析、mute/gain/filter、song 时长、干声和旧 loop 行为。
 - 手动 stem 检查（4096 点 DFT，约 93 ms 窗）：kick 的 body 扫频 45–150 Hz，snare 谱质心约 1.5 kHz，hat 约 13 kHz；16 小节 demo 的四段 RMS 为 intro 0.057 / build 0.155 / drop 0.227 / break 0.047，段落对比明确。
-- M1 暂未做：section 级 `fill`/`riser`、per-track filter、song 结尾的混响 tail；这些留到 M3/M4。
+- M1 当时未做、后续已补：section 级 `fill` 与 `energy`（M5）、per-track filter（M3）。仍未做：独立 `riser` 事件、song 结尾的混响 tail。
 
 ### 7.2 M2：能写出「有和声、有发音法」的 loop
 
@@ -511,6 +511,15 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 - style：`chip`（干声）、`hitech`（饱和 + glue + -14 LUFS + limiter）、`ambient`（slow + lowpass + reverb + limiter）；`style` 只填 post 默认值，不改 `mode`，与显式 `preset` 互斥。
 - 验收：`target -14 LUFS + limiter -1` 的报告落在 -14 ±1、峰值 ≤ -0.9 dBFS；热目标 `-6 LUFS + limiter -3` 下解码后的每个样本都不超过 -3 dBFS；压缩把两段 gain 1 / 0.15 的能量差从 16.5 dB 压到 2.2 dB；低通 300 Hz 的单音触发 `dark`/`narrow`/`sparse`；鼓循环不误报 `dark`/`narrow`；两段等能量的 song 触发 `flat-sections`。
 - 兼容：固定 score 与 post 选项的 dry/classic/hitech 输出由 golden hash 测试保护；没有 M3 时代的历史 fixture，不声称与旧版本逐字节一致。
+
+### 7.5 M5：鼓发音法与段落 fill/energy
+
+M5 把 P0-1 的鼓效果尾巴和 P0-2 的 `fill`/`energy` 作为一个包做，避免只加“碎音”而没有结构落点。
+
+- 鼓：`~ghost`（力度 ×0.45、衰减 ×0.6、4.5 kHz 低通）、`~flam[(ms)]`（5-40 ms，第二下 45%）、`~roll[(hits)]` / `~roll4`（2-8 次均分 slot，力度逐次递减）。每个 hit 仍然独立渲染，loop 内 wrap；未使用新后缀时输出与旧版逐字节一致。
+- 段落：section 新增 `energy`（0-1，增益 ×0.5-1.0、有 filter 时截止 ×0.35-1.0）和 `fill`（`{"bars":1-2,"patterns":{...}}`，替换最后 1-2 小节的普通 pattern）。
+- 示例：`examples/m5-drums-fill.json`，14 小节 intro/build/drop/break，drop 最后一小节用 fill；报告段落 RMS 从 intro -20.3 dBFS 到 drop -14.0 dBFS。
+- 验证：鼓效果的听觉/频谱测试（ghost 更轻更暗、flam 的第二下、roll 的 slot 均分与确定性）、fill 替换与警告、energy 的增益/滤波对比、旧 golden hash 不变。
 
 ## 8. 一句话总结
 

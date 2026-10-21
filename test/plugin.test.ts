@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools';
 import { apply, name } from '../src/app/dsh-plugin.ts';
 import { executeRender } from '../src/app/render-service.ts';
 import { renderLoop } from '../src/features/render/feature.ts';
@@ -76,6 +77,12 @@ test('registers p8_music and p8_help as DSH tools', () => {
   assert.deepEqual(help?.parameters?.properties, {});
   assert.equal(help?.output?.schema?.type, 'string');
   assert.match(help?.description ?? '', /\/p8m/);
+
+  // The PTC/native schema readers snapshot parameters as lossless JSON and reject
+  // TypeBox's non-enumerable tags and its `anyOf` spelling of literal unions.
+  for (const tool of captured.tools.values()) {
+    assertSupportedJsonSchema(tool.parameters);
+  }
 });
 
 test('the p8_music declaration stays small and points at p8_help', () => {
@@ -124,6 +131,30 @@ test('a bad score points the model at p8_help', async () => {
   await assert.rejects(async () => {
     await captured.tools.get('p8_music')?.execute?.({ score: '{}' });
   }, /p8_help/);
+});
+
+test('DSH resolves relative paths against the session workspace', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-cwd-'));
+  try {
+    const { ctx, captured } = host();
+    apply(ctx);
+    const exec = { agent: { session: { header: { cwd: directory } } } };
+    const summary = await captured.tools.get('p8_music')?.execute?.(
+      { score, minutes: 0.05, out: 'loop' },
+      exec,
+    );
+    assert.match(String(summary), /Rendered/);
+    assert.equal((await readFile(join(directory, 'loop.wav'))).subarray(0, 4).toString('ascii'), 'RIFF');
+
+    const analyzed = await captured.tools.get('p8_analyze')?.execute?.(
+      { path: 'loop.wav' },
+      exec,
+    );
+    assert.match(String(analyzed), /Analyzed/);
+    assert.ok(String(analyzed).includes(join(directory, 'loop.wav')));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('renders to the requested path and appends the wav extension', async () => {

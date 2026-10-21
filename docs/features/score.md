@@ -8,8 +8,10 @@ effect names, per-note volume (`@volume`), track and named ADSR envelopes,
 slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
 `Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`),
 score-level `swing` and `seed`, motif definitions and transforms
-(`@A.transpose(2).retrograde`), loop vs song mode, named patterns, arrangement
-resolution (sections, mute, gain, filter and filter sweeps), the mix-stage
+(`@A.transpose(2).retrograde`), drum articulations (`~ghost`, `~flam(ms)`,
+`~roll(hits)`), loop vs song mode, named patterns, arrangement
+resolution (sections, mute, gain, filter and filter sweeps, `energy`, and
+`fill` pattern replacement), the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `delay`), the
 model-facing DSL reference (`help.ts`), and the normalised `Score` the renderer
 consumes.
@@ -43,11 +45,14 @@ to the same MIDI notes as the explicit form, capped at four voices. A digit
 quality that is also an octave (`C7`, `C5`, `C6`, `C9`) is shadowed by the
 note parser, so the brace form (`{C7}`) forces the chord reading; `G7/B` is
 safe because the slash rules out a note. Envelope names may not collide with
-effect names, which is what keeps `~name` unambiguous. Motif pitch transforms
+effect or drum-articulation names, which is what keeps `~name` unambiguous. Motif pitch transforms
 (`transpose`/`invert`) reject chord tokens; time/order transforms still work.
 `key`/`scale`, voice leading, humanise, and tuplets remain deferred: tuplets
 would turn the integer step grid into a fractional one across parse,
-arrangement, and loop seams.
+arrangement, and loop seams. Drum articulations are parsed into a `DrumEffect`
+on the event instead of DSP parameters, so a motif transform can carry them
+without knowing how they sound; per-hit pitch/decay were rejected because
+`H`/`O` already separate closed and open hats.
 
 **Boundary evidence.** Deleting this folder breaks `render/feature.ts`,
 `app/render-service.ts`, and therefore both host adapters; the syntax rules

@@ -101,3 +101,55 @@ export const musicParameters = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** JSON-safe schema node after TypeBox metadata is removed. */
+type PlainSchema = Record<string, unknown>;
+
+/**
+ * DSH reads parameters through a lossless-JSON boundary. TypeBox keeps a
+ * non-enumerable `~kind` tag on every node, so the raw schema must be detached
+ * first. DSH also supports only its raw-schema subset: TypeBox's `anyOf` (the
+ * literal unions here never overlap) maps to `oneOf`, and range keywords such
+ * as `minimum` are dropped because the service validates them at execution.
+ */
+const DSH_SCHEMA_KEYS = new Set([
+  'type',
+  'required',
+  'additionalProperties',
+  'enum',
+  'const',
+  'description',
+  'title',
+  'default',
+  'examples',
+]);
+
+function toDshNode(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+
+  const node: PlainSchema = {};
+  for (const [key, child] of Object.entries(value)) {
+    if ((key === 'anyOf' || key === 'oneOf') && Array.isArray(child)) {
+      node.oneOf = child.map(toDshNode);
+    } else if (key === 'items') {
+      node.items = toDshNode(child);
+    } else if (key === 'properties' && child !== null && typeof child === 'object' && !Array.isArray(child)) {
+      node.properties = Object.fromEntries(
+        Object.entries(child).map(([name, schema]) => [name, toDshNode(schema)]),
+      );
+    } else if (DSH_SCHEMA_KEYS.has(key)) {
+      node[key] = child;
+    }
+  }
+  return node;
+}
+
+/** Project one TypeBox declaration onto the JSON Schema DSH accepts. */
+export function dshParameters(schema: unknown): PlainSchema {
+  const detached: unknown = JSON.parse(JSON.stringify(schema));
+  const projected = toDshNode(detached);
+  if (projected === null || typeof projected !== 'object' || Array.isArray(projected)) {
+    throw new Error('tool parameters must project to a JSON Schema object');
+  }
+  return projected as PlainSchema;
+}

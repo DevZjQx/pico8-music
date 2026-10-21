@@ -16,6 +16,11 @@ export interface SongAudio {
 const ARP_SEMITONES = [0, 4, 7, 12] as const;
 const OPEN_CUTOFF_HZ = 20000;
 const SEED_MULTIPLIER = 0x9e3779b1;
+const GHOST_VELOCITY = 0.45;
+const GHOST_DECAY_SCALE = 0.6;
+const GHOST_TONE_HZ = 4500;
+const FLAM_VELOCITY = 0.45;
+const ROLL_VELOCITY_STEP = 0.12;
 
 /**
  * Piecewise ADSR in note-local seconds. Release is measured backwards from the
@@ -208,6 +213,8 @@ interface DrumHit {
   readonly drum: DrumName;
   readonly velocity: number;
   readonly seed: number;
+  readonly decayScale?: number;
+  readonly toneHz?: number;
 }
 
 function buildDrumHits(
@@ -219,17 +226,47 @@ function buildDrumHits(
 ): readonly DrumHit[] {
   const hits: DrumHit[] = [];
   buildTimeline(score, track, signal).forEach((event, eventIndex) => {
-    if (!event.drum) return;
+    const drum = event.drum;
+    if (!drum) return;
     const startSeconds = event.step * score.stepSeconds + swingSeconds(score, event.step);
-    hits.push({
-      offset: Math.round(startSeconds * rate),
-      drum: event.drum,
-      velocity: (event.volume / 7) * (event.gain ?? 1),
-      seed: seedFor(
-        score,
-        (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + event.midi,
-      ),
-    });
+    const slotSeconds = Math.max(0, event.steps * score.stepSeconds);
+    const effect = event.drumEffect;
+    const seedBase = (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + event.midi;
+
+    let velocity = (event.volume / 7) * (event.gain ?? 1);
+    let decayScale: number | undefined;
+    let toneHz: number | undefined;
+    if (effect?.kind === 'ghost') {
+      velocity *= GHOST_VELOCITY;
+      decayScale = GHOST_DECAY_SCALE;
+      toneHz = GHOST_TONE_HZ;
+    }
+
+    const pushHit = (offsetSeconds: number, hitVelocity: number, hitIndex: number): void => {
+      hits.push({
+        offset: Math.round((startSeconds + offsetSeconds) * rate),
+        drum,
+        velocity: Math.max(0, hitVelocity),
+        seed: seedFor(score, seedBase + hitIndex * 17),
+        ...(decayScale === undefined ? {} : { decayScale }),
+        ...(toneHz === undefined ? {} : { toneHz }),
+      });
+    };
+
+    if (effect?.kind === 'flam') {
+      pushHit(0, velocity, 0);
+      pushHit(effect.offsetMs / 1000, velocity * FLAM_VELOCITY, 1);
+      return;
+    }
+    if (effect?.kind === 'roll') {
+      for (let i = 0; i < effect.hits; i += 1) {
+        const offsetSeconds = slotSeconds * (i / effect.hits);
+        const hitVelocity = velocity * Math.max(0.2, 1 - ROLL_VELOCITY_STEP * i);
+        pushHit(offsetSeconds, hitVelocity, i);
+      }
+      return;
+    }
+    pushHit(0, velocity, 0);
   });
   return hits;
 }
@@ -254,7 +291,10 @@ function addDrumHits(
       : Math.max(0, hit.offset);
     if (!wrap && start >= samples.length) continue;
 
-    const audio = renderDrumHit(hit.drum, rate, hit.velocity, hit.seed);
+    const audio = renderDrumHit(hit.drum, rate, hit.velocity, hit.seed, {
+      ...(hit.decayScale === undefined ? {} : { decayScale: hit.decayScale }),
+      ...(hit.toneHz === undefined ? {} : { toneHz: hit.toneHz }),
+    });
     for (let i = 0; i < audio.length; i += 1) {
       let index = start + i;
       if (index >= loopSamples) {
@@ -292,7 +332,8 @@ function applySectionFilter(samples: Float32Array, score: Score, rate: number): 
     const length = Math.max(1, section.steps * samplesPerStep);
     const progress = Math.min(1, Math.max(0, (local - start) / length));
     const end = section.filterEndHz ?? section.filterHz;
-    return section.filterHz * (end / section.filterHz) ** progress;
+    const energyFactor = 0.35 + 0.65 * (section.energy ?? 1);
+    return section.filterHz * energyFactor * (end / section.filterHz) ** progress;
   };
 
   applyAutomatedLowpass(samples, cutoffAt, rate);

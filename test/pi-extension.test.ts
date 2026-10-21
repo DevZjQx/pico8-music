@@ -12,7 +12,7 @@ interface CapturedTool {
   promptSnippet?: string;
   promptGuidelines?: string[];
   parameters?: { type?: string; required?: string[]; properties?: Record<string, unknown> };
-  execute?: (id: string, args: unknown, signal?: AbortSignal) => Promise<{
+  execute?: (id: string, args: unknown, signal?: AbortSignal, onUpdate?: unknown, ctx?: { cwd?: string }) => Promise<{
     content: Array<{ type: string; text: string }>;
   }>;
 }
@@ -108,6 +108,27 @@ test('the Pi tool executes the shared render service', async () => {
     const result = await tool?.execute?.('call-1', { score, minutes: 0.05, out });
     assert.match(result?.content[0]?.text ?? '', /Rendered/);
     assert.equal((await readFile(`${out}.wav`)).subarray(0, 4).toString('ascii'), 'RIFF');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the Pi tool resolves relative paths against ctx.cwd', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-pi-cwd-'));
+  try {
+    const tool = load().tools.get('p8_music');
+    const result = await tool?.execute?.(
+      'call-cwd',
+      { score, minutes: 0.05, out: 'pi-cwd' },
+      undefined,
+      undefined,
+      { cwd: directory },
+    );
+    assert.match(result?.content[0]?.text ?? '', /Rendered/);
+    assert.equal(
+      (await readFile(join(directory, 'pi-cwd.wav'))).subarray(0, 4).toString('ascii'),
+      'RIFF',
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

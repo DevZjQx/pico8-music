@@ -7,8 +7,9 @@ measures.
 **Owns.** PICO-8-flavoured synthesis (eight timbres, per-note volume, track or
 named ADSR envelopes, note effects and their parameters), polyphonic event
 scheduling (chords and legato gates overlap without voice stealing), swing
-offsets, synthetic drum voices, song timelines, per-track buffers and the mix
-stage (state-variable low-pass with LFO and resonance, step-timed feedback
+offsets, synthetic drum voices and their articulations (`ghost`, `flam`,
+`roll`), song timelines, section `energy` gain/filter scaling, per-track
+buffers and the mix stage (state-variable low-pass with LFO and resonance, step-timed feedback
 delay, kick-triggered ducking, equal-power pan, reverb send), section filtering
 and filter sweeps, resampling for the slowed pitch drop, tone shaping,
 Freeverb-style reverb, steady-state loop extraction, a shared peak ceiling
@@ -47,9 +48,13 @@ the spectral separation the arrangement needs.
 **Exceptions.** The reverb tunings are a port of the Freeverb comb/allpass
 table; there is no runtime dependency on Freeverb itself. Drum synthesis uses
 deterministic LCG noise, so renders stay reproducible; the score `seed` is
-folded into that seed and the noise waveform. Each track renders into its own
-buffer before filters, delay, ducking, pan, and send, so those parameters never
-leak across tracks. The synth renders one sample-exact loop; the post stage may
+folded into that seed and the noise waveform. A drum articulation only changes
+the per-hit plan (extra hits, velocity, decay, tone) and never adds a new
+render path; a `roll` subdivides the event's slot, and a `flam` offsets the
+second hit by milliseconds, so both wrap at the loop seam with the same
+sample-exact rule as a normal one-shot. Each track renders into its own buffer
+before filters, delay, ducking, pan, and send, so those parameters never leak
+across tracks. The synth renders one sample-exact loop; the post stage may
 repeat it for reverb steady state, the delay runs three passes in loop mode so
 its line is primed with the loop's tail, and the send bus takes the same
 three-pass steady state before it is added to the dry mix. Song mode still cuts

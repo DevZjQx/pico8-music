@@ -276,6 +276,86 @@ test('drum voices are spectrally distinct without a melodic waveform', () => {
   assert.ok(Math.sqrt(kick.reduce((sum, value) => sum + value * value, 0) / kick.length) > 0.02);
 });
 
+function dryDrumLoop(pattern: string) {
+  const drumScore = parseScore({
+    bpm: 120,
+    stepsPerBeat: 4,
+    bars: 1,
+    tracks: [{ role: 'drums', pattern }],
+  });
+  return renderLoop(drumScore, { post: [], withWav: false });
+}
+
+test('ghost hits are quieter, shorter, and darker than a normal hit', () => {
+  const normal = dryDrumLoop('H:16').left;
+  const ghost = dryDrumLoop('H:16~ghost').left;
+
+  const normalTail = rmsBetween(normal, 0, 0.05);
+  const ghostTail = rmsBetween(ghost, 0, 0.05);
+  assert.ok(ghostTail < normalTail * 0.7, `ghost ${ghostTail.toFixed(4)} vs normal ${normalTail.toFixed(4)}`);
+  assert.ok(
+    zeroCrossingRate(ghost, 0.2) < zeroCrossingRate(normal, 0.2),
+    'ghost should be darker than the normal hat',
+  );
+});
+
+test('flam adds a second, quieter hit a few milliseconds later', () => {
+  const normal = dryDrumLoop('H:16').left;
+  const flam = dryDrumLoop('H:16~flam(40)').left;
+
+  const normalTail = rmsBetween(normal, 0.025, 0.06);
+  const flamTail = rmsBetween(flam, 0.025, 0.06);
+  assert.ok(flamTail > normalTail * 3, `flam ${flamTail.toFixed(4)} vs normal ${normalTail.toFixed(4)}`);
+});
+
+test('roll subdivides one slot into evenly spaced hits and stays deterministic', () => {
+  const normal = dryDrumLoop('K:16').left;
+  const rolled = dryDrumLoop('K:16~roll4');
+  const again = dryDrumLoop('K:16~roll4');
+
+  for (const start of [0.5, 1, 1.5]) {
+    const hit = rmsBetween(rolled.left, start + 0.01, start + 0.06);
+    const rest = rmsBetween(normal, start + 0.01, start + 0.06);
+    assert.ok(hit > 0.01, `roll hit at ${start}s is audible`);
+    assert.ok(hit > rest * 10, `roll hit ${hit.toFixed(4)} vs normal ${rest.toFixed(4)}`);
+  }
+  assert.ok(Buffer.from(rolled.left.buffer).equals(Buffer.from(again.left.buffer)));
+});
+
+test('section energy lowers gain and filter cutoff, and fill raises the last bar', () => {
+  const makeEnergy = (energy: number) =>
+    parseScore({
+      mode: 'song',
+      bpm: 120,
+      stepsPerBeat: 4,
+      tracks: [{ name: 'lead', waveform: 'pulse', pattern: 'C4:1' }],
+      arrangement: [{ name: 'only', bars: 1, filter: 8000, energy }],
+    });
+  const quiet = renderLoop(makeEnergy(0), { post: [], withWav: false });
+  const loud = renderLoop(makeEnergy(1), { post: [], withWav: false });
+  assert.ok(quiet.report.centroidHz < loud.report.centroidHz * 0.7, 'energy 0 should be darker');
+  assert.ok(rmsBetween(quiet.left, 0, 1) < rmsBetween(loud.left, 0, 1) * 0.7, 'energy 0 should be quieter');
+
+  const filled = renderLoop(
+    parseScore({
+      mode: 'song',
+      bpm: 120,
+      stepsPerBeat: 4,
+      patterns: { main: 'K:4', fill: 'K:1 K:1 K:1 K:1' },
+      tracks: [{ name: 'drums', role: 'drums', pattern: 'main' }],
+      arrangement: [
+        { name: 'main', bars: 1 },
+        { name: 'drop', bars: 2, fill: { bars: 1, patterns: { drums: 'fill' } } },
+      ],
+    }),
+    { post: [], withWav: false },
+  );
+  // main is 0-2 s, drop's normal bar is 2-4 s, and the fill bar is 4-6 s.
+  const normalBar = rmsBetween(filled.left, 2, 4);
+  const fillBar = rmsBetween(filled.left, 4, 6);
+  assert.ok(fillBar > normalBar * 1.2, `fill ${fillBar.toFixed(4)} vs normal ${normalBar.toFixed(4)}`);
+});
+
 const songWithDrums = parseScore({
   mode: 'song',
   bpm: 120,
@@ -749,6 +829,26 @@ test('renders the M3 space and motion example', async () => {
   const output = renderLoop(example, { post: [] });
   assert.ok(peak(output.wav) > 1000, 'M3 example must be audible');
   assert.ok(output.durationSeconds > 15);
+});
+
+test('renders the M5 drum articulation and fill example', async () => {
+  const raw = await readFile(new URL('../examples/m5-drums-fill.json', import.meta.url), 'utf8');
+  const example = parseScore(raw);
+  assert.equal(example.mode, 'song');
+  assert.ok(example.sections.every((section) => section.energy !== undefined));
+  assert.ok(example.sections.some((section) => section.energy === 0.2));
+
+  const drums = example.tracks.find((track) => track.name === 'drums');
+  const effects = new Set(
+    drums?.timeline?.flatMap((event) => (event.drumEffect ? [event.drumEffect.kind] : [])) ?? [],
+  );
+  assert.deepEqual([...effects].sort(), ['flam', 'ghost', 'roll']);
+
+  const output = renderLoop(example, { post: [] });
+  assert.ok(output.durationSeconds > 19, `duration ${output.durationSeconds}`);
+  assert.ok(peak(output.wav) > 1000, 'M5 example must be audible');
+  const readings = output.report.sections.map((section) => section.rmsDb);
+  assert.ok(Math.max(...readings) - Math.min(...readings) > 2, 'energy macro should make sections contrast');
 });
 
 test('send and delay keep the loop seam seamless', () => {
