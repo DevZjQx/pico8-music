@@ -34,10 +34,10 @@ test/
 ## 安装
 
 ```bash
-npm install
-npm run build                 # 产物在 dist/，prepack 也会自动构建
+bun install
+bun run build                 # 产物在 dist/，prepack 也会自动构建
 dsh plugin --profile web add /path/to/pico8-music
-# 或 npm pack，再安装生成的 pico8-music-0.0.1.tgz
+# 或 bun pm pack，再安装生成的 pico8-music-0.0.1.tgz
 ```
 
 重启对应 profile，模型就会看到 `p8_music` 工具。插件 id 是 `pico8-music`；如果装过旧 id，先移除再重新 add。DSH 从 `package.json.dsh`（`manifestVersion: 1` 与 `bundle.patch`）读取 bundle，入口是 `dist/app/dsh-plugin.js`；Pi 入口是 `dist/app/pi-extension.js`。
@@ -348,13 +348,13 @@ report warnings: dark: 1% above 2 kHz; narrow: width 0.02; sparse: 0.9 onsets/s
 ## 开发
 
 ```bash
-node --version     # >= 22.18，直接运行 .ts
-npm test           # 运行全部测试
-npm run typecheck  # tsc --noEmit
-npm run check      # 边界检查 + 类型检查 + 测试
+bun --version      # >= 1.2，直接运行 .ts
+bun test           # 运行全部测试
+bun run typecheck  # tsc --noEmit
+bun run check      # 边界检查 + 类型检查 + 测试
 ```
 
-测试和 `npm run check` 通过 Node 原生类型擦除直接运行 `src/` 的 TS；分发给不运行 TS 的宿主时用 `npm run build` 生成 `dist/`。构建启用了 TypeScript 的 `rewriteRelativeImportExtensions`，所以源码里的 `.ts` 相对导入会变成 `.js`，不需要手改。`package.json` 仍是 `private: true`；要发布到 npm 必须先去掉 `private`。DSH 0.2 读取 `package.json.dsh`（`manifestVersion: 1` + `bundle.patch`），不再有单独的 `dsh-plugin.json`。
+工具链只有 bun 一条：`bun.lock` 是唯一的锁文件（不再有 `package-lock.json`），`bun install` 后 `src/` 的 TS 直接运行，不需要编译步骤。`bun run build` 才调 `tsc` 生成 `dist/`，用于不运行 TS 的宿主；构建启用了 TypeScript 的 `rewriteRelativeImportExtensions`，所以源码里的 `.ts` 相对导入会变成 `.js`，不需要手改。`package.json` 仍是 `private: true`；要发布到 npm 必须先去掉 `private`。DSH 0.2 读取 `package.json.dsh`（`manifestVersion: 1` + `bundle.patch`），不再有单独的 `dsh-plugin.json`。
 
 ## 已知限制
 

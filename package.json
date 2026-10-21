@@ -16,13 +16,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build",
-    "test": "node --test test/*.test.ts",
+    "prepack": "tsc -p tsconfig.build.json",
+    "test": "bun test test",
     "typecheck": "tsc --noEmit",
-    "check": "node scripts/check-boundaries.ts && tsc --noEmit && node --test test/*.test.ts"
+    "check": "bun scripts/check-boundaries.ts && tsc --noEmit && bun test test"
   },
+  "packageManager": "bun@1.4.2",
   "engines": {
-    "node": ">=22.18"
+    "bun": ">=1.2"
   },
   "license": "MIT",
   "dependencies": {
