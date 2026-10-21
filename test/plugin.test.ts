@@ -63,8 +63,9 @@ test('registers p8_music and p8_help as DSH tools', () => {
   assert.equal(name, 'pico8-music');
 
   const music = captured.tools.get('p8_music');
-  assert.deepEqual(music?.parameters?.required, ['score']);
+  assert.equal(music?.parameters?.required, undefined);
   assert.ok(music?.parameters?.properties?.score);
+  assert.ok(music?.parameters?.properties?.scoreFile);
   assert.ok(music?.parameters?.properties?.post);
   assert.ok(music?.parameters?.properties?.toneHz);
   assert.ok(music?.parameters?.properties?.style);
@@ -222,6 +223,26 @@ test('renders a dry song and reports the post chain', async () => {
   }
 });
 
+test('renders a scoreFile and reads it on every render', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-score-file-'));
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    const scorePath = join(directory, 'score.json');
+    await writeFile(scorePath, score, 'utf8');
+    const target = join(directory, 'from-file');
+    const summary = await executeRender({ scoreFile: scorePath, minutes: 0.05, out: target });
+    assert.match(summary, /Rendered/);
+    assert.equal((await readFile(`${target}.wav`)).subarray(0, 4).toString('ascii'), 'RIFF');
+
+    const changed = JSON.stringify({ ...JSON.parse(score), bpm: 140 });
+    await writeFile(scorePath, changed, 'utf8');
+    const second = await executeRender({ scoreFile: scorePath, minutes: 0.05, out: target });
+    assert.match(second, /140 bpm/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('rejects unknown presets and malformed scores', async () => {
   await assert.rejects(() => executeRender({ score, preset: 'lofi' }), /unknown preset "lofi"/);
   await assert.rejects(() => executeRender({ score: '{}' }), /tracks/);
@@ -231,6 +252,26 @@ test('rejects unknown presets and malformed scores', async () => {
   );
 });
 
+
+test('score and scoreFile are mutually exclusive and workspace-scoped', async () => {
+  await assert.rejects(
+    () => executeRender({ score, scoreFile: 'examples/m1-16bar.json' }),
+    /either score or scoreFile, not both/,
+  );
+  await assert.rejects(() => executeRender({}), /provide score JSON or a workspace-relative scoreFile/);
+  await assert.rejects(
+    () => executeRender({ scoreFile: '../score.json' }),
+    /must stay inside the workspace/,
+  );
+  await assert.rejects(
+    () => executeRender({ scoreFile: 'score.txt' }),
+    /scoreFile must end in .json/,
+  );
+  await assert.rejects(
+    () => executeRender({ scoreFile: 'missing-score.json' }),
+    /cannot read scoreFile/,
+  );
+});
 
 test('rejects non-wav output, path escapes, and renders before validating out', async () => {
   await assert.rejects(

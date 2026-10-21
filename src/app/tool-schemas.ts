@@ -51,10 +51,18 @@ const postStep = Type.Object(
 
 export const musicParameters = Type.Object(
   {
-    score: Type.String({
-      description:
-        'JSON score string (composition only; post, preset, style, speed, wet, toneHz, minutes and out are separate arguments); call p8_help for the DSL',
-    }),
+    score: Type.Optional(
+      Type.String({
+        description:
+          'inline JSON score string (composition only); provide this or scoreFile, not both; call p8_help for the DSL',
+      }),
+    ),
+    scoreFile: Type.Optional(
+      Type.String({
+        description:
+          'workspace-relative path to a JSON score file (.json is appended when omitted); provide this or score, not both',
+      }),
+    ),
     preset: Type.Optional(
       Type.Union([Type.Literal('classic'), Type.Literal('dreamy'), Type.Literal('tape')], {
         description: 'post preset (default classic); cannot be combined with style',

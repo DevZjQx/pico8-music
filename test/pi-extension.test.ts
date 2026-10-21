@@ -58,7 +58,9 @@ test('registers a TypeBox-validated p8_music tool', () => {
   const tool = tools.get('p8_music');
   assert.equal(tool?.label, 'PICO-8 music renderer');
   assert.equal(tool?.parameters?.type, 'object');
-  assert.deepEqual(tool?.parameters?.required, ['score']);
+  assert.equal(tool?.parameters?.required, undefined);
+  assert.ok(tool?.parameters?.properties?.score);
+  assert.ok(tool?.parameters?.properties?.scoreFile);
   assert.ok(tool?.parameters?.properties?.post);
   assert.ok(tool?.parameters?.properties?.toneHz);
   assert.ok(tool?.parameters?.properties?.style);
@@ -116,6 +118,29 @@ test('the Pi tool executes the shared render service', async () => {
     const result = await tool?.execute?.('call-1', { score, minutes: 0.05, out });
     assert.match(result?.content[0]?.text ?? '', /Rendered/);
     assert.equal((await readFile(`${out}.wav`)).subarray(0, 4).toString('ascii'), 'RIFF');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the Pi tool renders a scoreFile relative to ctx.cwd', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-pi-file-'));
+  try {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(directory, 'score.json'), score, 'utf8');
+    const tool = load().tools.get('p8_music');
+    const result = await tool?.execute?.(
+      'call-file',
+      { scoreFile: 'score', minutes: 0.05, out: 'pi-file' },
+      undefined,
+      undefined,
+      { cwd: directory },
+    );
+    assert.match(result?.content[0]?.text ?? '', /Rendered/);
+    assert.equal(
+      (await readFile(join(directory, 'pi-file.wav'))).subarray(0, 4).toString('ascii'),
+      'RIFF',
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

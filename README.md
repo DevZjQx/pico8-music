@@ -53,11 +53,11 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 
 `p8_analyze` 是配套的自检工具，两种宿主都有；它只读 WAV，不写文件。
 
-- `p8_music` 的描述只留一句话并指向 `p8_help`；`score` 解析失败时错误信息也会提示去调用 `p8_help`。
+- `p8_music` 的描述只留一句话并指向 `p8_help`；`score` / `scoreFile` 解析失败时错误信息也会提示去调用 `p8_help`。
 - DSH 的命令结果按宿主约定只走 UI、不进模型历史（`@deepseek-ai/dsh-commands`："命令结果永不成为模型消息"），所以 DSH 侧模型读帮助只能靠 `p8_help` 工具；Pi 侧 `/p8m` 会额外写进上下文，因为 Pi 的 custom message 会参与下一轮请求。
 - DSH 的 `commands` 是可选服务（headless 宿主没有命令面），插件用 `ctx.inject(['commands'], …)` 注册命令，不把它写进 `inject` 数组，否则没有命令面的宿主会连工具都不启动。
 
-代价对比：改之前常驻约 4.4 KB（当时约 2.4 KB 的说明 + 1.6 KB 参数 schema + snippet/guidelines）；现在三个工具的参数 schema 合计 Pi 3020 B、DSH 2485 B（JSON 字节，不含描述与会话格式开销），5506 B 的 `SCORE_HELP` 只在真正查看帮助时才进上下文。instrument 说明只进帮助文本，没有进工具描述。两个宿主的工具参数来自同一份 `src/app/tool-schemas.ts`，不再各写一遍。
+代价对比：改之前常驻约 4.4 KB（当时约 2.4 KB 的说明 + 1.6 KB 参数 schema + snippet/guidelines）；现在三个工具的参数 schema 合计 Pi 3119 B、DSH 2584 B（JSON 字节，不含描述与会话格式开销），6246 B 的 `SCORE_HELP` 只在真正查看帮助时才进上下文。instrument 说明只进帮助文本，没有进工具描述。两个宿主的工具参数来自同一份 `src/app/tool-schemas.ts`，不再各写一遍。
 
 ## 调用
 
@@ -69,7 +69,16 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 }
 ```
 
-`score` 是 JSON 字符串，不是嵌套对象：这样在 DSH 和 Pi 两种宿主的参数校验下行为一致。`post`、`preset`、`style`、`speed`、`wet`、`toneHz`、`minutes`、`out` 都是 `p8_music` 工具参数，和 `score` 平级；不要写进 score JSON，否则会报 `unknown field` 并提示它们属于工具参数。更多示例见 `examples/m1-16bar.json`、`examples/motifs.json`、`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`、`examples/m3-space-motion.json`、`examples/m5-drums-fill.json`、`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`。
+也可以把手写的 score 放进工作区里的 JSON 文件，用 `scoreFile` 引用：
+
+```json
+{
+  "scoreFile": "examples/m1-16bar.json",
+  "out": "m1.wav"
+}
+```
+
+`score` 是 JSON 字符串，不是嵌套对象：这样在 DSH 和 Pi 两种宿主的参数校验下行为一致。`scoreFile` 是相对工作区的路径，省略 `.json` 后缀时自动补上，每次渲染都会重新读取文件；`score` 和 `scoreFile` 只能给一个。`post`、`preset`、`style`、`speed`、`wet`、`toneHz`、`minutes`、`out` 都是 `p8_music` 工具参数，和 `score` / `scoreFile` 平级；不要写进 score JSON，否则会报 `unknown field` 并提示它们属于工具参数。更多示例见 `examples/m1-16bar.json`、`examples/motifs.json`、`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`、`examples/m3-space-motion.json`、`examples/m5-drums-fill.json`、`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`。
 
 ### Loop 模式
 

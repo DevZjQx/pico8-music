@@ -10,8 +10,8 @@ export const SCORE_BRIEF =
 
 export const SCORE_HELP = `PICO-8 score reference (also printed by /p8m in Pi)
 
-Pass \`score\` as a JSON string, not a nested object.
-The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes and out are p8_music arguments passed next to score; putting any of them inside the score JSON is an error.
+Pass \`score\` as a JSON string, not a nested object, or pass \`scoreFile\` with a workspace-relative path to a JSON score file (.json is appended when omitted). Provide exactly one of them; a scoreFile is read on every render, so editing the file changes the next output.
+The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes and out are p8_music arguments passed next to score/scoreFile; putting any of them inside the score JSON is an error.
 
 Loop mode:
 {"bpm":90,"stepsPerBeat":4,"bars":4,"tracks":[{"role":"bass","waveform":"pulse","volume":5,"pattern":"C3:4 E3:4 G3:4 A3:4"}]}

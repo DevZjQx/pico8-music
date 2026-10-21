@@ -16,7 +16,10 @@ import {
 } from '../features/render/feature.ts';
 
 export interface RenderArgs {
-  readonly score: string;
+  /** Inline score JSON. Mutually exclusive with `scoreFile`. */
+  readonly score?: string;
+  /** Workspace-relative path to a JSON score file. Mutually exclusive with `score`. */
+  readonly scoreFile?: string;
   readonly preset?: string;
   /** Style defaults for the post chain; cannot be combined with `preset`. */
   readonly style?: string;
@@ -51,22 +54,35 @@ function workspaceDirectory(exec: ToolExecution): string {
   return typeof cwd === 'string' && cwd.trim() !== '' ? cwd : process.cwd();
 }
 
+/** Labels with a fixed extension; `path` is left to the caller's format check. */
+const PATH_EXTENSIONS = { out: '.wav', scoreFile: '.json' } as const;
+type PathLabel = 'out' | 'path' | 'scoreFile';
+
 /**
  * The manifest grants workspace-scoped read/write, so the service enforces the
  * same boundary even on hosts that do not check the manifest themselves. Only
- * `.wav` output is accepted: a RIFF payload in a `.mp3` file helps nobody.
+ * `.wav` output and `.json` score files are accepted: a RIFF payload in a
+ * `.mp3` file helps nobody.
  */
-function workspacePath(requested: string, label: 'out' | 'path', cwd: string): string {
+function workspacePath(requested: string, label: PathLabel, cwd: string): string {
   if (typeof requested !== 'string' || requested.trim() === '') {
     throw new Error(`${label} must be a non-empty path`);
   }
   if (requested.includes('\0')) throw new Error(`${label} contains a NUL byte`);
   const root = resolve(cwd);
   const extension = extname(requested);
-  if (label === 'out' && extension !== '' && extension.toLowerCase() !== '.wav') {
-    throw new Error(`out must end in .wav, got ${JSON.stringify(requested)}`);
+  const requiredExtension = label === 'path' ? undefined : PATH_EXTENSIONS[label];
+  if (
+    requiredExtension !== undefined &&
+    extension !== '' &&
+    extension.toLowerCase() !== requiredExtension
+  ) {
+    throw new Error(`${label} must end in ${requiredExtension}, got ${JSON.stringify(requested)}`);
   }
-  const candidate = resolve(root, extension === '' && label === 'out' ? `${requested}.wav` : requested);
+  const candidate = resolve(
+    root,
+    extension === '' && requiredExtension !== undefined ? `${requested}${requiredExtension}` : requested,
+  );
   const rel = relative(root, candidate);
   if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) {
     throw new Error(`${label} must stay inside the workspace (${root}), got ${candidate}`);
@@ -146,17 +162,41 @@ async function writeWaveFile(
   }
 }
 
+/** Accept either inline score JSON or a workspace-relative `.json` file, never both. */
+async function scoreJsonOf(args: RenderArgs, cwd: string): Promise<string> {
+  const inline = typeof args.score === 'string' && args.score.trim() !== '' ? args.score : undefined;
+  const file = typeof args.scoreFile === 'string' && args.scoreFile.trim() !== '' ? args.scoreFile : undefined;
+  if (inline !== undefined) {
+    if (file !== undefined) throw new Error('provide either score or scoreFile, not both');
+    return inline;
+  }
+  if (file === undefined) {
+    throw new Error('provide score JSON or a workspace-relative scoreFile path');
+  }
+
+  const path = workspacePath(file, 'scoreFile', cwd);
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read scoreFile ${path}: ${reason}`);
+  }
+  // A BOM is legal in files but not in JSON.parse.
+  const json = text.replace(/^\uFEFF/, '');
+  if (json.trim() === '') throw new Error(`scoreFile ${path} is empty`);
+  return json;
+}
+
 /** Shared by both host adapters: validate, render, write, summarise, report. */
 export async function executeRender(args: RenderArgs, exec: ToolExecution = {}): Promise<string> {
   if (exec.signal?.aborted) throw new Error('render aborted');
-  if (typeof args.score !== 'string' || args.score.trim() === '') {
-    throw new Error('score must be a JSON string describing bpm, bars, and tracks');
-  }
 
-  const score = parseScore(args.score);
+  const cwd = workspaceDirectory(exec);
+  const score = parseScore(await scoreJsonOf(args, cwd));
   const preset = presetOf(args.preset);
   const style = styleOf(args.style);
-  const outputPath = workspacePath(args.out ?? 'pico8-music.wav', 'out', workspaceDirectory(exec));
+  const outputPath = workspacePath(args.out ?? 'pico8-music.wav', 'out', cwd);
   const output = renderLoop(score, {
     preset,
     style,
