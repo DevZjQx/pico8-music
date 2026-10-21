@@ -11,6 +11,7 @@ export type {
   Effect,
   EffectParams,
   Envelope,
+  Humanize,
   Instrument,
   InstrumentFilter,
   InstrumentType,

@@ -103,8 +103,8 @@ test('reports the failing field for bad input', () => {
   assert.throws(() => parseScore('{'), /not valid JSON/);
   assert.throws(() => parseScore({ tracks: [] }), /non-empty array/);
   assert.throws(
-    () => parseScore({ tracks: Array.from({ length: 5 }, () => ({ pattern: 'C4' })) }),
-    /at most 4/,
+    () => parseScore({ tracks: Array.from({ length: 33 }, () => ({ pattern: 'C4' })) }),
+    /at most 32/,
   );
   assert.throws(() => parseScore({ tracks: [{ pattern: 'H3:4' }] }), /unknown note "H3"/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:0' }] }), /between 1 and 64/);
@@ -1055,4 +1055,67 @@ test('bounds the total arrangement length and section count', () => {
     arrangement: Array.from({ length: 257 }, (_, index) => ({ name: `s${index}`, bars: 1 })),
   };
   assert.throws(() => parseScore(tooManySections), /at most 256/);
+});
+
+test('accepts more than four tracks and caps only at the render budget', () => {
+  const many = parseScore({
+    tracks: Array.from({ length: 12 }, (_, index) => ({
+      name: `t${index}`,
+      pattern: 'C4:4',
+    })),
+  });
+  assert.equal(many.tracks.length, 12);
+
+  assert.throws(
+    () =>
+      parseScore({
+        tracks: Array.from({ length: 33 }, () => ({ pattern: 'C4:4' })),
+      }),
+    /use at most 32 \(the render-budget cap, not a musical limit\)/,
+  );
+});
+
+test('parses humanize depths, a section riser, and a song tail', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    humanize: { timingMs: 6, velocity: 0.3 },
+    tail: 2,
+    tracks: [{ pattern: 'C4:4' }],
+    arrangement: [
+      { name: 'build', bars: 2, riser: 1 },
+      { name: 'drop', bars: 2 },
+    ],
+  });
+  assert.deepEqual(parsed.humanize, { timingMs: 6, velocity: 0.3 });
+  assert.equal(parsed.tailSeconds, 2);
+  assert.equal(parsed.sections[0]?.riserBars, 1);
+  assert.equal(parsed.sections[1]?.riserBars, undefined);
+
+  const plain = parseScore({ tracks: [{ pattern: 'C4:4' }] });
+  assert.deepEqual(plain.humanize, { timingMs: 0, velocity: 0 });
+  assert.equal(plain.tailSeconds, 0);
+});
+
+test('rejects humanize, riser, and tail values outside their range', () => {
+  assert.throws(
+    () => parseScore({ humanize: { timingMs: 60 }, tracks: [{ pattern: 'C4:4' }] }),
+    /humanize.timingMs must be between 0 and 50/,
+  );
+  assert.throws(
+    () => parseScore({ humanize: { velocity: 2 }, tracks: [{ pattern: 'C4:4' }] }),
+    /humanize.velocity must be between 0 and 1/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        tracks: [{ pattern: 'C4:4' }],
+        arrangement: [{ name: 'short', bars: 1, riser: 2 }],
+      }),
+    /riser covers 2 bar\(s\), but the section is only 1 bar\(s\)/,
+  );
+  assert.throws(
+    () => parseScore({ tail: 2, tracks: [{ pattern: 'C4:4' }] }),
+    /tail requires mode "song"/,
+  );
 });

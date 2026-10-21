@@ -49,7 +49,7 @@ export default function pico8Music(pi: PiApi): void {
     promptSnippet: 'Render a PICO-8-style loop or song to a WAV file',
     promptGuidelines: [
       'Call p8_help before composing a score; it holds the JSON DSL, drum tokens, chords, and post chain.',
-      'Use at most 4 tracks; use post: [] for a dry render and add tape/reverb only when the style needs it.',
+      'Use as many tracks as the arrangement needs; use post: [] for dry output.',
       'Read the report warnings and revise dark, narrow, or sparse mixes before finishing.',
     ],
     parameters: musicParameters,

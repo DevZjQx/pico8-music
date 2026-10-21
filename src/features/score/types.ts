@@ -223,6 +223,20 @@ export interface ScoreSection {
   readonly filterEndHz?: number;
   /** 0..1 macro that scales the section gain and filter cutoff; 1 is neutral. */
   readonly energy?: number;
+  /** Bars of synthesised noise sweep that end at this section's boundary. */
+  readonly riserBars?: number;
+}
+
+/**
+ * Deterministic timing and velocity variation. Both depths default to 0, which
+ * leaves old scores sample-identical; the variation is keyed by the score seed
+ * and the event's position, so every loop pass stays identical.
+ */
+export interface Humanize {
+  /** Maximum timing offset in milliseconds, applied in both directions. */
+  readonly timingMs: number;
+  /** 0..1 velocity depth; the gain varies by up to +/- 50% at 1. */
+  readonly velocity: number;
 }
 
 export interface Score {
@@ -235,11 +249,15 @@ export interface Score {
   readonly durationSeconds: number;
   /** 0..0.5; odd steps are delayed by this fraction of a step. */
   readonly swing: number;
-  /** Deterministic variation seed for noise timbres and drum transients. */
+  /** Deterministic variation seed for noise timbres, drums, and humanize. */
   readonly seed: number;
+  /** Deterministic timing/velocity variation; zero depths are neutral. */
+  readonly humanize: Humanize;
   readonly tracks: readonly ScoreTrack[];
   /** Empty in loop mode; contiguous and ordered in song mode. */
   readonly sections: readonly ScoreSection[];
+  /** Extra seconds rendered after the last step so reverb and one-shots ring out. */
+  readonly tailSeconds: number;
   /** Parse-time advisories that are not fatal, e.g. a pattern that does not fill the section. */
   readonly warnings: readonly string[];
 }

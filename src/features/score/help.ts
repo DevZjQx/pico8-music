@@ -4,7 +4,7 @@
 // description). Keep it in sync with parse.ts and docs/features/score.md.
 
 export const SCORE_BRIEF =
-  'PICO-8 score JSON: bpm, stepsPerBeat, bars and up to 4 tracks of NOTE:STEPS tokens, ' +
+  'PICO-8 score JSON: bpm, stepsPerBeat, bars and tracks of NOTE:STEPS tokens, ' +
   'with an optional song arrangement, patterns and motifs. post/preset/style are p8_music ' +
   'arguments outside the score JSON.';
 
@@ -21,8 +21,11 @@ Song mode adds patterns and an arrangement:
 
 ## Score fields
 - bpm 30-300 (default 90), stepsPerBeat 1-8 (default 4), loop bars 1-64 (default 4); song sections use bars 1-64 and the optional total bars 1-256
-- swing 0-0.5 delays odd steps; seed varies noise timbres and drum transients
-- tracks: 1-4, a hard limit
+- swing 0-0.5 delays odd steps; seed varies noise timbres, drum transients, and humanize
+- humanize {timingMs 0-50, velocity 0-1} adds deterministic timing and gain variation; 0 is neutral
+- tail 0-15 seconds renders extra song time after the last step so reverb and one-shots ring out; song mode only
+- tracks: 1-32, one independent bus each; use as many as the arrangement needs (the cap is a render budget, not a musical rule)
+- a chord lives inside one track; use separate tracks for separate parts (drums, bass, pad, lead, FX), not for chord voices
 - motifs: {"A":"C4:1 E4:1"}, played as "@A.transpose(2).retrograde"; transforms are transpose(n), invert, retrograde, augment(n), diminish(n)
 - envelopes: {"pluck":{"attack":0.002,"decay":0.07,"sustain":0.08,"release":0.03}}, used as "C4:4~pluck"
 - instruments: named voice definitions, used as "instrument":"name" on a track. type chip keeps the eight PICO-8 waveforms; additive sums band-limited harmonic partials; fm is two-operator phase modulation. All types accept unison 1-4, detune 0-50 cents, drive 0-1, and filter {cutoffHz,resonance,envAmount,attack,decay,sustain,release}. chip adds waveform; additive adds partials (1-16 harmonics, harmonic 1 first; a harmonic is an amplitude 0-1, a negative amplitude for the mirrored wave, or [amplitude, phaseDegrees]): {"type":"additive","partials":[1,-0.5,[0.25,90]]} designs a shape, the table is band-limited and peak-normalised; fm adds ratio 0.25-8, index 0-12, indexDecay 0.01-4 s
@@ -46,7 +49,7 @@ NOTE:STEPS[gGATE] or DRUM:STEPS; gate defaults to the slot, shorter is staccato,
 A track with role "drums" uses K kick, S snare, H closed hat, O open hat, C clap, T tom, R rim, X crash. Single-letter tokens are case-insensitive except r, which is a rest; R is the rim. Add ~ghost, ~flam, or ~roll to a hit, plus optional ~pitch, ~decay, and ~tone; a rest and pitched effects reject them.
 
 ## Arrangement (song mode)
-Sections take bars, patterns (keyed by track name or role), mute, gain/gains, filter (Hz, or {"from":500,"to":12000} for a sweep), energy (0-1: scales section gain and filter cutoff), and fill ({"bars":1,"patterns":{"drums":"fill.pattern"}}: replaces the last 1-2 bars for those tracks). Rendering a song ignores minutes.
+Sections take bars, patterns (keyed by track name or role), mute, gain/gains, filter (Hz, or {"from":500,"to":12000} for a sweep), energy (0-1: scales section gain and filter cutoff), riser (1-64 bars of noise sweep ending at the section boundary), and fill ({"bars":1,"patterns":{"drums":"fill.pattern"}}: replaces the last 1-2 bars for those tracks). Rendering a song ignores minutes.
 
 ## Post chain and presets (p8_music arguments, outside the score JSON)
 post: [] renders dry; otherwise steps run in array order: tape/slow, lowpass, reverb, then the master steps tilt (tiltDb), saturate (drive, mix), compress (thresholdDb, ratio, attack, release, makeupDb), loudness (targetLufs), and limiter (ceilingDb, release), for example [{"type":"tape","speed":0.8},{"type":"reverb","wet":0.4},{"type":"loudness","targetLufs":-14},{"type":"limiter"}]. Omit post to use style chip, hitech, ambient, studio, or lofi (style fills the chain; do not also pass preset), or a preset classic, dreamy, or tape. studio and lofi also supply role-based instrument defaults (bass, lead, pad, keys, default), which is how a score leaves the chip palette without changing its tokens; an explicit track.instrument wins. speed/wet/toneHz override the matching step or add one; speed sets the whole tape/slow chain's total speed. Output paths are workspace-relative and must end in .wav. Every render returns a report with peak, RMS, LUFS, spectrum, width, onsets, and warnings; p8_analyze re-reads an existing WAV.`;

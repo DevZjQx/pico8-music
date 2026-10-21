@@ -31,8 +31,14 @@ export function applyDuck(
   const tail = attackSamples + releaseSamples * 5;
   const gain = new Float32Array(samples.length).fill(1);
 
-  for (const offset of kicks) {
+  for (const rawOffset of kicks) {
     throwIfAborted(signal);
+    // Humanize can push a hit before step 0. In loop mode that hit belongs at
+    // the end of the loop; in a one-shot song it starts at sample 0, which is
+    // also where `addDrumHits` places it.
+    const offset = wrap
+      ? ((rawOffset % loopSamples) + loopSamples) % loopSamples
+      : Math.max(0, rawOffset);
     for (let i = 0; i < tail; i += 1) {
       const shape =
         i < attackSamples

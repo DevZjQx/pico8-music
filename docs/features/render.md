@@ -8,9 +8,11 @@ measures.
 named ADSR envelopes, note effects and their parameters), the instrument layer
 (`chip` / band-limited `additive` / two-operator `fm`, unison detune, drive, and
 per-note filter envelopes), polyphonic event scheduling (chords and legato
-gates overlap without voice stealing), swing
-offsets, synthetic drum voices and their articulations (`ghost`, `flam`,
-`roll`) and per-hit `pitch` / `decay` / `tone`, song timelines, section `energy` gain/filter scaling, per-track
+gates overlap without voice stealing), swing offsets, deterministic
+`humanize` timing/velocity, synthetic drum voices and their articulations
+(`ghost`, `flam`, `roll`) and per-hit `pitch` / `decay` / `tone`, arrangement
+`riser` sweeps, song-end `tail` extension, song timelines, section `energy`
+gain/filter scaling, per-track
 buffers and the mix stage (state-variable low-pass with LFO and resonance, step-timed feedback
 delay, kick-triggered ducking, equal-power pan, reverb send), section filtering
 and filter sweeps, resampling for the slowed pitch drop, tone shaping,
@@ -72,11 +74,16 @@ sum-normalised one.  a `roll` subdivides the event's slot, and a `flam` offsets 
 second hit by milliseconds, so both wrap at the loop seam with the same
 sample-exact rule as a normal one-shot. Each track renders into its own buffer
 before filters, delay, ducking, pan, and send, so those parameters never leak
-across tracks. The synth renders one sample-exact loop; the post stage may
-repeat it for reverb steady state, the delay runs three passes in loop mode so
-its line is primed with the loop's tail, and the send bus takes the same
-three-pass steady state before it is added to the dry mix. Song mode still cuts
-reverb tails at the end; a tail option belongs here later. The master stage is
+across tracks. Humanize is a stateless hash of `(seed, track, event, voice)`:
+the offset wraps on the loop seam and the depth-zero case skips the multiply
+altogether, which keeps old scores sample-identical. A section riser is a
+noise-driven band-pass sweep plus a quiet sine sweep, deterministic from the
+seed and faded to zero at the boundary. The synth renders one sample-exact loop;
+the post stage may repeat it for reverb steady state, the delay runs three
+passes in loop mode so its line is primed with the loop's tail, and the send bus
+takes the same three-pass steady state before it is added to the dry mix. A
+song `tail` extends the synth and post buffers by N seconds so send/post reverb
+and one-shots can finish; a 20 ms final fade prevents a cut. The master stage is
 step-based, not a fixed bus: `loudness` and the report share one BS.1770
 implementation so a target can be verified, and `limiter` is a real gain
 envelope rather than the shared `limitPeak` trim, which stays last as a

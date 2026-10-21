@@ -264,6 +264,21 @@ function downmix(left: Float32Array, right: Float32Array): Float32Array {
 }
 
 /**
+ * A song tail ends wherever the requested extra time ends, which can cut a
+ * reverb or one-shot mid-cycle. A short linear fade turns that cut into
+ * silence without touching scores that do not ask for a tail.
+ */
+function fadeTail(left: Float32Array, right: Float32Array, seconds: number): void {
+  const samples = Math.min(left.length, right.length, Math.max(1, Math.round(seconds * RATE)));
+  for (let i = 0; i < samples; i += 1) {
+    const gain = 1 - i / samples;
+    const index = left.length - samples + i;
+    left[index] = (left[index] ?? 0) * gain;
+    right[index] = (right[index] ?? 0) * gain;
+  }
+}
+
+/**
  * Applies the post steps in the order the caller wrote them. Tape/slow and
  * low-pass run on both channels; reverb downmixes its input to mono and returns
  * stereo. The DC block is an internal safety step: it runs just before the
@@ -376,7 +391,8 @@ function applyPost(
  * Renders the per-track send bus through one reverb and adds it to the dry
  * mix. In loop mode the bus is run for three passes and the last pass is kept,
  * matching the steady-state treatment of the post reverb. Song mode gets a
- * single pass, so a send tail is cut with the song.
+ * single pass, so a send tail stops with the song unless a score-level `tail`
+ * extends the rendered buffer.
  */
 function addSendReverb(song: SongAudio, passes: number): void {
   const bus = song.sendBus;
@@ -452,10 +468,18 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   // Reverb can push the sum past full scale. Trim the finished loop with one
   // shared gain instead of clamping samples: attenuation is distortion-free and
   // does not disturb the seam between repeats.
+  if (score.mode === 'song' && score.tailSeconds > 0) fadeTail(finalLeft, finalRight, 0.02);
   const safetyGain = limitPeak([finalLeft, finalRight], PEAK_CEILING);
+  const contentSamples =
+    score.mode === 'song' && score.tailSeconds > 0
+      ? Math.round(
+          (finalLeft.length * score.durationSeconds) /
+            (score.durationSeconds + score.tailSeconds),
+        )
+      : undefined;
   const sections =
     score.mode === 'song'
-      ? sectionEnergies(finalLeft, finalRight, score.sections, score.totalSteps)
+      ? sectionEnergies(finalLeft, finalRight, score.sections, score.totalSteps, contentSamples)
       : [];
   const trimmed =
     safetyGain < 0.7

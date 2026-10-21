@@ -16,6 +16,7 @@ import type {
   Effect,
   EffectParams,
   Envelope,
+  Humanize,
   Instrument,
   InstrumentFilter,
   InstrumentType,
@@ -57,7 +58,12 @@ export const DEFAULT_ENVELOPE: Envelope = {
 const MAX_STEPS_PER_NOTE = 64;
 const MAX_GATE_STEPS = 256;
 const MAX_CHORD_NOTES = 4;
-const MAX_TRACKS = 4;
+/**
+ * A render-budget cap, not a musical rule: every track gets its own full-length
+ * buffer and one mix pass, so the LLM can decide the arrangement size but a
+ * pathological score cannot exhaust memory.
+ */
+const MAX_TRACKS = 32;
 const MAX_INSTRUMENTS = 32;
 const MAX_PARTIALS = 16;
 const INSTRUMENT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
@@ -1448,12 +1454,12 @@ function parseArrangement(
     const path = `arrangement[${index}]`;
     if (!isRecord(raw)) {
       throw new ScoreError(
-        `${path} must be an object with bars, patterns, mute, gain, filter, energy, or fill`,
+        `${path} must be an object with bars, patterns, mute, gain, filter, energy, fill, or riser`,
       );
     }
     rejectUnknownKeys(
       raw,
-      ['name', 'bars', 'mute', 'gain', 'gains', 'filter', 'patterns', 'fill', 'energy'],
+      ['name', 'bars', 'mute', 'gain', 'gains', 'filter', 'patterns', 'fill', 'energy', 'riser'],
       path,
     );
 
@@ -1467,6 +1473,15 @@ function parseArrangement(
     const gains = parseNumberRecord(raw.gains, `${path}.gains`, 0, 4);
     const filter = parseSectionFilter(raw.filter, `${path}.filter`);
     const energy = readNumber(raw.energy, `${path}.energy`, 1, 0, 1);
+    const riserBars =
+      raw.riser === undefined
+        ? undefined
+        : readRequiredNumber(raw.riser, `${path}.riser`, 1, 64, true);
+    if (riserBars !== undefined && riserBars > bars) {
+      throw new ScoreError(
+        `${path}.riser covers ${riserBars} bar(s), but the section is only ${bars} bar(s) long`,
+      );
+    }
     const patternOverrides = parseStringRecord(raw.patterns, `${path}.patterns`);
     const fill = parseSectionFill(raw.fill, `${path}.fill`);
     const fillSteps = fill === undefined ? 0 : fill.bars * 4 * stepsPerBeat;
@@ -1576,6 +1591,7 @@ function parseArrangement(
       energy,
       ...(filter === undefined ? {} : { filterHz: filter.fromHz }),
       ...(filter?.toHz === undefined ? {} : { filterEndHz: filter.toHz }),
+      ...(riserBars === undefined ? {} : { riserBars }),
     });
     cursor = sectionEnd;
   });
@@ -1613,6 +1629,18 @@ function parseEnvelopes(value: unknown): ReadonlyMap<string, Envelope> {
     output.set(name, parseEnvelope(entry, `envelopes.${name}`));
   }
   return output;
+}
+
+function parseHumanize(value: unknown): Humanize {
+  if (value === undefined) return { timingMs: 0, velocity: 0 };
+  if (!isRecord(value)) {
+    throw new ScoreError('humanize must be an object with timingMs and velocity');
+  }
+  rejectUnknownKeys(value, ['timingMs', 'velocity'], 'humanize');
+  return {
+    timingMs: readNumber(value.timingMs, 'humanize.timingMs', 0, 0, 50),
+    velocity: readNumber(value.velocity, 'humanize.velocity', 0, 0, 1),
+  };
 }
 
 function parseMode(value: unknown, hasArrangement: boolean): ScoreMode {
@@ -1654,6 +1682,8 @@ export function parseScore(input: string | unknown): Score {
       'motifs',
       'patterns',
       'bars',
+      'humanize',
+      'tail',
     ],
     '',
   );
@@ -1662,6 +1692,8 @@ export function parseScore(input: string | unknown): Score {
   const stepsPerBeat = readNumber(raw.stepsPerBeat, 'stepsPerBeat', DEFAULTS.stepsPerBeat, 1, 8, true);
   const swing = readNumber(raw.swing, 'swing', 0, 0, 0.5);
   const seed = readNumber(raw.seed, 'seed', 0, 0, 2147483647, true);
+  const humanize = parseHumanize(raw.humanize);
+  const tailSeconds = readNumber(raw.tail, 'tail', 0, 0, 15);
   const envelopes = parseEnvelopes(raw.envelopes);
   const instruments = parseInstruments(raw.instruments);
   const hasArrangement = raw.arrangement !== undefined;
@@ -1673,12 +1705,17 @@ export function parseScore(input: string | unknown): Score {
   if (mode === 'loop' && hasArrangement) {
     throw new ScoreError('arrangement requires mode "song" (or omit mode and bars)');
   }
+  if (mode === 'loop' && tailSeconds > 0) {
+    throw new ScoreError('tail requires mode "song"; a loop must repeat seamlessly without an end tail');
+  }
 
   if (!Array.isArray(raw.tracks) || raw.tracks.length === 0) {
-    throw new ScoreError('tracks must be a non-empty array (1-4 tracks)');
+    throw new ScoreError('tracks must be a non-empty array (1-32 tracks)');
   }
   if (raw.tracks.length > MAX_TRACKS) {
-    throw new ScoreError(`tracks has ${raw.tracks.length} entries; PICO-8 has 4 channels, use at most 4`);
+    throw new ScoreError(
+      `tracks has ${raw.tracks.length} entries; use at most ${MAX_TRACKS} (the render-budget cap, not a musical limit)`,
+    );
   }
 
   const globalMotifs = new Map(Object.entries(parseStringRecord(raw.motifs, 'motifs')));
@@ -1729,9 +1766,9 @@ export function parseScore(input: string | unknown): Score {
 
   const stepSeconds = 60 / bpm / stepsPerBeat;
   const durationSeconds = totalSteps * stepSeconds;
-  if (durationSeconds > MAX_SONG_SECONDS) {
+  if (durationSeconds + tailSeconds > MAX_SONG_SECONDS) {
     throw new ScoreError(
-      `score is ${durationSeconds.toFixed(0)} s long; the render budget is ${MAX_SONG_SECONDS} s (15 minutes)`,
+      `score is ${(durationSeconds + tailSeconds).toFixed(0)} s long including tail; the render budget is ${MAX_SONG_SECONDS} s (15 minutes)`,
     );
   }
 
@@ -1745,8 +1782,10 @@ export function parseScore(input: string | unknown): Score {
     durationSeconds,
     swing,
     seed,
+    humanize,
     tracks,
     sections,
+    tailSeconds,
     warnings,
   };
 }

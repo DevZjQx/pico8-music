@@ -7,13 +7,14 @@ to author and cheap to reject.
 effect names, per-note volume (`@volume`), track and named ADSR envelopes,
 slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
 `Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`),
-score-level `swing` and `seed`, motif definitions and transforms
+score-level `swing` and `seed`, deterministic `humanize` timing/velocity
+depths, motif definitions and transforms
 (`@A.transpose(2).retrograde`), drum articulations (`~ghost`, `~flam(ms)`,
 `~roll(hits)`) and per-hit drum parameters (`~pitch`, `~decay`, `~tone`), the
 top-level `instruments` table and per-track `instrument` references, loop vs
 song mode, named patterns, arrangement
-resolution (sections, mute, gain, filter and filter sweeps, `energy`, and
-`fill` pattern replacement), the mix-stage
+resolution (sections, mute, gain, filter and filter sweeps, `energy`, `fill`
+pattern replacement, and `riser` bars), the song-end `tail`, the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `delay`), the
 model-facing DSL reference (`help.ts`), and the normalised `Score` the renderer
 consumes.
@@ -49,9 +50,13 @@ note parser, so the brace form (`{C7}`) forces the chord reading; `G7/B` is
 safe because the slash rules out a note. Envelope names may not collide with
 effect or drum-articulation names, which is what keeps `~name` unambiguous. Motif pitch transforms
 (`transpose`/`invert`) reject chord tokens; time/order transforms still work.
-`key`/`scale`, voice leading, humanise, and tuplets remain deferred: tuplets
+`key`/`scale`, voice leading, and tuplets remain deferred: tuplets
 would turn the integer step grid into a fractional one across parse,
-arrangement, and loop seams. Drum articulations are parsed into a `DrumEffect`
+arrangement, and loop seams. Track count is a render-budget cap (1-32), not a
+musical rule; `score` only validates that cap and leaves the arrangement size to
+the model. `humanize` is carried as two depths and resolved by the renderer
+against the score seed, so `score` never has to know the timing grid's sample
+rate. Drum articulations are parsed into a `DrumEffect`
 on the event instead of DSP parameters, so a motif transform can carry them
 without knowing how they sound; per-hit pitch/decay/tone travel separately as
 `DrumParams`, so they compose with `~ghost`/`~flam`/`~roll` instead of competing

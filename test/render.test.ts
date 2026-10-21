@@ -952,3 +952,111 @@ test('an aborted render stops before writing audio', () => {
     /aborted/,
   );
 });
+
+test('a section riser sweeps upward into the next section', () => {
+  const output = renderLoop(
+    parseScore({
+      mode: 'song',
+      bpm: 120,
+      stepsPerBeat: 4,
+      tracks: [{ waveform: 'triangle', pattern: '-:16' }],
+      arrangement: [
+        { name: 'build', bars: 2, riser: 2 },
+        { name: 'drop', bars: 1 },
+      ],
+    }),
+    { post: [] },
+  );
+
+  const earlyBand = highBandBetween(output.left, 0.1, 0.8);
+  const lateBand = highBandBetween(output.left, 3.0, 3.95);
+  assert.ok(lateBand > earlyBand * 3, `early ${earlyBand.toFixed(6)} late ${lateBand.toFixed(6)}`);
+  assert.ok(
+    rmsBetween(output.left, 3.0, 3.95) > rmsBetween(output.left, 0.1, 0.8) * 2,
+    'the riser should grow toward the section boundary',
+  );
+});
+
+test('tail extends a song so the send reverb can ring out', () => {
+  const song = parseScore({
+    mode: 'song',
+    bpm: 120,
+    stepsPerBeat: 4,
+    tail: 1,
+    tracks: [{ waveform: 'triangle', pattern: '-:15 C4:1', send: 1 }],
+    arrangement: [{ name: 'a', bars: 1 }],
+  });
+  const output = renderLoop(song, { post: [] });
+  assert.equal(output.loopSamples, Math.round((song.durationSeconds + 1) * 44100));
+  assert.ok(Math.abs(output.durationSeconds - (song.durationSeconds + 1)) < 0.01);
+
+  const tailRms = rmsAll(output.left, song.durationSeconds + 0.1, song.durationSeconds + 0.9);
+  const noteRms = rmsAll(output.left, 1.9, 2.0);
+  assert.ok(tailRms > 0.0005, `tail rms ${tailRms}`);
+  assert.ok(tailRms < noteRms, `tail ${tailRms} should decay below the note ${noteRms}`);
+  assert.ok(Math.abs(output.left[output.left.length - 1] ?? 0) < 0.01, 'the tail end is faded');
+});
+
+test('humanize is deterministic, seed-dependent, and neutral at zero', () => {
+  const render = (seed: number, humanize?: { timingMs: number; velocity: number }) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          seed,
+          ...(humanize === undefined ? {} : { humanize }),
+          tracks: [{ waveform: 'triangle', pattern: '-:1 C4:1g1 -:14' }],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+
+  const neutral = render(1);
+  const jittered = render(1, { timingMs: 25, velocity: 0 });
+  assert.notEqual(firstAudibleSample(jittered), firstAudibleSample(neutral));
+  assert.deepEqual(Array.from(render(1, { timingMs: 25, velocity: 0 })), Array.from(jittered));
+  assert.notDeepEqual(Array.from(render(2, { timingMs: 25, velocity: 0 })), Array.from(jittered));
+  assert.deepEqual(Array.from(render(1, { timingMs: 0, velocity: 0 })), Array.from(neutral));
+});
+
+test('humanize velocity varies repeated hits deterministically', () => {
+  const render = (humanize?: { timingMs: number; velocity: number }) =>
+    renderLoop(
+      parseScore({
+        bpm: 120,
+        stepsPerBeat: 4,
+        bars: 1,
+        humanize,
+        tracks: [{ role: 'drums', volume: 7, pattern: 'H:2 '.repeat(8).trim() }],
+      }),
+      { post: [], minutes: 0.05 },
+    ).left;
+
+  const flat = render();
+  const varied = render({ timingMs: 0, velocity: 1 });
+  const windows = Array.from({ length: 8 }, (_, index) =>
+    rmsAll(varied, index * 0.25, index * 0.25 + 0.06),
+  );
+  assert.ok(Math.max(...windows) > Math.min(...windows) * 1.2, `windows ${windows.join(', ')}`);
+  assert.deepEqual(Array.from(render({ timingMs: 0, velocity: 1 })), Array.from(varied));
+  assert.ok(rmsAll(flat) > 0);
+});
+
+test('renders an arrangement with more than four tracks', () => {
+  const output = renderLoop(
+    parseScore({
+      bpm: 120,
+      stepsPerBeat: 4,
+      bars: 1,
+      tracks: Array.from({ length: 6 }, (_, index) => ({
+        name: `t${index}`,
+        waveform: 'triangle',
+        pattern: `C${3 + index}:4`,
+      })),
+    }),
+    { post: [], minutes: 0.05 },
+  );
+  assert.ok(peak(output.wav) > 1000);
+});

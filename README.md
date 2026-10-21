@@ -80,10 +80,12 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `stepsPerBeat` | 1-8 整数 | 4 |
 | `bars` | 1-64 整数（song 模式的 section 也是 1-64，可选总 `bars` 为 1-256） | 4 |
 | `swing` | 0-0.5 | 0 |
-| `seed` | 0-2147483647 整数，影响 noise 音色与鼓瞬态 | 0 |
+| `humanize` | `{timingMs:0-50, velocity:0-1}`；确定性时序/力度扰动，0 不改变旧渲染 | 关闭 |
+| `tail` | 0-15 秒，song 模式在最后一步后多渲染一段让混响和 one-shot 收尾 | 0 |
+| `seed` | 0-2147483647 整数，影响 noise 音色、鼓瞬态与 humanize | 0 |
 | `motifs` | 可选，命名动机：`{"A":"C4:1 E4:1"}` | 空 |
 | `envelopes` | 可选，命名 ADSR：`{"pluck":{"attack":0.001,...}}` | 空 |
-| `tracks` | 1-4 个 | 必填 |
+| `tracks` | 1-32 个；每条轨是独立总线，轨数由编曲需要决定 | 必填 |
 
 每个 track：
 
@@ -113,8 +115,10 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - 未知字段会直接报错，不会被静默忽略：`pan`、`send`、`duck`、`filter`、`delay` 都是 track 的平铺字段，不要写成 `"mix": {...}`。
 - 不写 `instrument` 时走原来的 8 波形路径，逐样本不变；写 `instrument` 才换发声器。
 - `swing`：0-0.5，奇数 step 延后 `swing * stepSeconds`；同一输入渲染确定。
+- `humanize`：`timingMs` 让每个事件有 ±N 毫秒的确定性偏移，`velocity` 让力度有 ±50% 的确定性起伏；两者都由 `seed` 和事件位置决定，loop 内每个 pass 完全一致。默认 0，旧 score 逐样本不变。
+- `tail`：只在 song 模式有效，在最后一个 step 之后多渲染 N 秒（最多 15 秒），让 send/post 混响和鼓的 one-shot 自然收尾；loop 模式禁止 `tail`，否则会破坏无缝循环。
 - 每个 pattern 会重复填满 `bars`；四拍一小节，循环长度 = `bars * 4 * stepsPerBeat` 步。
-- 单轨可写和弦，最多 4 个同时发声的声部；需要更多层时用多条 track。鼓轨的 one-shot 独立渲染，尾音可以和后续 hit 重叠。
+- 单轨可写和弦，最多 4 个同时发声的声部；一条 track 是一个编曲声部/总线，和弦声部不要各占一条轨。需要更多层次时增加 track。鼓轨的 one-shot 独立渲染，尾音可以和后续 hit 重叠。
 
 ### 和弦、包络与效果参数
 
@@ -260,12 +264,13 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - 每个 section 的长度应当是所用 pattern 长度的整数倍；否则解析器仍按旧行为截断最后一遍，并在报告里写 `pattern-misaligned` 警告。loop 模式也会对不整除 loop 的 pattern 给出同样警告。
 - 一次渲染的 arrangement 总量上限是 15 分钟和 256 个 section；最终输出（包括降速后）也以 15 分钟为硬上限，超出会直接报错，而不是分配一个不可控的缓冲区。
 - `patterns` 可以放在顶层，也可以放在 track 内；section 的 `patterns` 用 track 的 `name` 或 `role` 指向 pattern 名。也可以直接写内联 pattern（如 `C4:4 C4:4`，或单 token `C4`）；已定义的 pattern 名优先。
-- section 字段：`bars`（必填）、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`fill`。
+- section 字段：`bars`（必填）、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`fill`、`riser`。
+- `riser`：1-64 小节，不能超过所在 section 的长度；在这一段末尾合成一条噪声 + 正弦上行扫频，正好结束在段落边界，用作 build/转场的上扬。它不占 track，声音由 `seed` 决定。
 - `energy`：0-1 的段落宏。0 时该段增益 ×0.5，若有 `filter` 则截止频率 ×0.35；1（默认）不改变任何东西，所以旧 score 不受影响。适合写 intro/break 的“收”。
 - `fill`：`{"bars":1,"patterns":{"drums":"drums.fill"}}`，用指定 pattern 替换该 section 最后 1-2 小节的普通 pattern；`patterns` 的键可以是 track 的 `name` 或 `role`。fill pattern 长度不整除 fill 窗口时会在报告里给出 `fill-misaligned` 警告。
 - `filter` 与 `energy` 可以叠加：滤波先按 section 扫频，再乘 energy 的截止系数；`gain`/`gains` 也在 energy 之后相乘。
 - `filter` 是该段的低通截止频率（Hz）；写成 `{"from":600,"to":12000}` 时在整个 section 内指数扫频，`from` 到 `to` 单调上升就是 riser 的滤波部分；`mute` 接受 track 的 `name` 或 `role`。
-- song 模式渲染整首一次，忽略 `minutes`；需要紧结尾时用 `post: []`。
+- song 模式渲染整首一次，忽略 `minutes`；需要紧结尾时用 `post: []`。需要尾音时设置顶层 `tail`（秒），混响和 one-shot 会继续响完，最后 20 ms 淡出避免截断爆音。
 
 ### 混音与空间
 
@@ -348,11 +353,13 @@ npm run check      # 边界检查 + 类型检查 + 测试
 - PICO-8 在这里是音色与编曲风格，不是硬件复刻：单轨和弦加 legato 可以同时超过 4 个声部，输出是 44.1 kHz 立体声，而不是 22050 Hz / 4 单声部通道。没有严格 `pico` 模式。
 - 效果是音乐语义的近似，不是 PICO-8 sfx 状态机的逐样本复刻。
 - 鼓是合成瞬态，不是采样；`~ghost` / `~flam` / `~roll` 与 per-hit `~pitch` / `~decay` / `~tone` 已支持，但没有独立的鼓采样或逐 hit 滤波包络。
-- M2 和声/发音法已做：显式与命名和弦、斜杠低音、gate、swing、命名 per-note 包络、参数化 slide/vibrato、seed。暂不做 `key`/`scale` 度数记谱、voice leading、参数化 arp、humanize、tuplet；三连音需要分数 step 网格，成本高于收益。
-- M3 已做：per-track filter（带 LFO/共振）、段落滤波扫频（riser/sweep 的滤波部分）、pan、send、duck（kick 触发）、step 计时 delay。暂不做：任意 sidechain 源、独立的 riser/impact/sub-drop 采样 FX。
+- M2 和声/发音法已做：显式与命名和弦、斜杠低音、gate、swing、命名 per-note 包络、参数化 slide/vibrato、seed。仍不做 `key`/`scale` 度数记谱与 voice leading：命名和弦已覆盖大部分和声写法，voice leading 需要跨段和声状态且验收主观。
+- M3 已做：per-track filter（带 LFO/共振）、段落滤波扫频、pan、send、duck（kick 触发）、step 计时 delay。M8 追加了独立的段落 `riser`、`tail` 与 `humanize`；仍不做任意 sidechain 源和 impact/sub-drop 采样 FX。
 - M4 已做：渲染报告（peak/RMS/LUFS/频谱/宽度/onset/分段/警告）、`p8_analyze`、`tilt`/`saturate`/`compress`/`loudness`/`limiter` 五个 master 步骤。
-- M6 已做：命名/内联 `instruments`（chip / additive / FM）、unison 失谐、drive、逐音滤波包络、鼓的 per-hit pitch/decay/tone、`studio`/`lofi` 两个换音色的 style。暂不做：采样/波表文件、任意 FM 算子矩阵、per-note pan、5 轨以上。
-- song 模式的 `send` 混响和 `post` 混响尾音都会在歌曲结束时截断；需要干净收尾时把 `send` 设为 0 并使用 `post: []`。
+- M6 已做：命名/内联 `instruments`（chip / additive / FM）、unison 失谐、drive、逐音滤波包络、鼓的 per-hit pitch/decay/tone、`studio`/`lofi` 两个换音色的 style。仍不做采样/波表文件、任意 FM 算子矩阵、per-note pan。
+- 轨数上限是 32，不是音乐规则：每条轨都要一整段 buffer 和一次逐样本混音，所以长歌 + 很多轨会明显变慢。需要更多层次时优先增加 track，而不是把和弦塞到 8 个声部以上。
+- `humanize` 只改时序和力度，不做 probability/ratchet；`tuplet` 仍不做：三连音需要分数 step 网格，会同时影响 parser、swing、段落对齐和循环接缝，收益低于成本。
+- song 模式的 `send` 混响和 `post` 混响尾音默认会在歌曲结束时截断；设置顶层 `tail` 可以留出收尾时间，或用 `send: 0` + `post: []` 做紧结尾。
 - `limiter` 按样本峰值工作，不做 4× 过采样，所以它是 sample-peak 而不是严格的 true-peak limiter；44.1 kHz 的 WAV 上两者差距通常小于 0.5 dB。
 - 循环长为整数采样；`speed` 不是整数比时会有一点点有效速度偏差（< 0.01%）。
 - 渲染在工具调用内同步完成；loop 默认 2 分钟在本机约 3 秒，机器相关，更长请先控制 `minutes`。合成、混音和分块写文件都会检查 abort，但单个 DSP 步骤（如整段 reverb）仍可能运行数秒才返回。

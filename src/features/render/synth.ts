@@ -9,6 +9,7 @@ import type {
 import { throwIfAborted } from './abort.ts';
 import { renderDrumHit } from './drums.ts';
 import { applyAutomatedLowpass, filterTrack } from './filters.ts';
+import { addSectionRisers } from './fx.ts';
 import { InstrumentVoice } from './instrument.ts';
 import { applyDelay, applyDuck, panGains } from './mix.ts';
 import { createWaveState, sampleWaveform } from './waveform.ts';
@@ -86,6 +87,56 @@ function seedFor(score: Score, value: number): number {
   return (value ^ Math.imul(score.seed, SEED_MULTIPLIER)) >>> 0;
 }
 
+const HUMANIZE_TIMING_SALT = 0x51ed270b;
+const HUMANIZE_VELOCITY_SALT = 0x2545f491;
+
+/**
+ * A stateless integer hash in [0, 1). Humanize must not depend on iteration
+ * order: the same (seed, track, event, voice) gives the same offset on every
+ * render, including each repeated pass of a loop.
+ */
+function humanizeUnit(
+  score: Score,
+  trackIndex: number,
+  eventIndex: number,
+  voice: number,
+  salt: number,
+): number {
+  let value = (score.seed ^ salt) >>> 0;
+  value = Math.imul(value ^ (trackIndex + 1), 0x9e3779b1) >>> 0;
+  value = Math.imul(value ^ (eventIndex + 1), 0x85ebca6b) >>> 0;
+  value = Math.imul(value ^ (voice + 1), 0xc2b2ae35) >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb352d) >>> 0;
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846ca68b) >>> 0;
+  value ^= value >>> 16;
+  return (value >>> 0) / 0x100000000;
+}
+
+function humanizeTimingSamples(
+  score: Score,
+  trackIndex: number,
+  eventIndex: number,
+  voice: number,
+  rate: number,
+): number {
+  if (score.humanize.timingMs <= 0) return 0;
+  const unit = humanizeUnit(score, trackIndex, eventIndex, voice, HUMANIZE_TIMING_SALT);
+  return Math.round((unit * 2 - 1) * score.humanize.timingMs * 0.001 * rate);
+}
+
+function humanizeGain(
+  score: Score,
+  trackIndex: number,
+  eventIndex: number,
+  voice: number,
+): number {
+  if (score.humanize.velocity <= 0) return 1;
+  const unit = humanizeUnit(score, trackIndex, eventIndex, voice, HUMANIZE_VELOCITY_SALT);
+  return Math.max(0, Math.min(1.5, 1 + (unit * 2 - 1) * score.humanize.velocity * 0.5));
+}
+
 interface MelodicNote {
   readonly track: ScoreTrack;
   readonly event: NoteEvent;
@@ -95,6 +146,8 @@ interface MelodicNote {
   readonly gateSamples: number;
   readonly slideFrom: number;
   readonly seed: number;
+  /** Deterministic velocity variation; 1 leaves the authored volume alone. */
+  readonly humanizeGain: number;
   /** Absent keeps the historical eight-waveform path, sample for sample. */
   readonly instrument?: Instrument;
 }
@@ -125,10 +178,13 @@ function buildMelodicNotes(
       event,
       eventIndex,
       trackIndex,
-      startSample: Math.round(startSeconds * rate),
+      startSample:
+        Math.round(startSeconds * rate) +
+        humanizeTimingSamples(score, trackIndex, eventIndex, voice, rate),
       gateSamples: Math.min(maxGateSamples, Math.max(1, Math.round(gateSteps * score.stepSeconds * rate))),
       slideFrom: lastFrequency.get(voice) ?? event.frequency,
       seed: seedFor(score, (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + 1),
+      humanizeGain: humanizeGain(score, trackIndex, eventIndex, voice),
       ...(instrument === undefined ? {} : { instrument }),
     });
     lastFrequency.set(voice, event.frequency);
@@ -158,9 +214,9 @@ function renderMelodicNote(
   const envelope = event.envelope ?? track.envelope;
   const start = wrap
     ? ((note.startSample % loopSamples) + loopSamples) % loopSamples
-    : note.startSample;
+    : Math.max(0, note.startSample);
 
-  if (!wrap && (start < 0 || start >= samples.length)) return;
+  if (!wrap && start >= samples.length) return;
 
   for (let i = 0; i < note.gateSamples; i += 1) {
     if ((i & 8191) === 0) throwIfAborted(signal);
@@ -209,7 +265,7 @@ function renderMelodicNote(
       }
     }
 
-    const gain = (event.volume / 7) * level * (event.gain ?? 1);
+    const gain = (event.volume / 7) * level * (event.gain ?? 1) * note.humanizeGain;
     if (gain <= 0) continue;
 
     if (voice !== undefined) {
@@ -253,7 +309,14 @@ function buildDrumHits(
     const params = event.drumParams;
     const seedBase = (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + event.midi;
 
-    let velocity = (event.volume / 7) * (event.gain ?? 1);
+    let velocity = (event.volume / 7) * (event.gain ?? 1) * humanizeGain(score, trackIndex, eventIndex, event.voice ?? 0);
+    const timingSamples = humanizeTimingSamples(
+      score,
+      trackIndex,
+      eventIndex,
+      event.voice ?? 0,
+      rate,
+    );
     let decayScale: number | undefined = params?.decayScale;
     let toneHz: number | undefined = params?.toneHz;
     const pitchSemitones = params?.pitchSemitones;
@@ -267,7 +330,7 @@ function buildDrumHits(
 
     const pushHit = (offsetSeconds: number, hitVelocity: number, hitIndex: number): void => {
       hits.push({
-        offset: Math.round((startSeconds + offsetSeconds) * rate),
+        offset: Math.round((startSeconds + offsetSeconds) * rate) + timingSamples,
         drum,
         velocity: Math.max(0, hitVelocity),
         seed: seedFor(score, seedBase + hitIndex * 17),
@@ -340,7 +403,12 @@ function addDrumHits(
 function applySectionFilter(samples: Float32Array, score: Score, rate: number): void {
   if (!score.sections.some((section) => section.filterHz !== undefined)) return;
 
-  const loopSamples = Math.max(1, Math.round(score.durationSeconds * rate));
+  // A song with a tail has silence after the last step; do not wrap its filter
+  // phase back to the first section while that tail rings out.
+  const loopSamples =
+    score.mode === 'song'
+      ? Math.max(1, samples.length)
+      : Math.max(1, Math.round(score.durationSeconds * rate));
   const samplesPerStep = score.stepSeconds * rate;
   const sections = score.sections;
   let sectionIndex = 0;
@@ -400,7 +468,9 @@ export function renderScore(
   signal?: AbortSignal,
   roleInstruments?: RoleInstruments,
 ): SongAudio {
-  const loopSamples = Math.max(1, Math.round(score.durationSeconds * rate));
+  const musicSamples = Math.max(1, Math.round(score.durationSeconds * rate));
+  const tailSamples = score.mode === 'song' ? Math.max(0, Math.round(score.tailSeconds * rate)) : 0;
+  const loopSamples = musicSamples + tailSamples;
   const wrap = score.mode === 'loop';
   const left = new Float32Array(loopSamples);
   const right = new Float32Array(loopSamples);
@@ -447,6 +517,7 @@ export function renderScore(
   });
 
   throwIfAborted(signal);
+  addSectionRisers(left, right, score, rate, signal);
   applySectionFilter(left, score, rate);
   applySectionFilter(right, score, rate);
 

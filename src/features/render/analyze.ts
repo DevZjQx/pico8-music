@@ -264,9 +264,15 @@ export function sectionEnergies(
   right: Float32Array,
   sections: readonly { readonly name: string; readonly startStep: number; readonly steps: number }[],
   totalSteps: number,
+  /** Musical content length; excludes a song tail when it is shorter than the buffer. */
+  contentSamples?: number,
 ): SectionReading[] {
-  const length = Math.min(left.length, right.length);
-  if (sections.length === 0 || totalSteps <= 0 || length === 0) return [];
+  const available = Math.min(left.length, right.length);
+  if (sections.length === 0 || totalSteps <= 0 || available === 0) return [];
+  const length =
+    contentSamples === undefined
+      ? available
+      : Math.max(1, Math.min(available, Math.round(contentSamples)));
 
   return sections.map((section, index) => {
     const startFraction = section.startStep / totalSteps;
