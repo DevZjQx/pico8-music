@@ -1,7 +1,15 @@
-import type { DrumName, Envelope, NoteEvent, Score, ScoreTrack } from '../score/feature.ts';
+import type {
+  DrumName,
+  Envelope,
+  Instrument,
+  NoteEvent,
+  Score,
+  ScoreTrack,
+} from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
 import { renderDrumHit } from './drums.ts';
 import { applyAutomatedLowpass, filterTrack } from './filters.ts';
+import { InstrumentVoice } from './instrument.ts';
 import { applyDelay, applyDuck, panGains } from './mix.ts';
 import { createWaveState, sampleWaveform } from './waveform.ts';
 
@@ -87,6 +95,8 @@ interface MelodicNote {
   readonly gateSamples: number;
   readonly slideFrom: number;
   readonly seed: number;
+  /** Absent keeps the historical eight-waveform path, sample for sample. */
+  readonly instrument?: Instrument;
 }
 
 /**
@@ -98,6 +108,7 @@ function buildMelodicNotes(
   rate: number,
   track: ScoreTrack,
   trackIndex: number,
+  instrument: Instrument | undefined,
   signal?: AbortSignal,
 ): readonly MelodicNote[] {
   const notes: MelodicNote[] = [];
@@ -118,6 +129,7 @@ function buildMelodicNotes(
       gateSamples: Math.min(maxGateSamples, Math.max(1, Math.round(gateSteps * score.stepSeconds * rate))),
       slideFrom: lastFrequency.get(voice) ?? event.frequency,
       seed: seedFor(score, (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + 1),
+      ...(instrument === undefined ? {} : { instrument }),
     });
     lastFrequency.set(voice, event.frequency);
   });
@@ -140,6 +152,7 @@ function renderMelodicNote(
 ): void {
   const { track, event } = note;
   const wave = createWaveState(note.seed);
+  const voice = note.instrument === undefined ? undefined : new InstrumentVoice(note.instrument, event.midi, rate, note.seed);
   let phase = 0;
   const noteDuration = note.gateSamples / rate;
   const envelope = event.envelope ?? track.envelope;
@@ -199,6 +212,11 @@ function renderMelodicNote(
     const gain = (event.volume / 7) * level * (event.gain ?? 1);
     if (gain <= 0) continue;
 
+    if (voice !== undefined) {
+      samples[index] = (samples[index] ?? 0) + voice.sample(frequency, noteSeconds, noteDuration) * gain;
+      continue;
+    }
+
     phase += frequency / rate;
     if (phase > 1e6) phase -= Math.floor(phase);
     wave.phase = phase;
@@ -215,6 +233,7 @@ interface DrumHit {
   readonly seed: number;
   readonly decayScale?: number;
   readonly toneHz?: number;
+  readonly pitchSemitones?: number;
 }
 
 function buildDrumHits(
@@ -231,15 +250,19 @@ function buildDrumHits(
     const startSeconds = event.step * score.stepSeconds + swingSeconds(score, event.step);
     const slotSeconds = Math.max(0, event.steps * score.stepSeconds);
     const effect = event.drumEffect;
+    const params = event.drumParams;
     const seedBase = (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + event.midi;
 
     let velocity = (event.volume / 7) * (event.gain ?? 1);
-    let decayScale: number | undefined;
-    let toneHz: number | undefined;
+    let decayScale: number | undefined = params?.decayScale;
+    let toneHz: number | undefined = params?.toneHz;
+    const pitchSemitones = params?.pitchSemitones;
     if (effect?.kind === 'ghost') {
       velocity *= GHOST_VELOCITY;
-      decayScale = GHOST_DECAY_SCALE;
-      toneHz = GHOST_TONE_HZ;
+      // An explicit ~decay multiplies the ghost's shorter shape instead of
+      // replacing it, so the two suffixes compose predictably.
+      decayScale = (decayScale ?? 1) * GHOST_DECAY_SCALE;
+      toneHz = toneHz ?? GHOST_TONE_HZ;
     }
 
     const pushHit = (offsetSeconds: number, hitVelocity: number, hitIndex: number): void => {
@@ -250,6 +273,7 @@ function buildDrumHits(
         seed: seedFor(score, seedBase + hitIndex * 17),
         ...(decayScale === undefined ? {} : { decayScale }),
         ...(toneHz === undefined ? {} : { toneHz }),
+        ...(pitchSemitones === undefined ? {} : { pitchSemitones }),
       });
     };
 
@@ -294,6 +318,7 @@ function addDrumHits(
     const audio = renderDrumHit(hit.drum, rate, hit.velocity, hit.seed, {
       ...(hit.decayScale === undefined ? {} : { decayScale: hit.decayScale }),
       ...(hit.toneHz === undefined ? {} : { toneHz: hit.toneHz }),
+      ...(hit.pitchSemitones === undefined ? {} : { pitchSemitones: hit.pitchSemitones }),
     });
     for (let i = 0; i < audio.length; i += 1) {
       let index = start + i;
@@ -352,11 +377,29 @@ function collectKickOffsets(score: Score, rate: number, signal?: AbortSignal): r
 }
 
 /**
+ * Role-based instruments a style supplies. An explicit `track.instrument`
+ * always wins; `default` is the fallback for a role the style does not name.
+ */
+export type RoleInstruments = Readonly<Record<string, Instrument>>;
+
+function instrumentFor(track: ScoreTrack, defaults: RoleInstruments | undefined): Instrument | undefined {
+  if (track.isDrums) return undefined;
+  if (track.instrument !== undefined) return track.instrument;
+  if (defaults === undefined) return undefined;
+  return defaults[track.role.toLowerCase()] ?? defaults.default;
+}
+
+/**
  * Renders one sample-exact pass of the score. Each track gets its own buffer so
  * filters, panning, delay, ducking, and sends stay per-track; the buffers are
  * summed only after the mix-stage processing.
  */
-export function renderScore(score: Score, rate: number, signal?: AbortSignal): SongAudio {
+export function renderScore(
+  score: Score,
+  rate: number,
+  signal?: AbortSignal,
+  roleInstruments?: RoleInstruments,
+): SongAudio {
   const loopSamples = Math.max(1, Math.round(score.durationSeconds * rate));
   const wrap = score.mode === 'loop';
   const left = new Float32Array(loopSamples);
@@ -379,7 +422,8 @@ export function renderScore(score: Score, rate: number, signal?: AbortSignal): S
         signal,
       );
     } else {
-      for (const note of buildMelodicNotes(score, rate, track, trackIndex, signal)) {
+      const instrument = instrumentFor(track, roleInstruments);
+      for (const note of buildMelodicNotes(score, rate, track, trackIndex, instrument, signal)) {
         renderMelodicNote(buffer, note, score, rate, loopSamples, wrap, signal);
       }
     }

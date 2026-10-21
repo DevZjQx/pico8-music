@@ -5,10 +5,12 @@ with an explicit, ordered post chain, and report what the finished audio
 measures.
 
 **Owns.** PICO-8-flavoured synthesis (eight timbres, per-note volume, track or
-named ADSR envelopes, note effects and their parameters), polyphonic event
-scheduling (chords and legato gates overlap without voice stealing), swing
+named ADSR envelopes, note effects and their parameters), the instrument layer
+(`chip` / band-limited `additive` / two-operator `fm`, unison detune, drive, and
+per-note filter envelopes), polyphonic event scheduling (chords and legato
+gates overlap without voice stealing), swing
 offsets, synthetic drum voices and their articulations (`ghost`, `flam`,
-`roll`), song timelines, section `energy` gain/filter scaling, per-track
+`roll`) and per-hit `pitch` / `decay` / `tone`, song timelines, section `energy` gain/filter scaling, per-track
 buffers and the mix stage (state-variable low-pass with LFO and resonance, step-timed feedback
 delay, kick-triggered ducking, equal-power pan, reverb send), section filtering
 and filter sweeps, resampling for the slowed pitch drop, tone shaping,
@@ -16,8 +18,9 @@ Freeverb-style reverb, steady-state loop extraction, a shared peak ceiling
 instead of per-sample clipping, repetition to the requested length, and WAV
 encoding. It also owns the post-chain contract: `tape`/`slow`, `lowpass`,
 `reverb`, the master steps `tilt` / `saturate` / `compress` / `loudness` /
-`limiter`, the `[]` dry path, the `chip` / `hitech` / `ambient` style
-templates, BS.1770 integrated loudness, the render report (peak, RMS, spectrum,
+`limiter`, the `[]` dry path, the `chip` / `hitech` / `ambient` / `studio` /
+`lofi` style templates (including role-based instrument defaults), BS.1770
+integrated loudness, the render report (peak, RMS, spectrum,
 width, onsets, section energies, warnings), cooperative abort checks, and WAV
 decoding for `p8_analyze`.
 
@@ -38,7 +41,13 @@ only.
 on binaries that are absent in some DSH profiles, and steady-state loop
 extraction needs sample-accurate control that a filter graph makes awkward.
 Official PICO-8 `export foo.wav`: it requires a licensed, interactive editor
-and only exports one pattern at a time. Bit-exact PICO-8 sfx emulation: the
+and only exports one pattern at a time. Sample playback and user wavetables:
+licensed or user-supplied assets would break the single-file plugin and
+reproducible-render guarantees, so non-chip voices are synthesized instead.
+This does not rule out a model-designed shape: an additive table is built from
+numbers in the score (amplitudes plus per-harmonic phase), carries no asset, and
+stays byte-reproducible, so `partials` is where wave design lives.
+Bit-exact PICO-8 sfx emulation: the
 score carries musical effects (`slide`, `vibrato`, `arpfast`), not PICO-8's
 32-note sfx memory layout, so the effects are musical approximations rather
 than the original state machine. Sample-based drums were rejected for M1: they
@@ -49,8 +58,17 @@ the spectral separation the arrangement needs.
 table; there is no runtime dependency on Freeverb itself. Drum synthesis uses
 deterministic LCG noise, so renders stay reproducible; the score `seed` is
 folded into that seed and the noise waveform. A drum articulation only changes
-the per-hit plan (extra hits, velocity, decay, tone) and never adds a new
-render path; a `roll` subdivides the event's slot, and a `flam` offsets the
+the per-hit plan (extra hits, velocity, decay, tone, pitch) and never adds a
+new render path; a `~pitch` suffix multiplies only the pitched components, so
+noise-based hats keep their spectrum; and an explicit `chip` instrument reuses
+`waveform.ts` so it stays sample-identical to the legacy `waveform` field. An
+additive table is rebuilt per note from the score's harmonics, band-limited at
+that pitch, and scaled by its measured peak rather than by the amplitude sum:
+phase then changes the shape without moving the level, and every voice type
+anchors at ~0.25 peak (chip, FM, additive), so swapping voice types does not
+jump the mix. The cost is a deliberate level shift for scores written before
+this: a peak-normalised additive voice sits about 2.6 dB above the old
+sum-normalised one.  a `roll` subdivides the event's slot, and a `flam` offsets the
 second hit by milliseconds, so both wrap at the loop seam with the same
 sample-exact rule as a normal one-shot. Each track renders into its own buffer
 before filters, delay, ducking, pan, and send, so those parameters never leak

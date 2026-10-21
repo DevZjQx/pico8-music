@@ -9,7 +9,9 @@ slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
 `Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`),
 score-level `swing` and `seed`, motif definitions and transforms
 (`@A.transpose(2).retrograde`), drum articulations (`~ghost`, `~flam(ms)`,
-`~roll(hits)`), loop vs song mode, named patterns, arrangement
+`~roll(hits)`) and per-hit drum parameters (`~pitch`, `~decay`, `~tone`), the
+top-level `instruments` table and per-track `instrument` references, loop vs
+song mode, named patterns, arrangement
 resolution (sections, mute, gain, filter and filter sweeps, `energy`, and
 `fill` pattern replacement), the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `delay`), the
@@ -17,8 +19,8 @@ model-facing DSL reference (`help.ts`), and the normalised `Score` the renderer
 consumes.
 
 **Does not own.** How anything sounds. Tempo becomes seconds here, but the
-waveform and drum generators, envelope *interpretation*, section filtering, and
-effect curves belong to `render`; this feature only decides that an envelope
+waveform, instrument, and drum generators, envelope *interpretation*, section
+filtering, and effect curves belong to `render`; this feature only decides that an envelope
 or filter exists, its fields, and their legal ranges. The DSL reference is text,
 not enforcement: `parse.ts` stays the only authority, and `help.ts` must be kept
 in sync with it. Reading `.p8` cartridges is out of scope: the composition is
@@ -51,8 +53,17 @@ effect or drum-articulation names, which is what keeps `~name` unambiguous. Moti
 would turn the integer step grid into a fractional one across parse,
 arrangement, and loop seams. Drum articulations are parsed into a `DrumEffect`
 on the event instead of DSP parameters, so a motif transform can carry them
-without knowing how they sound; per-hit pitch/decay were rejected because
-`H`/`O` already separate closed and open hats.
+without knowing how they sound; per-hit pitch/decay/tone travel separately as
+`DrumParams`, so they compose with `~ghost`/`~flam`/`~roll` instead of competing
+for the one articulation slot. `instrument` accepts a name, an inline object,
+and the built-in `chip`/`fm`/`additive`/`drums` shorthands, which keeps old
+`{type: "chip", waveform}` scores valid. An additive harmonic is a bare
+amplitude, a negative amplitude (the same wave mirrored), or
+`[amplitude, phaseDegrees]`; the parser folds signs into phases, so the render
+side only ever sees magnitudes and phases and a score can design a shape
+(25% pulse, stepped harmonics) that no real-valued amplitude series reaches.
+Signs are kept rather than clamped because `0` and `-0.3` are different shapes,
+not a range error.
 
 **Boundary evidence.** Deleting this folder breaks `render/feature.ts`,
 `app/render-service.ts`, and therefore both host adapters; the syntax rules

@@ -1,0 +1,81 @@
+{
+  "mode": "song",
+  "bpm": 112,
+  "stepsPerBeat": 4,
+  "instruments": {
+    "sub_bass": {
+      "type": "additive",
+      "partials": [1, 0.5, 0.33, 0.25, 0.2, 0.16],
+      "filter": { "cutoffHz": 380, "resonance": 1.3, "envAmount": 2.2, "decay": 0.22, "sustain": 0.15 },
+      "drive": 0.12
+    },
+    "bell_lead": {
+      "type": "fm",
+      "ratio": 3,
+      "index": 2.4,
+      "indexDecay": 0.6,
+      "unison": 2,
+      "detune": 5,
+      "filter": { "cutoffHz": 5200, "envAmount": 0.9, "decay": 0.4, "sustain": 0.25 }
+    },
+    "string_pad": {
+      "type": "additive",
+      "partials": [1, 0.62, 0.44, 0.3, 0.22, 0.16, 0.12, 0.09, 0.07],
+      "unison": 3,
+      "detune": 9,
+      "filter": { "cutoffHz": 2200, "resonance": 0.8, "envAmount": 1.4, "attack": 0.5, "decay": 1.2, "sustain": 0.65 }
+    }
+  },
+  "patterns": {
+    "drums.A": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1",
+    "drums.B": "K:1 H:1 S:1 H:1 K:1 K:1 S:1~pitch(2) O:1",
+    "bass.A": "F1:1 F1:1 C2:1 F1:1 D#2:1 D#2:1 C2:1 A#1:1",
+    "lead.A": "F4:2 Ab4:2 C5:4 Ab4:2 F4:2 C5:4",
+    "lead.B": "C5:2 A#4:2 Ab4:2 F4:2 C5:4 Ab4:4"
+  },
+  "tracks": [
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "instrument": "sub_bass",
+      "pattern": "F1:1 F1:1 C2:1 F1:1 D#2:1 D#2:1 C2:1 A#1:1",
+      "duck": 0.5
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "instrument": "bell_lead",
+      "pattern": "F4:2 Ab4:2 C5:4 Ab4:2 F4:2 C5:4",
+      "send": 0.25,
+      "delay": { "steps": 3, "feedback": 0.3, "mix": 0.25 }
+    },
+    {
+      "name": "pad",
+      "role": "pad",
+      "instrument": "string_pad",
+      "pattern": "[F3,Ab3,C4]:8 [D#3,G3,A#3]:8",
+      "volume": 4,
+      "send": 0.3
+    }
+  ],
+  "arrangement": [
+    { "name": "intro", "bars": 2, "mute": ["drums", "bass"] },
+    {
+      "name": "drop",
+      "bars": 4,
+      "patterns": { "drums": "drums.B", "bass": "bass.A", "lead": "lead.A" }
+    },
+    {
+      "name": "outro",
+      "bars": 2,
+      "patterns": { "lead": "lead.B" },
+      "mute": ["drums"],
+      "filter": 1800
+    }
+  ]
+}

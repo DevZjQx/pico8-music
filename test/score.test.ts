@@ -379,6 +379,119 @@ test('reads drum type and waveform from an instrument object', () => {
   assert.equal(parsed.tracks[1]?.waveform, 2);
 });
 
+test('resolves named and inline instruments without changing track fields', () => {
+  const parsed = parseScore({
+    instruments: {
+      pad: {
+        type: 'additive',
+        partials: [1, 0.5, 0.25],
+        unison: 3,
+        detune: 8,
+        filter: { cutoffHz: 1800, envAmount: 1.5 },
+      },
+      bell: { type: 'fm', ratio: 3, index: 2, indexDecay: 0.6 },
+    },
+    tracks: [
+      { name: 'pad', role: 'pad', instrument: 'pad', pattern: '[C4,E4,G4]:4' },
+      { name: 'lead', instrument: { type: 'fm', ratio: 2 }, pattern: 'C4:4' },
+    ],
+  });
+
+  assert.equal(parsed.tracks[0]?.instrument?.type, 'additive');
+  assert.equal(parsed.tracks[0]?.instrument?.unison, 3);
+  assert.equal(parsed.tracks[0]?.instrument?.detuneCents, 8);
+  assert.equal(parsed.tracks[0]?.instrument?.filter?.cutoffHz, 1800);
+  assert.equal(parsed.tracks[0]?.waveform, 4);
+  assert.equal(parsed.tracks[1]?.instrument?.type, 'fm');
+  assert.equal(parsed.tracks[1]?.instrument?.ratio, 2);
+});
+
+test('rejects malformed instrument definitions', () => {
+  const withTrack = (track: Record<string, unknown>) => () =>
+    parseScore({ tracks: [track] });
+
+  assert.throws(
+    withTrack({ instrument: 'missing', pattern: 'C4:4' }),
+    /unknown instrument "missing"/,
+  );
+  assert.throws(
+    withTrack({ instrument: { type: 'orchestra' }, pattern: 'C4:4' }),
+    /type must be chip, fm, or additive/,
+  );
+  assert.throws(
+    withTrack({ instrument: { type: 'chip', partials: [1] }, pattern: 'C4:4' }),
+    /partials only applies to additive/,
+  );
+  assert.throws(
+    withTrack({ instrument: { type: 'additive', ratio: 2 }, pattern: 'C4:4' }),
+    /only apply to fm/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        instruments: { chip: { type: 'chip' } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /built-in instrument type/,
+  );
+});
+
+test('reads additive harmonics as amplitude, or amplitude and phase degrees', () => {
+  const partialsOf = (partials: unknown) =>
+    parseScore({ tracks: [{ instrument: { type: 'additive', partials }, pattern: 'C4:4' }] })
+      .tracks[0]?.instrument?.partials;
+
+  assert.deepEqual(partialsOf([1, -0.5, [0.25, 90]]), [
+    { amplitude: 1, phase: 0 },
+    { amplitude: 0.5, phase: Math.PI },
+    { amplitude: 0.25, phase: Math.PI / 2 },
+  ]);
+  // Degrees wrap, so a model can write 450 without a special case.
+  assert.deepEqual(partialsOf([[0.5, 450]]), partialsOf([[0.5, 90]]));
+
+  assert.throws(() => partialsOf([1.5]), /must be between -1 and 1/);
+  assert.throws(() => partialsOf([[0.5, 90, 3]]), /got 3 items/);
+  assert.throws(() => partialsOf([[1.2, 0]]), /\[0\] must be between 0 and 1/);
+  assert.throws(() => partialsOf([[0.5, 'fast']]), /\[1\] must be a number/);
+  assert.throws(() => partialsOf([]), /1-16 harmonics/);
+  assert.throws(
+    () => partialsOf(new Array(17).fill(0.1)),
+    /1-16 harmonics/,
+  );
+});
+
+test('parses per-hit drum pitch, decay, and tone alongside articulations', () => {
+  const parsed = parseScore({
+    tracks: [
+      {
+        role: 'drums',
+        pattern: 'K:1~ghost~pitch(-3)~decay(1.5)~tone(2500) S:4~pitch(2)',
+      },
+    ],
+  });
+  const first = parsed.tracks[0]?.events[0];
+  assert.deepEqual(first?.drumEffect, { kind: 'ghost' });
+  assert.deepEqual(first?.drumParams, { pitchSemitones: -3, decayScale: 1.5, toneHz: 2500 });
+  assert.deepEqual(parsed.tracks[0]?.events[1]?.drumParams, { pitchSemitones: 2 });
+
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'K:1~pitch(13)' }] }),
+    /pitch must be between -12 and 12/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'K:1~pitch(2)~pitch(3)' }] }),
+    /at most one ~pitch/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: '-:1~decay(2)' }] }),
+    /a rest cannot carry ~pitch, ~decay, or ~tone/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~tone(800)' }] }),
+    /only for drum tracks/,
+  );
+});
+
 test('expands motif transpose, invert, and retrograde transforms', () => {
   const parsed = parseScore({
     motifs: { A: 'C4:1 E4:1 G4:2' },
@@ -679,6 +792,14 @@ test('rejects unknown envelopes, effect-name collisions, and envelope parameters
     }),
     /takes no parameters/,
   );
+  assert.throws(
+    () =>
+      parseScore({
+        envelopes: { pitch: { attack: 0.01 } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /collides with the pitch effect/,
+  );
 });
 
 test('parses parameterised vibrato and slide effects', () => {
@@ -763,6 +884,20 @@ test('rejects unknown fields instead of silently dropping them', () => {
   assert.throws(
     () => parseScore({ tempo: 120, tracks: [{ pattern: 'C4:4' }] }),
     /score: unknown field "tempo"/,
+  );
+  // Tool arguments are a separate level of the call. Name that boundary so a
+  // model does not have to guess whether post belongs to the score or the tool.
+  assert.throws(
+    () => parseScore({ post: [], tracks: [{ pattern: 'C4:4' }] }),
+    (error: unknown) =>
+      error instanceof ScoreError &&
+      /score: unknown field "post"/.test(error.message) &&
+      /"post" is a p8_music tool parameter, not a top-level score field/.test(error.message) &&
+      /alongside "score", outside the score JSON/.test(error.message),
+  );
+  assert.throws(
+    () => parseScore({ post: [], preset: 'dreamy', tracks: [{ pattern: 'C4:4' }] }),
+    /"post", "preset" are p8_music tool parameters, not top-level score fields/,
   );
   assert.throws(
     () =>

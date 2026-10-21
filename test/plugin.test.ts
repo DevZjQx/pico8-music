@@ -133,6 +133,21 @@ test('a bad score points the model at p8_help', async () => {
   }, /p8_help/);
 });
 
+test('a tool argument nested in the score is reported as an argument', async () => {
+  const { ctx, captured } = host();
+  apply(ctx);
+  const misplaced = JSON.stringify({ post: [], tracks: [{ pattern: 'C4:4' }] });
+  await assert.rejects(
+    async () => {
+      await captured.tools.get('p8_music')?.execute?.({ score: misplaced });
+    },
+    (error: unknown) =>
+      error instanceof Error &&
+      /"post" is a p8_music tool parameter, not a top-level score field/.test(error.message) &&
+      /p8_help/.test(error.message),
+  );
+});
+
 test('DSH resolves relative paths against the session workspace', async () => {
   const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-cwd-'));
   try {

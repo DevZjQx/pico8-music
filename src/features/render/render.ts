@@ -404,7 +404,9 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   }
   if (options.style !== undefined) {
     if (!isStyleName(options.style)) {
-      throw new Error(`unknown style ${JSON.stringify(options.style)}; use chip, hitech, or ambient`);
+      throw new Error(
+        `unknown style ${JSON.stringify(options.style)}; use chip, hitech, ambient, studio, or lofi`,
+      );
     }
     if (options.preset !== undefined) {
       throw new Error('style and preset cannot be combined; style already fills the post chain');
@@ -417,8 +419,9 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   const loops = score.mode === 'song' ? 1 : hasReverb ? RENDER_LOOPS : 1;
 
   const signal = options.signal;
+  const roleInstruments = options.style === undefined ? undefined : STYLES[options.style].instruments;
   throwIfAborted(signal);
-  const song = renderScore(score, RATE, signal);
+  const song = renderScore(score, RATE, signal, roleInstruments);
   throwIfAborted(signal);
   if (song.sendBus) addSendReverb(song, score.mode === 'song' ? 1 : RENDER_LOOPS);
   const sourceLeft = loops > 1 ? repeat(song.left, loops) : song.left;

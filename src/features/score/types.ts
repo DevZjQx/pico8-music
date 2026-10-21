@@ -61,6 +61,69 @@ export type DrumEffect =
   | { readonly kind: 'flam'; readonly offsetMs: number }
   | { readonly kind: 'roll'; readonly hits: number };
 
+/**
+ * How an instrument turns a pitch into a waveform. `chip` is the historical
+ * PICO-8 path; `additive` builds a band-limited harmonic table; `fm` is a
+ * two-operator phase-modulation voice. All three share unison, drive, and the
+ * optional per-note filter envelope.
+ */
+export type InstrumentType = 'chip' | 'fm' | 'additive';
+
+/** Per-note low-pass envelope; `envAmount` opens the cutoff in octaves. */
+export interface InstrumentFilter {
+  readonly cutoffHz: number;
+  readonly resonance: number;
+  readonly envAmount: number;
+  readonly attack: number;
+  readonly decay: number;
+  readonly sustain: number;
+  readonly release: number;
+}
+
+/**
+ * One harmonic of an additive table. Amplitude is a magnitude, so the sign of a
+ * score-level number is folded into `phase` instead of being lost.
+ */
+export interface Partial {
+  /** Harmonic magnitude, 0..1. */
+  readonly amplitude: number;
+  /** Radians; a negative score amplitude becomes π, mirroring the waveform. */
+  readonly phase: number;
+}
+
+/**
+ * A named or inline voice definition. `waveform` and `partials` apply to
+ * `chip` and `additive` respectively; the FM fields only apply to `fm`.
+ * Fields that do not match the type are rejected at parse time.
+ */
+export interface Instrument {
+  readonly type: InstrumentType;
+  /** Chip waveform; ignored by `fm` and `additive`. */
+  readonly waveform: Waveform;
+  /** Additive harmonics, fundamental first; this is the model-designed shape. */
+  readonly partials?: readonly Partial[];
+  readonly ratio?: number;
+  readonly index?: number;
+  readonly indexDecay?: number;
+  /** Stacked detuned copies, 1-4. */
+  readonly unison: number;
+  /** Cent spacing between unison voices, 0-50. */
+  readonly detuneCents: number;
+  /** Post-filter soft clip, 0-1. */
+  readonly drive: number;
+  readonly filter?: InstrumentFilter;
+}
+
+/** Per-hit overrides accepted by drum tracks as `~pitch`, `~decay`, `~tone`. */
+export interface DrumParams {
+  /** Semitone offset applied to pitched drum components, -12..12. */
+  readonly pitchSemitones?: number;
+  /** Multiplies the hit's decay rate; 1 is the stock voice. */
+  readonly decayScale?: number;
+  /** Post-voice low-pass cutoff in Hz. */
+  readonly toneHz?: number;
+}
+
 /** Per-track low-pass with optional resonance and a cutoff LFO. */
 export interface TrackFilter {
   /** Base cutoff in Hz. */
@@ -104,6 +167,8 @@ export interface NoteEvent {
   readonly drum?: DrumName;
   /** Present only when a drum token carries `~ghost`, `~flam`, or `~roll`. */
   readonly drumEffect?: DrumEffect;
+  /** Present when a drum token carries `~pitch`, `~decay`, or `~tone`. */
+  readonly drumParams?: DrumParams;
   /** Section gain multiplier; defaults to 1 when absent. */
   readonly gain?: number;
 }
@@ -123,6 +188,8 @@ export interface ScoreTrack {
   readonly role: string;
   readonly isDrums: boolean;
   readonly waveform: Waveform;
+  /** Resolved instrument; absent keeps the historical waveform path. */
+  readonly instrument?: Instrument;
   /** 0..7, the default per-note volume when a token has no `@volume` suffix. */
   readonly volume: number;
   /** ADSR applied to every note in the track. Drum hits ignore it. */

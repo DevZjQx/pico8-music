@@ -100,7 +100,7 @@ renderScore
 
 | 缺口 | 优先级 | 现状 |
 | --- | --- | --- |
-| [鼓与打击乐](#p0-1-鼓与打击乐) | P0 | 基础鼓与 `~ghost`/`~flam`/`~roll` 已实现；per-hit pitch/decay 未做 |
+| [鼓与打击乐](#p0-1-鼓与打击乐) | P0 | 基础鼓、`~ghost`/`~flam`/`~roll` 与 per-hit `~pitch`/`~decay`/`~tone` 已实现 |
 | [段落与编曲](#p0-2-段落与编曲) | P0 | 基础段落、`fill`、`energy` 已实现；`riser`/`tail` 未做 |
 | [复音与和声](#p0-3-复音与和声) | P0 | 显式与命名和弦已实现，`voices`、`key`/`scale`、voice leading 未做 |
 | [发音法、门限、动态](#p0-4-发音法门限动态) | P0 | slot/gate、命名包络、参数化 slide/vib 已实现；参数化 arp、力度映射未做 |
@@ -358,7 +358,7 @@ renderScore
 要点：
 
 - `role` 提供默认音色/包络/混音，模型只写偏离默认的部分。
-- `instrument.type` 只区分 `chip` 与 `drums`；`chip` 是音色类别，和 `mode`、`style` 不是一回事。
+- `instrument.type` 现在是 `chip` / `fm` / `additive`（`drums` 仍可作为 track 标记）；`chip` 是音色类别，和 `mode`、`style` 不是一回事。`studio`/`lofi` style 按 role 填非芯片 instrument。
 - `post: []` 表示干声；`preset: "dreamy"` 才等价于现在的 slow+reverb。
 - `glide`、`filter`、`pan`、`send` 都是 track 级默认，可被 note 级覆盖。
 
@@ -521,9 +521,22 @@ M5 把 P0-1 的鼓效果尾巴和 P0-2 的 `fill`/`energy` 作为一个包做，
 - 示例：`examples/m5-drums-fill.json`，14 小节 intro/build/drop/break，drop 最后一小节用 fill；报告段落 RMS 从 intro -20.3 dBFS 到 drop -14.0 dBFS。
 - 验证：鼓效果的听觉/频谱测试（ghost 更轻更暗、flam 的第二下、roll 的 slot 均分与确定性）、fill 替换与警告、energy 的增益/滤波对比、旧 golden hash 不变。
 
+### 7.6 M6：音源离开芯片
+
+编曲和混音早就不是芯片限制，限制只剩「一个音怎么发声」。M6 把发声器从 8 个公式里拆出来：
+
+- `instruments`：命名/内联 voice，`chip`（原 8 波形，逐样本兼容）、`additive`（带限谐波表）、`fm`（两算子）。共用 `unison`/`detune`/`drive` 和逐音滤波包络。
+- 鼓：`~pitch` / `~decay` / `~tone` 与 `~ghost`/`~flam`/`~roll` 正交叠加，不再抢同一个后缀槽。
+- style：新增 `studio` 与 `lofi`，按 role（bass/lead/pad/keys/default）填非芯片音色；显式 `track.instrument` 优先。
+- 验证：显式 chip instrument 与旧 `waveform` 逐字节一致；additive/FM 与 chip 的渲染 hash 不同；`~pitch(12)` 抬高 kick 质心、`~decay(4)` 降低尾音 RMS；`studio`/`lofi` 不改变 loop 长度。
+- 仍不做：采样/波表文件、任意 FM 算子矩阵、per-note pan、第 5 条 track。
+- M7：`additive.partials` 的元素可以是负振幅或 `[振幅, 相位度数]`，相位折进波表，归一化改成按实测峰值且锚定 0.25（与 chip/FM 一致）。于是「设计波形」成了分数内的事：25% 占空比脉冲（带偶次谐波）、相位阶梯、反向锯齿都能写出来，换相位只扭形状不改电平。旧 additive 分数相对电平会升约 2.6 dB，这是为了让三种 voice 可以互换而不跳音。
+- 验证：负振幅与 `[振幅, 180]` 渲染逐字节相同；相位转 90° 后 WAV 改变而峰值变化 ≤ 0.5 dB；方波与同电平 25% 脉冲的质心不同。
+- 示例：`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`。
+
 ## 8. 一句话总结
 
-最高杠杆的五组能力是：**鼓、段落、gate/发音法、和弦与动机发展、滤波自动化**；同时把 **slow+reverb 从产品身份降级为 post preset**。如果只能先做一个里程碑，选 M1（鼓 + 段落 + 干声），它改变的是产品类别；继续加波形或效果参数只是边际优化。做完这些，插件才从「能生成一个慢速氛围 loop」变成「能编出一段有节奏、有和声、有起伏的 PICO-8 风格音乐」。
+最高杠杆的五组能力是：**鼓、段落、gate/发音法、和弦与动机发展、滤波自动化**；同时把 **slow+reverb 从产品身份降级为 post preset**。如果只能先做一个里程碑，选 M1（鼓 + 段落 + 干声），它改变的是产品类别；继续加波形或效果参数只是边际优化。做完这些，插件才从「能生成一个慢速氛围 loop」变成「能编出一段有节奏、有和声、有起伏的 PICO-8 风格音乐」。再往后，M6 的音源层让它不必停留在 PICO-8 音色：编曲语法不变，换 instrument 就能做别的风格。
 
 ## 延伸阅读
 

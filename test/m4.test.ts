@@ -249,7 +249,101 @@ test('styles fill the post chain without touching the mode', () => {
     () => renderLoop(mixed, { style: 'chip', preset: 'classic' }),
     /style and preset cannot be combined/,
   );
-  assert.throws(() => renderLoop(mixed, { style: 'lofi' as never }), /unknown style/);
+  assert.throws(() => renderLoop(mixed, { style: 'orchestral' as never }), /unknown style/);
+});
+
+test('an explicit chip instrument renders exactly like the legacy waveform', () => {
+  const legacy = parseScore({
+    tracks: [{ role: 'lead', waveform: 'saw', pattern: 'C4:4 E4:4 G4:4' }],
+  });
+  const explicit = parseScore({
+    tracks: [{ role: 'lead', instrument: { type: 'chip', waveform: 'saw' }, pattern: 'C4:4 E4:4 G4:4' }],
+  });
+  const a = renderLoop(legacy, { post: [], minutes: 0.05 });
+  const b = renderLoop(explicit, { post: [], minutes: 0.05 });
+  assert.ok(Buffer.from(a.wav).equals(Buffer.from(b.wav)), 'chip instruments must keep the old path');
+});
+
+test('additive partials take a phase, so the model can design the shape', () => {
+  const voice = (partials: unknown) =>
+    renderLoop(
+      parseScore({
+        bpm: 120,
+        bars: 1,
+        tracks: [{ role: 'lead', instrument: { type: 'additive', partials }, pattern: 'C4:8 C4:8' }],
+      }),
+      { post: [], minutes: 0.05 },
+    );
+
+  // A square is odd harmonics with alternating signs; a 25% pulse keeps an even
+  // harmonic (h=2), which no amplitude-only series of the same level reaches.
+  const pulse = Array.from({ length: 8 }, (_, index) => Math.sin((Math.PI * (index + 1)) / 4) / (index + 1));
+  const square = voice([1, 0, 1 / 3, 0, 0.2, 0, 1 / 7, 0]);
+  const narrow = voice(pulse);
+  assert.ok(
+    narrow.report.centroidHz > square.report.centroidHz,
+    `pulse centroid ${narrow.report.centroidHz} vs square ${square.report.centroidHz}`,
+  );
+
+  // A negative amplitude is the same wave mirrored, so it must equal the
+  // explicit 180-degree form sample for sample.
+  const signed = voice([1, -0.5, 1 / 3]);
+  const spelled = voice([
+    [1, 0],
+    [0.5, 180],
+    [1 / 3, 0],
+  ]);
+  assert.ok(Buffer.from(signed.wav).equals(Buffer.from(spelled.wav)), 'signed and tuple phases must agree');
+
+  // Phase changes the shape, not the level: the table is peak-normalised.
+  const inPhase = voice([1, 0.5]);
+  const quarterTurn = voice([
+    [1, 0],
+    [0.5, 90],
+  ]);
+  assert.ok(!Buffer.from(inPhase.wav).equals(Buffer.from(quarterTurn.wav)), 'phase must reach the table');
+  assert.ok(Math.abs(inPhase.report.peakDb - quarterTurn.report.peakDb) <= 0.5, 'phase must not move the peak');
+});
+
+test('studio and lofi change the voice while the score stays the same', () => {
+  const plain = renderLoop(mixed, { post: [], minutes: 0.05 });
+  const studio = renderLoop(mixed, { style: 'studio', minutes: 0.05 });
+  const lofi = renderLoop(mixed, { style: 'lofi', minutes: 0.05 });
+  assert.equal(studio.loopSamples, plain.loopSamples);
+  assert.ok(!Buffer.from(studio.wav).equals(Buffer.from(plain.wav)), 'studio must change the timbre');
+  assert.ok(studio.report.peakDb <= -0.9);
+  assert.ok(lofi.report.peakDb <= -0.9);
+
+  // An explicit track instrument outranks the style's role default.
+  const studioDry = renderLoop(mixed, { style: 'studio', post: [], minutes: 0.05 });
+  const pinned = parseScore({
+    ...rawScore,
+    tracks: rawScore.tracks.map((track) =>
+      track.name === 'lead' ? { ...track, instrument: { type: 'chip', waveform: 'pulse' } } : track,
+    ),
+  });
+  const pinnedDry = renderLoop(pinned, { style: 'studio', post: [], minutes: 0.05 });
+  assert.ok(
+    !Buffer.from(pinnedDry.wav).equals(Buffer.from(studioDry.wav)),
+    'track.instrument must outrank the style default',
+  );
+});
+
+test('drum pitch raises the kick spectrum and decay shortens the tail', () => {
+  const kick = (pattern: string) =>
+    renderLoop(
+      parseScore({ bpm: 120, bars: 1, tracks: [{ role: 'drums', pattern }] }),
+      { post: [], minutes: 0.05 },
+    );
+  const stock = kick('K:4 -:4');
+  const pitched = kick('K:4~pitch(12) -:4');
+  assert.ok(
+    pitched.report.centroidHz > stock.report.centroidHz,
+    `pitched ${pitched.report.centroidHz} vs ${stock.report.centroidHz}`,
+  );
+
+  const short = kick('K:4~decay(4) -:4');
+  assert.ok(short.report.rmsDb < stock.report.rmsDb, 'faster decay must lower the tail energy');
 });
 
 test('decodeWav round-trips a render and the analyze tool re-reads it', async () => {
@@ -288,7 +382,10 @@ test('the analyze tool rejects missing files and non-PCM input', async () => {
 });
 
 test('the render service validates style names and post types', async () => {
-  await assert.rejects(() => executeRender({ score: JSON.stringify(rawScore), style: 'lofi' }), /unknown style/);
+  await assert.rejects(
+    () => executeRender({ score: JSON.stringify(rawScore), style: 'orchestral' }),
+    /unknown style/,
+  );
   await assert.rejects(
     () => executeRender({ score: JSON.stringify(rawScore), post: [{ type: 'flanger' }] as never }),
     /must be tape, slow, lowpass, reverb/,

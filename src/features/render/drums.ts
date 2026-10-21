@@ -36,6 +36,8 @@ export interface DrumHitOptions {
   readonly decayScale?: number;
   /** Post-voice one-pole low-pass cutoff in Hz. */
   readonly toneHz?: number;
+  /** Semitone offset for pitched components; noise spectra stay put. */
+  readonly pitchSemitones?: number;
 }
 
 export function renderDrumHit(
@@ -50,6 +52,7 @@ export function renderDrumHit(
   const noise = noiseSource(seed);
   const level = Math.max(0, velocity);
   const decay = options.decayScale ?? 1;
+  const pitch = 2 ** ((options.pitchSemitones ?? 0) / 12);
 
   let phase = 0;
   let highpassIn = 0;
@@ -80,16 +83,16 @@ export function renderDrumHit(
 
     switch (name) {
       case 'kick': {
-        const frequency = 45 + 105 * Math.exp(-t * 22);
+        const frequency = (45 + 105 * Math.exp(-t * 22)) * pitch;
         phase += (2 * Math.PI * frequency) / rate;
         const body = Math.sin(phase) * Math.exp(-t * 7.5 * decay);
-        const click = Math.sin(2 * Math.PI * 180 * t) * Math.exp(-t * 120 * decay) * 0.16;
+        const click = Math.sin(2 * Math.PI * 180 * pitch * t) * Math.exp(-t * 120 * decay) * 0.16;
         sample = body * 0.95 + click;
         break;
       }
       case 'snare': {
-        const body = Math.sin(2 * Math.PI * 185 * t) * Math.exp(-t * 18 * decay) * 0.38;
-        const overtone = Math.sin(2 * Math.PI * 330 * t) * Math.exp(-t * 28 * decay) * 0.14;
+        const body = Math.sin(2 * Math.PI * 185 * pitch * t) * Math.exp(-t * 18 * decay) * 0.38;
+        const overtone = Math.sin(2 * Math.PI * 330 * pitch * t) * Math.exp(-t * 28 * decay) * 0.14;
         const rattle =
           lowpass2(highpass(noise(), snareHighpass), 900) * Math.exp(-t * 13 * decay) * 0.55;
         sample = body + overtone + rattle;
@@ -113,20 +116,20 @@ export function renderDrumHit(
         break;
       }
       case 'tom': {
-        const frequency = 170 - 75 * Math.min(1, t / 0.16);
+        const frequency = (170 - 75 * Math.min(1, t / 0.16)) * pitch;
         phase += (2 * Math.PI * frequency) / rate;
         sample = Math.sin(phase) * Math.exp(-t * 11 * decay) * 0.6;
         break;
       }
       case 'rim': {
-        const body = Math.sin(2 * Math.PI * 1750 * t) * Math.exp(-t * 90 * decay) * 0.34;
+        const body = Math.sin(2 * Math.PI * 1750 * pitch * t) * Math.exp(-t * 90 * decay) * 0.34;
         const click = Math.exp(-t * 200 * decay) * 0.2;
         sample = body + click;
         break;
       }
       case 'crash': {
         const noisePart = highpass(noise(), crashHighpass) * Math.exp(-t * 3.2 * decay) * 0.34;
-        const shimmer = Math.sin(2 * Math.PI * 6100 * t) * Math.exp(-t * 5 * decay) * 0.05;
+        const shimmer = Math.sin(2 * Math.PI * 6100 * pitch * t) * Math.exp(-t * 5 * decay) * 0.05;
         sample = noisePart + shimmer;
         break;
       }

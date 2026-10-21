@@ -1,0 +1,59 @@
+{
+  "mode": "loop",
+  "bpm": 104,
+  "stepsPerBeat": 4,
+  "bars": 2,
+  "seed": 7,
+  "instruments": {
+    "hollow_bass": {
+      "type": "additive",
+      "partials": [0.7071, 0.5, 0.2357, 0, -0.1414, -0.1667, -0.101, 0],
+      "drive": 0.1,
+      "filter": { "cutoffHz": 900, "resonance": 1.1, "envAmount": 1.6, "decay": 0.25, "sustain": 0.2 }
+    },
+    "glassy_lead": {
+      "type": "additive",
+      "partials": [[1, 0], [0.33, 90], [0.2, 180], [0.14, 270]],
+      "unison": 2,
+      "detune": 6,
+      "filter": { "cutoffHz": 5200, "envAmount": 0.8, "decay": 0.35, "sustain": 0.3 }
+    },
+    "ramp_pad": {
+      "type": "additive",
+      "partials": [-1, -0.5, -0.3333, -0.25, -0.2, -0.1667, -0.1429, -0.125],
+      "unison": 3,
+      "detune": 9,
+      "filter": { "cutoffHz": 2000, "resonance": 0.8, "envAmount": 1.2, "attack": 0.6, "decay": 1.2, "sustain": 0.6 }
+    }
+  },
+  "tracks": [
+    {
+      "name": "bass",
+      "role": "bass",
+      "instrument": "hollow_bass",
+      "pattern": "F1:2 F1:2 F1:2 A#1:2 D#2:2 D#2:2 C2:2 A#1:2"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "instrument": "glassy_lead",
+      "pattern": "F4:2 Ab4:2 C5:2 Ab4:2 F4:2 C5:2 D#5:2 C5:2",
+      "send": 0.2,
+      "delay": { "steps": 3, "feedback": 0.25, "mix": 0.2 }
+    },
+    {
+      "name": "pad",
+      "role": "pad",
+      "instrument": "ramp_pad",
+      "volume": 3,
+      "pattern": "[F3,Ab3,C4]:8 [D#3,G3,A#3]:8",
+      "send": 0.3
+    },
+    {
+      "name": "drums",
+      "role": "drums",
+      "volume": 4,
+      "pattern": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1 K:1 -:1 H:1 -:1 S:1 -:1 H:1 H:1"
+    }
+  ]
+}

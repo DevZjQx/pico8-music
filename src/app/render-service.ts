@@ -90,12 +90,15 @@ function presetOf(value: string | undefined): PresetName | undefined {
   return value as PresetName;
 }
 
+const STYLE_NAMES: readonly StyleName[] = ['chip', 'hitech', 'ambient', 'studio', 'lofi'];
+
 function styleOf(value: string | undefined): StyleName | undefined {
   if (value === undefined) return undefined;
-  if (value !== 'chip' && value !== 'hitech' && value !== 'ambient') {
-    throw new Error(`unknown style ${JSON.stringify(value)}; use chip, hitech, or ambient`);
+  const match = STYLE_NAMES.find((name) => name === value);
+  if (match === undefined) {
+    throw new Error(`unknown style ${JSON.stringify(value)}; use ${STYLE_NAMES.join(', ')}`);
   }
-  return value;
+  return match;
 }
 
 function chainLabel(args: RenderArgs, style: StyleName | undefined, preset: PresetName | undefined): {

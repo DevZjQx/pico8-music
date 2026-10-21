@@ -12,10 +12,15 @@ import {
 import type {
   DrumEffect,
   DrumName,
+  DrumParams,
   Effect,
   EffectParams,
   Envelope,
+  Instrument,
+  InstrumentFilter,
+  InstrumentType,
   NoteEvent,
+  Partial,
   Score,
   ScoreMode,
   ScoreSection,
@@ -53,6 +58,10 @@ const MAX_STEPS_PER_NOTE = 64;
 const MAX_GATE_STEPS = 256;
 const MAX_CHORD_NOTES = 4;
 const MAX_TRACKS = 4;
+const MAX_INSTRUMENTS = 32;
+const MAX_PARTIALS = 16;
+const INSTRUMENT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const RESERVED_INSTRUMENT_NAMES = new Set(['chip', 'fm', 'additive', 'drums']);
 /** Song sections are cheap individually but each one can be 64 bars long. */
 const MAX_SECTIONS = 256;
 /** Hard ceiling for the complete arrangement, before any loop repeats. */
@@ -61,6 +70,21 @@ const MAX_SONG_SECONDS = 15 * 60;
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+/**
+ * p8_music arguments, not score fields. Models tend to nest these beside bpm
+ * and tracks, so the top-level error names the argument boundary explicitly.
+ */
+const TOOL_ARGUMENT_NAMES = new Set([
+  'post',
+  'preset',
+  'style',
+  'speed',
+  'wet',
+  'toneHz',
+  'minutes',
+  'out',
+]);
 
 /**
  * A plain field-by-field parser silently drops anything it does not read, so a
@@ -79,12 +103,24 @@ function rejectUnknownKeys(
     .sort();
   if (unknown.length === 0) return;
   const fields = unknown.map((key) => JSON.stringify(key)).join(', ');
-  const mixHint = unknown.includes('mix')
-    ? '; mix-stage fields are flat: pan, send, duck, filter, delay (never nested under "mix")'
-    : '';
+  const hints: string[] = [];
+  const toolArguments = path === '' ? unknown.filter((key) => TOOL_ARGUMENT_NAMES.has(key)) : [];
+  if (toolArguments.length > 0) {
+    const names = toolArguments.map((key) => JSON.stringify(key)).join(', ');
+    const plural = toolArguments.length > 1;
+    hints.push(
+      `${names} ${plural ? 'are' : 'is a'} p8_music tool parameter${plural ? 's' : ''}, ` +
+        `not ${plural ? 'top-level score fields' : 'a top-level score field'}; ` +
+        `pass ${plural ? 'them' : 'it'} alongside "score", outside the score JSON`,
+    );
+  }
+  if (unknown.includes('mix')) {
+    hints.push('mix-stage fields are flat: pan, send, duck, filter, delay (never nested under "mix")');
+  }
+  const hint = hints.length > 0 ? `; ${hints.join('; ')}` : '';
   const subject = path === '' ? 'score' : path;
   throw new ScoreError(
-    `${subject}: unknown field${unknown.length > 1 ? 's' : ''} ${fields}${mixHint}`,
+    `${subject}: unknown field${unknown.length > 1 ? 's' : ''} ${fields}${hint}`,
   );
 }
 
@@ -136,6 +172,189 @@ function parseEnvelope(value: unknown, path: string): Envelope {
   };
 }
 
+function parseInstrumentFilter(value: unknown, path: string): InstrumentFilter | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') {
+    return {
+      cutoffHz: readRequiredNumber(value, path, 80, 18000),
+      resonance: 0.707,
+      envAmount: 0,
+      attack: 0.002,
+      decay: 0.15,
+      sustain: 0.3,
+      release: 0.15,
+    };
+  }
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be a cutoff number or an object with cutoffHz, resonance, envAmount, attack, decay, sustain, release`);
+  }
+  rejectUnknownKeys(
+    value,
+    ['cutoffHz', 'cutoff', 'resonance', 'q', 'envAmount', 'attack', 'decay', 'sustain', 'release'],
+    path,
+  );
+  return {
+    cutoffHz: readRequiredNumber(value.cutoffHz ?? value.cutoff, `${path}.cutoffHz`, 80, 18000),
+    resonance: readNumber(value.resonance ?? value.q, `${path}.resonance`, 0.707, 0.5, 20),
+    envAmount: readNumber(value.envAmount, `${path}.envAmount`, 0, 0, 6),
+    attack: readNumber(value.attack, `${path}.attack`, 0.002, 0, 2),
+    decay: readNumber(value.decay, `${path}.decay`, 0.15, 0, 4),
+    sustain: readNumber(value.sustain, `${path}.sustain`, 0.3, 0, 1),
+    release: readNumber(value.release, `${path}.release`, 0.15, 0, 4),
+  };
+}
+
+/**
+ * `chip` keeps the eight PICO-8 formulas; `additive` sums band-limited
+ * harmonics; `fm` is a two-operator phase-modulation voice. Unison, drive, and
+ * the filter envelope are shared, which is what lets one definition leave the
+ * chip palette without adding a second score syntax.
+ */
+function parseInstrumentSpec(value: unknown, path: string): Instrument {
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with a type (chip, fm, or additive)`);
+  }
+  rejectUnknownKeys(
+    value,
+    ['type', 'waveform', 'partials', 'ratio', 'index', 'indexDecay', 'unison', 'detune', 'detuneCents', 'drive', 'filter'],
+    path,
+  );
+
+  const typeText = readString(value.type, `${path}.type`, 'chip').toLowerCase();
+  if (typeText !== 'chip' && typeText !== 'fm' && typeText !== 'additive') {
+    throw new ScoreError(`${path}.type must be chip, fm, or additive, got ${JSON.stringify(value.type)}`);
+  }
+  const type = typeText as InstrumentType;
+
+  const waveform = value.waveform === undefined ? DEFAULTS.waveform : parseWaveform(value.waveform);
+  if (waveform === undefined) {
+    throw new ScoreError(
+      `${path}.waveform: use 0-7 or one of triangle, tilted_saw, saw, square, pulse, organ, noise, phaser`,
+    );
+  }
+
+  const partials =
+    value.partials === undefined ? undefined : parsePartials(value.partials, `${path}.partials`);
+
+  const ratio = value.ratio === undefined ? undefined : readNumber(value.ratio, `${path}.ratio`, 2, 0.25, 8);
+  const fmIndex = value.index === undefined ? undefined : readNumber(value.index, `${path}.index`, 3, 0, 12);
+  const indexDecay =
+    value.indexDecay === undefined ? undefined : readNumber(value.indexDecay, `${path}.indexDecay`, 0.3, 0.01, 4);
+
+  if (type !== 'chip' && value.waveform !== undefined) {
+    throw new ScoreError(`${path}.waveform only applies to chip instruments`);
+  }
+  if (type !== 'additive' && partials !== undefined) {
+    throw new ScoreError(`${path}.partials only applies to additive instruments`);
+  }
+  if (type !== 'fm' && (ratio !== undefined || fmIndex !== undefined || indexDecay !== undefined)) {
+    throw new ScoreError(`${path}.ratio, .index, and .indexDecay only apply to fm instruments`);
+  }
+
+  const filter = parseInstrumentFilter(value.filter, `${path}.filter`);
+  return {
+    type,
+    waveform,
+    ...(partials === undefined ? {} : { partials }),
+    ...(ratio === undefined ? {} : { ratio }),
+    ...(fmIndex === undefined ? {} : { index: fmIndex }),
+    ...(indexDecay === undefined ? {} : { indexDecay }),
+    unison: readNumber(value.unison, `${path}.unison`, 1, 1, 4, true),
+    detuneCents: readNumber(value.detune ?? value.detuneCents, `${path}.detune`, 0, 0, 50),
+    drive: readNumber(value.drive, `${path}.drive`, 0, 0, 1),
+    ...(filter === undefined ? {} : { filter }),
+  };
+}
+
+/**
+ * A partial is either a bare amplitude or `[amplitude, phaseDegrees]`. A
+ * negative amplitude is the same shape mirrored, so it becomes a π phase and
+ * the table builder only ever sees magnitudes and phases.
+ */
+function parsePartial(value: unknown, path: string): Partial {
+  if (Array.isArray(value)) {
+    if (value.length !== 2) {
+      throw new ScoreError(`${path} must be an amplitude or [amplitude, phaseDegrees], got ${value.length} items`);
+    }
+    const amplitude = readRequiredNumber(value[0], `${path}[0]`, 0, 1);
+    const degrees = readRequiredNumber(value[1], `${path}[1]`, -3600, 3600);
+    return { amplitude, phase: ((degrees % 360) * Math.PI) / 180 };
+  }
+  const amplitude = readRequiredNumber(value, path, -1, 1);
+  return { amplitude: Math.abs(amplitude), phase: amplitude < 0 ? Math.PI : 0 };
+}
+
+function parsePartials(value: unknown, path: string): readonly Partial[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PARTIALS) {
+    throw new ScoreError(`${path} must be an array of 1-${MAX_PARTIALS} harmonics: amplitude or [amplitude, phaseDegrees]`);
+  }
+  return value.map((partial, index) => parsePartial(partial, `${path}[${index}]`));
+}
+
+function parseInstruments(value: unknown): ReadonlyMap<string, Instrument> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new ScoreError('instruments must be an object mapping names to instrument definitions');
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_INSTRUMENTS) {
+    throw new ScoreError(`instruments has ${entries.length} entries; use at most ${MAX_INSTRUMENTS}`);
+  }
+  const output = new Map<string, Instrument>();
+  for (const [name, entry] of entries) {
+    if (!INSTRUMENT_NAME_RE.test(name)) {
+      throw new ScoreError(
+        `instruments.${name}: names must start with a letter or underscore and contain only letters, digits, _ or -`,
+      );
+    }
+    if (RESERVED_INSTRUMENT_NAMES.has(name.toLowerCase())) {
+      throw new ScoreError(`instruments.${name}: ${name} is a built-in instrument type; choose another name`);
+    }
+    output.set(name, parseInstrumentSpec(entry, `instruments.${name}`));
+  }
+  return output;
+}
+
+interface ResolvedInstrument {
+  readonly isDrums: boolean;
+  readonly instrument?: Instrument;
+}
+
+/** A track names an instrument, inlines one, or keeps the legacy waveform. */
+function resolveTrackInstrument(
+  value: unknown,
+  path: string,
+  instruments: ReadonlyMap<string, Instrument>,
+): ResolvedInstrument {
+  if (value === undefined) return { isDrums: false };
+
+  if (typeof value === 'string') {
+    const name = value.trim();
+    const lower = name.toLowerCase();
+    if (lower === 'drums') return { isDrums: true };
+    const named = instruments.get(name) ?? instruments.get(lower);
+    if (named !== undefined) return { isDrums: false, instrument: named };
+    if (lower === 'chip' || lower === 'fm' || lower === 'additive') {
+      return { isDrums: false, instrument: parseInstrumentSpec({ type: lower }, path) };
+    }
+    const available = [...instruments.keys()];
+    throw new ScoreError(
+      `${path}: unknown instrument ${JSON.stringify(name)}; define it in the top-level instruments table` +
+        `${available.length > 0 ? ` (${available.join(', ')})` : ''}, or use chip, fm, additive, or drums`,
+    );
+  }
+
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an instrument name or an object with a type`);
+  }
+  const typeText = typeof value.type === 'string' ? value.type.toLowerCase() : undefined;
+  if (typeText === 'drums') {
+    rejectUnknownKeys(value, ['type', 'waveform'], path);
+    return { isDrums: true };
+  }
+  return { isDrums: false, instrument: parseInstrumentSpec(value, path) };
+}
+
 function parseNoteVolume(text: string, where: string): number {
   if (!/^\d+$/.test(text)) {
     throw new ScoreError(`${where}: volume must be an integer between 0 and 7`);
@@ -160,12 +379,14 @@ interface PatternToken {
   readonly effect: Effect;
   readonly effectParams?: EffectParams;
   readonly drumEffect?: DrumEffect;
+  readonly drumParams?: DrumParams;
   readonly envelopeName?: string;
 }
 
 type EffectSuffix =
   | { readonly kind: 'effect'; readonly effect: Effect; readonly params?: EffectParams }
   | { readonly kind: 'drum'; readonly drum: DrumEffect }
+  | { readonly kind: 'drumParam'; readonly drumParams: DrumParams }
   | { readonly kind: 'envelope'; readonly name: string };
 
 const SUFFIX_RE = /^([A-Za-z_][A-Za-z0-9_-]*)(?:\(([^)]*)\))?$/;
@@ -270,6 +491,43 @@ function parseDrumEffectSuffix(
   return { kind: 'roll', hits };
 }
 
+const DRUM_PARAM_RE = /^(pitch|decay|tone)(\d*)$/;
+
+/** `~pitch(-3)`, `~decay(1.4)`, `~tone(2400)`; one field per suffix. */
+function parseDrumParamSuffix(
+  rawName: string,
+  argsText: string | undefined,
+  where: string,
+): DrumParams | undefined {
+  const name = rawName.trim().toLowerCase().replace(/[_-]/g, '');
+  const match = DRUM_PARAM_RE.exec(name);
+  if (!match) return undefined;
+  const kind = match[1];
+  if ((match[2] ?? '') !== '' || argsText === undefined) {
+    throw new ScoreError(
+      `${where}: ${kind} takes a parenthesised value, e.g. ~${kind}(${kind === 'pitch' ? '-2' : kind === 'decay' ? '1.4' : '2400'})`,
+    );
+  }
+  const value = parseNumberArguments(argsText, where, 1)[0] ?? 0;
+
+  if (kind === 'pitch') {
+    if (value < -12 || value > 12) {
+      throw new ScoreError(`${where}: pitch must be between -12 and 12 semitones, got ${value}`);
+    }
+    return { pitchSemitones: value };
+  }
+  if (kind === 'decay') {
+    if (value < 0.25 || value > 4) {
+      throw new ScoreError(`${where}: decay must be a scale between 0.25 and 4, got ${value}`);
+    }
+    return { decayScale: value };
+  }
+  if (value < 200 || value > 16000) {
+    throw new ScoreError(`${where}: tone must be between 200 and 16000 Hz, got ${value}`);
+  }
+  return { toneHz: value };
+}
+
 function parseEffectSuffix(text: string, where: string): EffectSuffix {
   const raw = text.trim();
   if (raw === '') {
@@ -287,6 +545,8 @@ function parseEffectSuffix(text: string, where: string): EffectSuffix {
   if (effect === undefined) {
     const drum = parseDrumEffectSuffix(name, argsText, where);
     if (drum !== undefined) return { kind: 'drum', drum };
+    const drumParams = parseDrumParamSuffix(name, argsText, where);
+    if (drumParams !== undefined) return { kind: 'drumParam', drumParams };
     if (argsText !== undefined) {
       throw new ScoreError(`${where}: envelope ${JSON.stringify(name)} takes no parameters`);
     }
@@ -317,6 +577,7 @@ function parsePatternToken(token: string, where: string): PatternToken {
   let effect: Effect = 0;
   let effectParams: EffectParams | undefined;
   let drumEffect: DrumEffect | undefined;
+  let drumParams: DrumParams | undefined;
   let envelopeName: string | undefined;
   let sawEffect = false;
   for (const part of suffixParts.slice(1)) {
@@ -335,6 +596,18 @@ function parsePatternToken(token: string, where: string): PatternToken {
         throw new ScoreError(`${where}: use at most one drum effect (~ghost, ~flam, or ~roll)`);
       }
       drumEffect = suffix.drum;
+      continue;
+    }
+    if (suffix.kind === 'drumParam') {
+      const repeated = Object.keys(suffix.drumParams).find(
+        (key) => drumParams?.[key as keyof DrumParams] !== undefined,
+      );
+      if (repeated !== undefined) {
+        const name =
+          repeated === 'toneHz' ? 'tone' : repeated === 'decayScale' ? 'decay' : 'pitch';
+        throw new ScoreError(`${where}: use at most one ~${name} suffix`);
+      }
+      drumParams = { ...drumParams, ...suffix.drumParams };
       continue;
     }
     if (envelopeName !== undefined) {
@@ -382,6 +655,7 @@ function parsePatternToken(token: string, where: string): PatternToken {
     effect,
     ...(effectParams === undefined ? {} : { effectParams }),
     ...(drumEffect === undefined ? {} : { drumEffect }),
+    ...(drumParams === undefined ? {} : { drumParams }),
     ...(envelopeName === undefined ? {} : { envelopeName }),
   };
 }
@@ -403,14 +677,23 @@ function formatDrumEffect(effect: DrumEffect | undefined): string {
   return `~roll(${String(effect.hits)})`;
 }
 
+function formatDrumParams(params: DrumParams | undefined): string {
+  if (params === undefined) return '';
+  const pitch = params.pitchSemitones === undefined ? '' : `~pitch(${String(params.pitchSemitones)})`;
+  const decay = params.decayScale === undefined ? '' : `~decay(${String(params.decayScale)})`;
+  const tone = params.toneHz === undefined ? '' : `~tone(${String(params.toneHz)})`;
+  return `${pitch}${decay}${tone}`;
+}
+
 function formatPatternToken(token: PatternToken): string {
   const gate = token.gateSteps === undefined ? '' : `g${token.gateSteps}`;
   const volume = token.volume === undefined ? '' : `@${token.volume}`;
   const params = token.effectParams === undefined ? '' : formatEffectParams(token.effect, token.effectParams);
   const effect = token.effect === 0 ? '' : `~${EFFECT_NAMES[token.effect]}${params}`;
   const drumEffect = formatDrumEffect(token.drumEffect);
+  const drumParams = formatDrumParams(token.drumParams);
   const envelope = token.envelopeName === undefined ? '' : `~${token.envelopeName}`;
-  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${envelope}`;
+  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${drumParams}${envelope}`;
 }
 
 type MotifTransformName = 'transpose' | 'invert' | 'retrograde' | 'augment' | 'diminish';
@@ -725,6 +1008,9 @@ function parsePattern(
       if (parsed.drumEffect !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry a drum effect`);
       }
+      if (parsed.drumParams !== undefined) {
+        throw new ScoreError(`${where}: a rest cannot carry ~pitch, ~decay, or ~tone`);
+      }
       cursor += steps;
       return;
     }
@@ -748,10 +1034,14 @@ function parsePattern(
     if (!isDrums && parsed.drumEffect !== undefined) {
       throw new ScoreError(`${where}: ~ghost, ~flam, and ~roll are only for drum tracks`);
     }
+    if (!isDrums && parsed.drumParams !== undefined) {
+      throw new ScoreError(`${where}: ~pitch, ~decay, and ~tone are only for drum tracks`);
+    }
     const effectFields = {
       effect: parsed.effect,
       ...(parsed.effectParams === undefined ? {} : { effectParams: parsed.effectParams }),
       ...(parsed.drumEffect === undefined ? {} : { drumEffect: parsed.drumEffect }),
+      ...(parsed.drumParams === undefined ? {} : { drumParams: parsed.drumParams }),
       ...(envelope === undefined ? {} : { envelope }),
     };
 
@@ -890,6 +1180,7 @@ function parseTrack(
   globalMotifs: ReadonlyMap<string, string>,
   globalPatterns: ReadonlyMap<string, string>,
   envelopes: ReadonlyMap<string, Envelope>,
+  instruments: ReadonlyMap<string, Instrument>,
 ): ParsedTrack {
   const path = `tracks[${index}]`;
   if (!isRecord(value)) {
@@ -917,23 +1208,15 @@ function parseTrack(
     path,
   );
   const role = readString(value.role, `${path}.role`, 'melodic');
-  const instrument = value.instrument;
-  if (isRecord(instrument)) {
-    rejectUnknownKeys(instrument, ['type', 'waveform'], `${path}.instrument`);
-  }
-  const instrumentType =
-    typeof instrument === 'string'
-      ? instrument
-      : isRecord(instrument) && typeof instrument.type === 'string'
-        ? instrument.type
-        : undefined;
-  const isDrums =
-    role.toLowerCase() === 'drums' ||
-    (instrumentType !== undefined && instrumentType.toLowerCase() === 'drums');
+  const resolved = resolveTrackInstrument(value.instrument, `${path}.instrument`, instruments);
+  const isDrums = role.toLowerCase() === 'drums' || resolved.isDrums;
   const name = readString(value.name, `${path}.name`, `track${index}`);
 
+  // The legacy `waveform` field stays meaningful for chip instruments and is
+  // mirrored from an inline `instrument.waveform`, which is what old scores
+  // and sections rely on. Non-chip instruments ignore it.
   const waveformValue =
-    value.waveform ?? (isRecord(instrument) ? instrument.waveform : undefined);
+    value.waveform ?? (resolved.instrument?.type === 'chip' ? resolved.instrument.waveform : undefined);
   const waveform = waveformValue === undefined ? DEFAULTS.waveform : parseWaveform(waveformValue);
   if (waveform === undefined) {
     throw new ScoreError(
@@ -999,6 +1282,7 @@ function parseTrack(
       role,
       isDrums,
       waveform,
+      ...(resolved.instrument === undefined ? {} : { instrument: resolved.instrument }),
       volume,
       envelope,
       patternSteps: defaultPattern.patternSteps,
@@ -1321,7 +1605,7 @@ function parseEnvelopes(value: unknown): ReadonlyMap<string, Envelope> {
     if (!ENVELOPE_NAME_RE.test(name)) {
       throw new ScoreError(`envelopes.${name}: names use letters, digits, "_" or "-"`);
     }
-    if (parseEffect(name) !== undefined || isDrumEffectName(name)) {
+    if (parseEffect(name) !== undefined || isDrumEffectName(name) || DRUM_PARAM_RE.test(name)) {
       throw new ScoreError(
         `envelopes.${name}: name collides with the ${name} effect; choose another envelope name`,
       );
@@ -1363,6 +1647,7 @@ export function parseScore(input: string | unknown): Score {
       'swing',
       'seed',
       'envelopes',
+      'instruments',
       'mode',
       'arrangement',
       'tracks',
@@ -1378,6 +1663,7 @@ export function parseScore(input: string | unknown): Score {
   const swing = readNumber(raw.swing, 'swing', 0, 0, 0.5);
   const seed = readNumber(raw.seed, 'seed', 0, 0, 2147483647, true);
   const envelopes = parseEnvelopes(raw.envelopes);
+  const instruments = parseInstruments(raw.instruments);
   const hasArrangement = raw.arrangement !== undefined;
   const mode = parseMode(raw.mode, hasArrangement);
 
@@ -1398,7 +1684,7 @@ export function parseScore(input: string | unknown): Score {
   const globalMotifs = new Map(Object.entries(parseStringRecord(raw.motifs, 'motifs')));
   const globalPatterns = parseGlobalPatterns(raw.patterns);
   const parsedTracks = raw.tracks.map((track, index) =>
-    parseTrack(track, index, globalMotifs, globalPatterns, envelopes),
+    parseTrack(track, index, globalMotifs, globalPatterns, envelopes, instruments),
   );
   const baseTracks = parsedTracks.map((entry) => entry.track);
   const motifMaps = parsedTracks.map((entry) => entry.motifs);

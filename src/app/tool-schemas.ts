@@ -51,16 +51,29 @@ const postStep = Type.Object(
 
 export const musicParameters = Type.Object(
   {
-    score: Type.String({ description: 'JSON score; call p8_help for the DSL' }),
+    score: Type.String({
+      description:
+        'JSON score string (composition only; post, preset, style, speed, wet, toneHz, minutes and out are separate arguments); call p8_help for the DSL',
+    }),
     preset: Type.Optional(
       Type.Union([Type.Literal('classic'), Type.Literal('dreamy'), Type.Literal('tape')], {
         description: 'post preset (default classic); cannot be combined with style',
       }),
     ),
     style: Type.Optional(
-      Type.Union([Type.Literal('chip'), Type.Literal('hitech'), Type.Literal('ambient')], {
-        description: 'post-chain defaults: dry chip, glued hitech, slowed ambient',
-      }),
+      Type.Union(
+        [
+          Type.Literal('chip'),
+          Type.Literal('hitech'),
+          Type.Literal('ambient'),
+          Type.Literal('studio'),
+          Type.Literal('lofi'),
+        ],
+        {
+          description:
+            'sound defaults: dry chip, glued hitech, slowed ambient, non-chip studio, warm lofi',
+        },
+      ),
     ),
     post: Type.Optional(
       Type.Array(postStep, {

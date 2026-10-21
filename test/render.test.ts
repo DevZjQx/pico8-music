@@ -851,6 +851,23 @@ test('renders the M5 drum articulation and fill example', async () => {
   assert.ok(Math.max(...readings) - Math.min(...readings) > 2, 'energy macro should make sections contrast');
 });
 
+test('renders the M7 model-designed waveform example', async () => {
+  const raw = await readFile(new URL('../examples/m7-wave-shapes.json', import.meta.url), 'utf8');
+  const example = parseScore(raw);
+  const partialsOf = (name: string) =>
+    example.tracks.find((track) => track.name === name)?.instrument?.partials ?? [];
+
+  // The three voices are one harmonic series each, told apart by sign and phase.
+  assert.ok(partialsOf('bass').some((partial) => partial.amplitude > 0 && partial.phase === Math.PI));
+  assert.deepEqual(partialsOf('lead').map((partial) => partial.phase), [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2]);
+  assert.ok(partialsOf('pad').every((partial) => partial.phase === Math.PI));
+
+  const output = renderLoop(example, { post: [] });
+  assert.ok(output.durationSeconds > 4, `duration ${output.durationSeconds}`);
+  assert.ok(peak(output.wav) > 1000, 'M7 example must be audible');
+  assert.ok(output.report.peakDb <= -0.9);
+});
+
 test('send and delay keep the loop seam seamless', () => {
   const wetLoop = renderLoop(
     parseScore({

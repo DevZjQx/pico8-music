@@ -7,10 +7,15 @@ export { SCORE_BRIEF, SCORE_HELP } from './help.ts';
 export { EFFECT_NAMES, WAVEFORM_NAMES } from './notes.ts';
 export type {
   DrumName,
+  DrumParams,
   Effect,
   EffectParams,
   Envelope,
+  Instrument,
+  InstrumentFilter,
+  InstrumentType,
   NoteEvent,
+  Partial,
   Score,
   ScoreMode,
   ScoreSection,

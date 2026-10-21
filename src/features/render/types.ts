@@ -21,11 +21,12 @@ export type PostStep =
   | { readonly type: 'limiter'; readonly ceilingDb?: number; readonly release?: number };
 
 /**
- * A style fills the post-chain defaults; it never changes `mode` or the score.
+ * A style fills the post-chain defaults and, for `studio` and `lofi`, the
+ * role-based instrument defaults; it never changes `mode` or the score.
  * `chip` is the dry PICO-8-constrained default, `hitech` glues and normalises a
  * busy mix, `ambient` is the slowed-and-reverbed variant.
  */
-export type StyleName = 'chip' | 'hitech' | 'ambient';
+export type StyleName = 'chip' | 'hitech' | 'ambient' | 'studio' | 'lofi';
 
 export interface RenderOptions {
   readonly preset?: PresetName;
