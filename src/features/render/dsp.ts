@@ -85,8 +85,20 @@ function reverbChannel(
   return output;
 }
 
-/** Freeverb-style mono-in, stereo-out reverb. */
-export function reverb(mono: Float32Array, options: ReverbOptions, rate: number): StereoAudio {
+function downmix(input: StereoAudio): Float32Array {
+  const length = Math.min(input.left.length, input.right.length);
+  const output = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) {
+    output[i] = ((input.left[i] ?? 0) + (input.right[i] ?? 0)) * 0.5;
+  }
+  return output;
+}
+
+/**
+ * Freeverb-style reverb. Only the send is a mono sum; the dry path stays
+ * stereo, so a post-chain insert cannot fold a panned mix to mono.
+ */
+export function reverb(input: StereoAudio, options: ReverbOptions, rate: number): StereoAudio {
   const scale = rate / 44100;
   const room = clamp(options.room, 0, 0.98);
   const feedback = 0.7 + room * 0.28;
@@ -94,15 +106,15 @@ export function reverb(mono: Float32Array, options: ReverbOptions, rate: number)
   const wet = clamp(options.wet, 0, 1);
   const dry = 1 - wet;
 
+  const mono = downmix(input);
   const leftReverb = reverbChannel(mono, 0, scale, feedback, damp);
   const rightReverb = reverbChannel(mono, STEREO_SPREAD, scale, feedback, damp);
   const left = new Float32Array(mono.length);
   const right = new Float32Array(mono.length);
 
   for (let i = 0; i < mono.length; i += 1) {
-    const drySample = mono[i] ?? 0;
-    left[i] = drySample * dry + (leftReverb[i] ?? 0) * wet;
-    right[i] = drySample * dry + (rightReverb[i] ?? 0) * wet;
+    left[i] = (input.left[i] ?? 0) * dry + (leftReverb[i] ?? 0) * wet;
+    right[i] = (input.right[i] ?? 0) * dry + (rightReverb[i] ?? 0) * wet;
   }
 
   return { left, right };

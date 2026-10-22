@@ -256,14 +256,6 @@ function chainSpeed(chain: readonly PostStep[]): number {
   return speed;
 }
 
-function downmix(left: Float32Array, right: Float32Array): Float32Array {
-  const output = new Float32Array(left.length);
-  for (let i = 0; i < output.length; i += 1) {
-    output[i] = ((left[i] ?? 0) + (right[i] ?? 0)) * 0.5;
-  }
-  return output;
-}
-
 /**
  * A song tail ends wherever the requested extra time ends, which can cut a
  * reverb or one-shot mid-cycle. A short linear fade turns that cut into
@@ -281,9 +273,10 @@ function fadeTail(left: Float32Array, right: Float32Array, seconds: number): voi
 
 /**
  * Applies the post steps in the order the caller wrote them. Tape/slow and
- * low-pass run on both channels; reverb downmixes its input to mono and returns
- * stereo. The DC block is an internal safety step: it runs just before the
- * first reverb or master step (or at the end when the chain has neither) so the
+ * low-pass run on both channels; reverb feeds its send from the mono sum while
+ * the dry path stays stereo. The DC block is an internal safety step: it runs
+ * just before the first reverb or master step (or at the end when the chain has
+ * neither) so the
  * reverb comb bank never sees a constant offset and the limiter sees the final
  * signal rather than a high-pass overshoot of it.
  */
@@ -326,13 +319,12 @@ function applyPost(
       }
       case 'reverb': {
         const wet = step.wet ?? DEFAULT_WET;
-        // A zero-wet reverb is a bypass, not a mono downmix. The reverb
-        // function takes a mono input, so skipping the step is what keeps the
-        // dry stereo image intact.
+        // A zero-wet reverb is a bypass: skip the comb bank entirely instead
+        // of paying for a reverb that only returns its input.
         if (wet <= 0) break;
         ensureDcBlock();
         const reverbed = reverb(
-          downmix(left, right),
+          { left, right },
           {
             wet,
             room: step.room ?? DEFAULT_ROOM,
@@ -404,7 +396,11 @@ function addSendReverb(song: SongAudio, passes: number): void {
   const bus = song.sendBus;
   if (!bus) return;
   const input = passes > 1 ? repeat(bus, passes) : bus;
-  const wet = reverb(input, { wet: 1, room: SEND_ROOM, damp: SEND_DAMP }, RATE);
+  const wet = reverb(
+    { left: input, right: input },
+    { wet: 1, room: SEND_ROOM, damp: SEND_DAMP },
+    RATE,
+  );
   const start = (passes - 1) * song.loopSamples;
   for (let i = 0; i < song.loopSamples; i += 1) {
     song.left[i] = (song.left[i] ?? 0) + (wet.left[start + i] ?? 0) * SEND_GAIN;

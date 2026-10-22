@@ -108,7 +108,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | --- | --- |
 | `name` | 可选，段落覆盖时用；默认 `track0`、`track1`… |
 | `role` | 可选，`drums`、`bass`、`lead`、`pad` 等；默认 `melodic` |
-| `pattern` | 必填（或提供 `patterns`）。`音符:步数[g门限]` 用空格分隔，`-` 是休止；可选后缀 `@力度`、`~效果`、`~包络` |
+| `pattern` | 必填（或提供 `patterns`）。`音符:步数[g门限]` 用空格分隔，`-` 是休止；发声音符的步数 1-64，休止可到 1-256 步（用于填充 pattern），门限 1-256 步；可选后缀 `@力度`、`~效果`、`~包络` |
 | `patterns` | 可选，本轨的命名 pattern：`{"A":"...","B":"..."}` |
 | `motifs` | 可选，本轨的命名动机；同名时覆盖顶层 `motifs` |
 | `waveform` | `0-7` 或 `triangle`、`tilted_saw`、`saw`、`square`、`pulse`、`organ`、`noise`、`phaser`，默认 `pulse`；只在没有 `instrument` 或 chip instrument 时生效 |
@@ -348,10 +348,10 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 ]
 ```
 
-- 步骤按数组顺序执行；`tape` / `lowpass` 作用于左右声道，`reverb` 先把输入下混成 mono 再输出 stereo。
+- 步骤按数组顺序执行；`tape` / `lowpass` 作用于左右声道，`reverb` 只用输入的单声道求和驱动湿声，干声保持原来的立体声，所以插入混响不会把声像折成 mono。
 - `tape` / `slow`：`speed` 0.5-1.5，降速同时降音高；多个降速步骤会串联相乘。
 - `lowpass`：`cutoffHz`（或别名 `toneHz`）100-22050。
-- `reverb`：`wet`、`room`、`damp`。
+- `reverb`：`wet` 0-1 是干湿混合比，不是湿声增益；湿声路径本身约比干声低 5 dB，所以 `wet: 0.3` 听起来只是轻混响（湿声能量约占 6%）。`room` 0-0.98 控制房间大小，`damp` 0-1 控制高频阻尼。
 - `tilt`：`tiltDb` -12..12，700 Hz 上下的倾斜 EQ；正值更亮，负值更暗。
 - `saturate`：`drive`、`mix` 0-1，tanh 软饱和，压峰并把安静段落补厚。
 - `compress`：`thresholdDb`（默认 -18）、`ratio`（默认 2）、`attack` / `release`（秒）、`makeupDb`。立体声联动，检波器跟左右声道中较响的一侧。
@@ -379,7 +379,7 @@ report warnings: dark: 1% above 2 kHz; narrow: width 0.02; sparse: 0.9 onsets/s
 
 - peak / RMS / LUFS：整段音频（loop 取循环本体，song 取整首）。
 - 频谱：2048 样本（约 46 ms）帧的幅度谱质心与 sub/low/mid/high/air 占比，最多抽样 48 帧；不是 4 秒窗。宽度、峰值、RMS 和 LUFS 使用全部样本。
-- 空间与节奏：side/mid RMS 比（0 是单声道，1 是硬声像）和 onset 密度。
+- 空间与节奏：side/mid RMS 比（0 是单声道，1 是硬声像）和 onset 密度。这个比值可以超过 1（混响 `wet` 很高时会出现），超过 1 表示左右声道是反相/梳状关系，是相位上的“宽”，不是更稳定的声场；判断空间时应结合 L/R 相关性，而不是只看它接近 1。
 - sections：song 模式每段的 RMS。
 - warnings：`dark`（2 kHz 以上太少）、`narrow`（几乎单声道）、`sparse`（瞬态太少）、`low-heavy`（250 Hz 以下超过 70%）、`quiet` / `loud`、`flat-sections`（段落能量差小于 2 dB）、`pattern-misaligned` / `fill-misaligned`（pattern 截断）、`trimmed`（峰值安全网下拉超过 3 dB）。
 

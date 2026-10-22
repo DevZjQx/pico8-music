@@ -865,8 +865,11 @@ function parsePatternToken(token: string, where: string): PatternToken {
       throw new ScoreError(`${where}: duration must look like "4" or "4g2" (slot and gate steps)`);
     }
     steps = Number.parseInt(match[1] ?? '', 10);
-    if (steps < 1 || steps > MAX_STEPS_PER_NOTE) {
+    if (steps < 1) {
       throw new ScoreError(`${where}: duration must be between 1 and ${MAX_STEPS_PER_NOTE} steps`);
+    }
+    if (steps > MAX_GATE_STEPS) {
+      throw new ScoreError(`${where}: duration must be between 1 and ${MAX_GATE_STEPS} steps`);
     }
     const gateText = match[2];
     if (gateText !== undefined) {
@@ -1251,6 +1254,12 @@ function parsePattern(
       }
       cursor += steps;
       return;
+    }
+
+    // Rests only advance the cursor, so they can pad a pattern up to the gate
+    // ceiling; sounding notes keep the tighter per-note cap.
+    if (steps > MAX_STEPS_PER_NOTE) {
+      throw new ScoreError(`${where}: duration must be between 1 and ${MAX_STEPS_PER_NOTE} steps`);
     }
 
     const volume = parsed.volume ?? defaultVolume;

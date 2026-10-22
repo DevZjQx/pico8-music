@@ -43,7 +43,9 @@ only.
 **Owner.** Unassigned.
 
 **Exceptions.** The reverb tunings are a port of the Freeverb comb/allpass
-table; there is no runtime dependency on Freeverb itself. Drum synthesis uses
+table; there is no runtime dependency on Freeverb itself. It derives its send
+from the mono sum but keeps the dry path stereo, so a post-chain reverb cannot
+fold a panned mix to mono. Drum synthesis uses
 deterministic LCG noise, so renders stay reproducible; the score `seed` is
 folded into that seed and the noise waveform. A drum articulation only changes
 the per-hit plan (extra hits, velocity, decay, tone, pitch) and never adds a

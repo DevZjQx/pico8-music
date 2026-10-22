@@ -99,7 +99,8 @@ export const musicParameters = Type.Object(
       Type.Number({
         minimum: 0,
         maximum: 1,
-        description: 'reverb send; default comes from the preset or post',
+        description:
+          'reverb dry/wet mix 0-1 (the wet path sits ~5 dB under the dry, so 0.3 is light); default comes from the preset or post',
       }),
     ),
     toneHz: Type.Optional(

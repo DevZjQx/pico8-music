@@ -408,9 +408,10 @@ test('the render service validates style names and post types', async () => {
 
 test('fixed renders keep their golden hashes', () => {
   const hashes = {
-    // Hashes moved once when the 16-bit conversion gained TPDF dither.
+    // Hashes moved once when the 16-bit conversion gained TPDF dither, and
+    // again when the post reverb stopped folding its dry path to mono.
     dry: 'f1a890a827943d9ad16ad97ee6467725e88b5f8e7dd59ea4f5977274a8e21034',
-    classic: 'b12781ebc8051b4f67b205c6932a309a5b1e57efe8e9239767d818448ac32316',
+    classic: '5412ba2a8103a7cf61c597db8ee0e09fe1fdcffa6abd722c903642739f0586a0',
     hitech: '009d6c31cc7b17eed665695c3ebbae7696f223c9c1a7c4503edf5119d13be704',
   };
   const digest = (options: Parameters<typeof renderLoop>[1]) =>

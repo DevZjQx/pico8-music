@@ -55,7 +55,10 @@ note parser, so the brace form (`{C7}`) forces the chord reading; `G7/B` is
 safe because the slash rules out a note. Envelope names may not collide with
 effect or drum-articulation names, which is what keeps `~name` unambiguous. Motif pitch transforms
 (`transpose`/`invert`) reject chord tokens; time/order transforms still work.
-`key`/`scale`, voice leading, and tuplets remain deferred: tuplets
+A sounding token's slot is 1-64 steps and its gate 1-256; a rest may span
+1-256 steps because it only advances the pattern cursor, so a long rest can pad
+a pattern without adding render work. `key`/`scale`, voice leading, and tuplets
+remain deferred: tuplets
 would turn the integer step grid into a fractional one across parse,
 arrangement, and loop seams. Non-4/4 meters are expressible with
 `beatsPerBar` (for example 3 for 3/4, or 6 with `stepsPerBeat: 2` for 6/8);

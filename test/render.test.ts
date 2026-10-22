@@ -107,6 +107,35 @@ test('a zero-wet reverb bypasses instead of collapsing the stereo image', () => 
   assert.notDeepEqual(Array.from(wetZero.left), Array.from(wetZero.right));
 });
 
+test('a post reverb keeps the dry stereo image instead of folding the bus to mono', () => {
+  const panned = parseScore({
+    bpm: 120,
+    stepsPerBeat: 4,
+    bars: 2,
+    tracks: [
+      { waveform: 'triangle', pattern: 'C4:2 E4:2 G4:2 C5:2', pan: -1 },
+      { waveform: 'pulse', pattern: 'C3:2 E3:2 G3:2 C4:2', pan: 1 },
+    ],
+  });
+  const dry = renderLoop(panned, { post: [], minutes: 0.05 });
+  assert.ok(dry.report.width > 0.4, `dry width ${dry.report.width}`);
+
+  for (const wet of [0.1, 0.3, 0.45]) {
+    const out = renderLoop(panned, {
+      post: [{ type: 'reverb', wet, room: 0.9, damp: 0.5 }],
+      minutes: 0.05,
+    });
+    assert.ok(
+      out.report.width > dry.report.width * 0.85,
+      `wet ${wet}: width ${out.report.width.toFixed(3)} collapsed from dry ${dry.report.width.toFixed(3)}`,
+    );
+    assert.ok(
+      !out.report.warnings.some((warning) => warning.startsWith('narrow')),
+      `wet ${wet}: unexpected narrow warning ${JSON.stringify(out.report.warnings)}`,
+    );
+  }
+});
+
 test('post steps are applied in the order given', () => {
   const lowpassThenReverb = renderLoop(score, {
     post: [

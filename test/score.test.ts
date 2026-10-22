@@ -152,6 +152,24 @@ test('reports the failing field for bad input', () => {
   assert.throws(() => parseScore({ tracks: [{ waveform: 'violin', pattern: 'C4' }] }), /waveform/);
 });
 
+test('lets long rests pad a pattern while sounding notes stay capped', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    tracks: [{ name: 'crash', role: 'drums', pattern: 'X:1 -:255' }],
+    arrangement: [{ name: 'intro', bars: 16 }],
+  });
+  assert.equal(parsed.tracks[0]?.patternSteps, 256);
+  assert.deepEqual(
+    parsed.tracks[0]?.events.map((event) => event.drum),
+    ['crash'],
+  );
+  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:65' }] }), /between 1 and 64/);
+  assert.throws(
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'X:1 -:257' }] }),
+    /between 1 and 256/,
+  );
+});
+
 test('parses drum tokens into drum events with nominal keys', () => {
   const parsed = parseScore({
     tracks: [
