@@ -29,6 +29,8 @@ examples/m6-instruments.json # 命名 instrument、additive/FM、鼓参数示例
 examples/m7-wave-shapes.json # 模型自己设计的波形：脉冲、相位阶梯、反向锯齿
 examples/m8-samples.json   # 工作区 WAV 采样：sample 音源 + 鼓声替换
 examples/m9-additive-textures.json # additive 非谐、tilt、逐谐波衰减：钟声/拨弦/暗垫
+examples/m10-tuning.json      # A=442、钢琴式 Railsback 逐音 cents 与 additive 钢琴音色
+examples/m11-velocity-timbre.json # 力度映射到滤波 cutoff 与 drive：重音更亮
 examples/assets/           # m8 引用的 16-bit PCM WAV 素材
 scripts/check-boundaries.ts  # shared -> features -> app 的零依赖检查
 test/
@@ -94,6 +96,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `bars` | 1-64 整数（song 模式的 section 也是 1-64，可选总 `bars` 为 1-256） | 4 |
 | `swing` | -0.5..0.5；正数延后奇数 step，负数提前 | 0 |
 | `humanize` | `{timingMs:0-150, velocity:0-1}`；确定性时序/力度扰动，0 不改变旧渲染 | 关闭 |
+| `tuning` | 可选，整曲调律：`{a4, temperament, cents}`；`a4` 400-480 Hz，`temperament` 是内置律制，`cents` 逐音 -100..100 音分 | 440 Hz 十二平均律 |
 | `tail` | 0-30 秒，song 模式在最后一步后多渲染一段让混响和 one-shot 收尾 | 0 |
 | `seed` | 0-2147483647 整数，影响 noise 音色、鼓瞬态、humanize 与段落 riser | 0 |
 | `motifs` | 可选，命名动机：`{"A":"C4:1 E4:1"}` | 空 |
@@ -122,7 +125,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `delay` | `{steps, feedback, mix}`，按 step 计时的轨道延迟；loop 中延迟不短于一圈时按循环折叠，song 中超过歌曲长度则为静音；默认无 |
 
 - 音符：`C4`、`F#3`、`Bb2`；范围 C1-C8。
-- 力度：`C4:4@6`，0-7，可带一位小数（`@4.5`）；写 `@6~slide` 或 `~slide@6` 都可以。
+- 力度：`C4:4@6`，0-7，可带一位小数（`@4.5`）；写 `@6~slide` 或 `~slide@6` 都可以。力度先乘振幅；如果乐器写了 `velocity` 映射，它还会驱动滤波 cutoff 和 drive（见“乐器”）。
 - 效果：`slide`、`vibrato`、`drop`、`fadein`、`fadeout`、`arpfast`、`arpslow`。`slide(n)` / `vib(depth[,rateHz])` 可带参数。鼓轨不用这些效果，改用 `~ghost` / `~flam` / `~roll`（见下文）。
 - 门限：`C4:4g2` 占 4 步、只响 2 步（staccato）；`C4:4g6` 响 6 步，会盖住下一格（legato）。省略 `g` 时门限等于占位长度。
 - 和弦：`[C4,E4,G4]:4` 显式 voicing 最多 8 个音；命名和弦 `Cmaj7`、`Fm/E` 最多展开成 4 个音；和弦级 `@力度`/`~效果` 作用于所有声部。
@@ -130,7 +133,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - 未知字段会直接报错，不会被静默忽略：`pan`、`send`、`duck`、`filter`、`delay` 都是 track 的平铺字段，不要写成 `"mix": {...}`。
 - 不写 `instrument` 时走原来的 8 波形路径，逐样本不变；写 `instrument` 才换发声器。
 - `swing`：-0.5..0.5，奇数 step 偏移 `swing * stepSeconds`（正数延后、负数提前，最多半格）；同一输入渲染确定。
-- `humanize`：`timingMs` 让每个事件有 ±N 毫秒的确定性偏移，`velocity` 让力度有 ±50% 的确定性起伏；两者都由 `seed` 和事件位置决定，loop 内每个 pass 完全一致。默认 0，旧 score 逐样本不变。
+- `humanize`：`timingMs` 让每个事件有 ±N 毫秒的确定性偏移，`velocity` 让力度有 ±50% 的确定性起伏；这两项都会由 `seed` 和事件位置决定，loop 内每个 pass 完全一致。默认 0，旧 score 逐样本不变。当乐器启用 `velocity` 映射时，humanize 的力度起伏也会一起改变音色。
 - `tail`：只在 song 模式有效，在最后一个 step 之后多渲染 N 秒（最多 30 秒），让 send/post 混响和鼓的 one-shot 自然收尾；loop 模式禁止 `tail`，否则会破坏无缝循环。
 - 每个 pattern 会重复填满 `bars`；每小节 `beatsPerBar` 拍（默认 4），循环长度 = `bars * beatsPerBar * stepsPerBeat` 步。
 - 单轨可写显式和弦，最多 8 个同时发声的声部；一条 track 是一个编曲声部/总线，和弦声部不要各占一条轨。需要更多层次时增加 track。鼓轨的 one-shot 独立渲染，尾音可以和后续 hit 重叠。
@@ -164,6 +167,27 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 
 `seed` 影响 noise 波形、鼓的噪声瞬态、humanize 的时序/力度扰动与段落 riser 的噪声，不改变音高、时值或旋律；同一 seed 渲染确定。
 
+### 调律（tuning）
+
+`tuning` 是整曲的音高参考，不改变音色。`a4` 是 A4 的绝对频率（400-480 Hz，默认 440），也是所有算法的锚点：律制表以 A 为 0 点，所以只换 `temperament` 不会移动 A4；其余音按律制移动，再叠加 `cents` 的逐音微调（-100..100 音分）。如果给 `A4` 本身写了 `cents`，它会在 `a4` 之上再偏移。
+
+```json
+{
+  "tuning": {
+    "a4": 442,
+    "temperament": "equal",
+    "cents": { "C1": -28, "C2": -18, "C3": -9, "C4": 0, "C5": 8, "C6": 18, "C7": 28, "C8": 38 }
+  },
+  "tracks": [{ "pattern": "C4:4 E4:4 G4:4" }]
+}
+```
+
+- `temperament`：`equal`（默认）、`just`（5 限纯律）、`pythagorean`、`meantone`（四分之一音差）、`werckmeister3`、`kirnberger3`、`young`。也接受 `werckmeister-iii`、`quarter-comma-meantone` 等常见写法。
+- `cents` 的键是音名（`C4`、`F#3`、`Bb2`），值是相对该律制音高的音分偏移；同一个 MIDI 音只能用一种写法，`C4` 和 `B#3` 同时出现会报错。
+- 上面的 `cents` 是一条简化的钢琴 Railsback 曲线：低音区偏低、高音区偏高，配合 `additive` 的 `stretch` 和逐谐波衰减可以做出接近钢琴的调律与音色。完整示例见 `examples/m10-tuning.json`。
+- 调律在解析时算进每个 `NoteEvent.frequency`，所以所有发声路径（chip、additive、FM、采样）都跟随；`unison` 的 `detune` 仍然是叠加在调律之后的群感展宽。
+- 采样音源通过改变播放速度跟随目标频率，因此逐键 `cents` 对采样钢琴同样有效；`samples.root` 仍按素材自身的 A4=440 十二平均律解释，没有 per-zone 多采样映射。
+
 ### 乐器（instrument）
 
 顶层 `instruments` 表放命名音色，track 用 `"instrument": "名字"` 引用；也可以直接写内联对象。三种类型：
@@ -175,6 +199,8 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `fm` | `ratio` 0.25-8、`index` 0-12、`indexDecay` 0.01-4 秒 | 两算子相位调制，电钢/钟/贝斯类音色 |
 
 三种类型共用：`unison` 1-4、`detune` 0-50 音分、`drive` 0-1，以及逐音滤波包络 `filter: {cutoffHz, resonance 0.05-20, envAmount, attack, decay, sustain, release}`；`envAmount` 是截止频率被包络推开的八度数（0-6）。
+
+`chip` / `additive` / `fm` 还可以写 `velocity: {cutoffOctaves: 0-6, drive: 0-1}`：不写或全为 0 时行为不变；写了以后，`@力度`（含 humanize 的力度起伏）会按归一化力度把 `filter.cutoffHz` 最多打开 N 个八度，并把额外 drive 叠到基础 `drive` 上。`cutoffOctaves` 需要同时有 `filter`，否则解析报错；`drive` 不依赖 filter。`sample` 乐器不接受 `velocity`。完整示例见 `examples/m11-velocity-timbre.json`。
 
 ```json
 {
@@ -413,6 +439,8 @@ bun run check      # 边界检查 + 类型检查 + 测试
 - M4 已做：渲染报告（peak/RMS/LUFS/频谱/宽度/onset/分段/警告）、`p8_analyze`、`tilt`/`saturate`/`compress`/`loudness`/`limiter` 五个 master 步骤。
 - M6 已做：命名/内联 `instruments`（chip / additive / FM）、unison 失谐、drive、逐音滤波包络、鼓的 per-hit pitch/decay/tone、`studio`/`lofi` 两个换音色的 style。采样素材（`samples` / `drumSamples`）已支持 16-bit PCM WAV；仍不做切片/多采样映射/任意波表、任意 FM 算子矩阵、per-note pan。
 - additive 扩展已做：`stretch` 非谐、`tilt` 频谱倾斜、逐谐波衰减；静态路径逐样本兼容。仍不做公式/表达式音源、任意 FM 算子矩阵和波表文件。
+- 力度到音色已做：`chip`/`additive`/`fm` 的 `velocity: {cutoffOctaves, drive}` 让 `@力度` 同时打开滤波 cutoff 和增加 drive；不写或全 0 时逐样本不变，`sample` 乐器不接受这个字段。暂不把力度映射到 decay 或 FM index，避免在没有明确听感目标时扩大语义。
+- 调律已做：顶层 `tuning` 的 `a4` 400-480 Hz、七种内置律制和逐音 `cents`；律制以 A 为锚点，所以换律制不会移动 A4，逐音 `cents` 还能在此基础上微调任意键。采样音源靠变速跟随目标频率，所以逐键微调也生效；但没有 per-zone 多采样映射，`samples.root` 仍按素材自身的 440 Hz 十二平均律解释。
 - 轨数上限是 32，不是音乐规则：每条轨都要一整段 buffer 和一次逐样本混音，所以长歌 + 很多轨会明显变慢。需要更多层次时优先增加 track，而不是把和弦塞到 8 个声部以上。
 - `humanize` 只改时序和力度，不做 probability/ratchet；`tuplet` 仍不做：三连音需要分数 step 网格，会同时影响 parser、swing、段落对齐和循环接缝，收益低于成本。
 - song 模式的 `send` 混响和 `post` 混响尾音默认会在歌曲结束时截断；设置顶层 `tail` 可以留出收尾时间，或用 `send: 0` + `post: []` 做紧结尾。

@@ -180,11 +180,37 @@ export class InstrumentVoice {
   /** Per-partial one-sample decay multipliers, indexed like `dynamic`. */
   private readonly decayFactors?: Float64Array;
   private readonly filter?: NoteFilter;
+  /** Velocity-opened filter multiplier; 1 when the score has no mapping. */
+  private readonly cutoffScale: number;
+  /** Effective post-filter drive after the velocity offset. */
+  private readonly drive: number;
 
-  constructor(instrument: Instrument, midi: number, rate: number, seed: number) {
+  /**
+   * `frequency` is the note's already-tuned pitch. The additive table uses it
+   * only for band-limiting; playback still receives the per-sample frequency
+   * from the renderer so slide and vibrato keep working. `velocity` is the
+   * normalised note velocity (0..1), used only by the optional instrument
+   * `velocity` mapping; its default leaves the historical fixed response.
+   */
+  constructor(
+    instrument: Instrument,
+    midi: number,
+    rate: number,
+    seed: number,
+    frequency: number,
+    velocity = 1,
+  ) {
     this.instrument = instrument;
     this.rate = rate;
     this.key = clamp(midi - 36, 0, 63);
+    const mapping = instrument.velocity;
+    const normalizedVelocity = clamp(velocity, 0, 1);
+    this.cutoffScale =
+      mapping === undefined ? 1 : 2 ** (mapping.cutoffOctaves * normalizedVelocity);
+    this.drive =
+      mapping === undefined
+        ? instrument.drive
+        : clamp(instrument.drive + mapping.drive * normalizedVelocity, 0, 1);
 
     let table: Float32Array | undefined;
     let dynamic: readonly ResolvedPartial[] | undefined;
@@ -193,7 +219,6 @@ export class InstrumentVoice {
       const partials = instrument.partials ?? DEFAULT_PARTIALS;
       const stretch = instrument.stretch ?? 0;
       const tilt = instrument.tilt ?? 0;
-      const frequency = 440 * 2 ** ((midi - 69) / 12);
       const resolved = resolvePartials(partials, frequency, rate, stretch, tilt);
       const cycle = buildCycle(resolved);
 
@@ -262,11 +287,14 @@ export class InstrumentVoice {
     const filter = this.filter;
     if (filter !== undefined && this.instrument.filter !== undefined) {
       const level = filterEnvelopeAt(this.instrument.filter, seconds, duration);
-      const cutoff = this.instrument.filter.cutoffHz * 2 ** (this.instrument.filter.envAmount * level);
+      const cutoff =
+        this.instrument.filter.cutoffHz *
+        2 ** (this.instrument.filter.envAmount * level) *
+        this.cutoffScale;
       value = filter.process(value, cutoff);
     }
 
-    const drive = this.instrument.drive;
+    const drive = this.drive;
     if (drive > 0) {
       value = Math.tanh(value * (1 + drive * 8)) * (1 - drive * 0.4);
     }

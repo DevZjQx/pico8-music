@@ -3,12 +3,12 @@ import {
   EFFECT_NAMES,
   drumMidiOf,
   formatNoteName,
-  frequencyOf,
   parseDrumName,
   parseEffect,
   parseNoteName,
   parseWaveform,
 } from './notes.ts';
+import { DEFAULT_TUNING, TEMPERAMENT_NAMES, frequencyOf } from './tuning.ts';
 import type {
   DrumEffect,
   DrumName,
@@ -27,9 +27,12 @@ import type {
   ScoreMode,
   ScoreSection,
   ScoreTrack,
+  TemperamentName,
   TrackDelay,
   TrackFilter,
   TrackPattern,
+  Tuning,
+  VelocityMapping,
   Waveform,
 } from './types.ts';
 
@@ -89,6 +92,8 @@ const MAX_SONG_SECONDS = 15 * 60;
 /** Sample banks are deliberately small: an LLM should reuse a handful of assets. */
 const MAX_SAMPLES = 16;
 const SAMPLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+/** A per-key tuning map only needs the keys the piece actually plays. */
+const MAX_TUNING_NOTES = 128;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -237,6 +242,23 @@ function parseInstrumentFilter(value: unknown, path: string): InstrumentFilter |
 }
 
 /**
+ * Velocity offsets are opt-in so old instrument definitions keep their fixed
+ * response. `cutoffOctaves` is expressed as a full-velocity opening, so a
+ * quiet note sits at the authored cutoff and a loud one opens above it.
+ */
+function parseVelocityMapping(value: unknown, path: string): VelocityMapping | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with cutoffOctaves and drive`);
+  }
+  rejectUnknownKeys(value, ['cutoffOctaves', 'drive'], path);
+  return {
+    cutoffOctaves: readNumber(value.cutoffOctaves, `${path}.cutoffOctaves`, 0, 0, 6),
+    drive: readNumber(value.drive, `${path}.drive`, 0, 0, 1),
+  };
+}
+
+/**
  * `chip` keeps the eight PICO-8 formulas; `additive` sums band-limited
  * harmonics; `fm` is a two-operator phase-modulation voice. Unison, drive, and
  * the filter envelope are shared, which is what lets one definition leave the
@@ -267,6 +289,7 @@ function parseInstrumentSpec(
       'detuneCents',
       'drive',
       'filter',
+      'velocity',
     ],
     path,
   );
@@ -304,6 +327,7 @@ function parseInstrumentSpec(
       'detuneCents',
       'drive',
       'filter',
+      'velocity',
     ].filter((key) => value[key] !== undefined);
     if (ignored.length > 0) {
       throw new ScoreError(
@@ -353,6 +377,12 @@ function parseInstrumentSpec(
   }
 
   const filter = parseInstrumentFilter(value.filter, `${path}.filter`);
+  const velocity = parseVelocityMapping(value.velocity, `${path}.velocity`);
+  if (velocity !== undefined && velocity.cutoffOctaves > 0 && filter === undefined) {
+    throw new ScoreError(
+      `${path}.velocity.cutoffOctaves needs ${path}.filter; without a filter there is no cutoff to open`,
+    );
+  }
   return {
     type,
     waveform,
@@ -366,6 +396,7 @@ function parseInstrumentSpec(
     detuneCents: readNumber(value.detune ?? value.detuneCents, `${path}.detune`, 0, 0, 50),
     drive: readNumber(value.drive, `${path}.drive`, 0, 0, 1),
     ...(filter === undefined ? {} : { filter }),
+    ...(velocity === undefined ? {} : { velocity }),
   };
 }
 
@@ -1222,6 +1253,7 @@ function parsePattern(
   path: string,
   defaultVolume: number,
   isDrums: boolean,
+  tuning: Tuning,
   motifs: ReadonlyMap<string, string> = new Map(),
   envelopes: ReadonlyMap<string, Envelope> = new Map(),
 ): ParsedPattern {
@@ -1312,7 +1344,7 @@ function parsePattern(
         step: cursor,
         steps,
         midi,
-        frequency: frequencyOf(midi),
+        frequency: frequencyOf(midi, tuning),
         ...effectFields,
         volume,
         drum,
@@ -1329,7 +1361,7 @@ function parsePattern(
         gateSteps,
         voice,
         midi,
-        frequency: frequencyOf(midi),
+        frequency: frequencyOf(midi, tuning),
         ...effectFields,
         volume,
       });
@@ -1442,6 +1474,7 @@ function parseTrack(
   envelopes: ReadonlyMap<string, Envelope>,
   instruments: ReadonlyMap<string, Instrument>,
   samples: ReadonlyMap<string, SampleSpec>,
+  tuning: Tuning,
 ): ParsedTrack {
   const path = `tracks[${index}]`;
   if (!isRecord(value)) {
@@ -1513,6 +1546,7 @@ function parseTrack(
       `${path}.patterns.${patternName}`,
       volume,
       isDrums,
+      tuning,
       motifs,
       envelopes,
     );
@@ -1530,6 +1564,7 @@ function parseTrack(
       globalPatterns,
       volume,
       isDrums,
+      tuning,
       motifs,
       envelopes,
     );
@@ -1572,6 +1607,7 @@ function resolveTrackPattern(
   globalPatterns: ReadonlyMap<string, string>,
   volume: number,
   isDrums: boolean,
+  tuning: Tuning,
   motifs: ReadonlyMap<string, string>,
   envelopes: ReadonlyMap<string, Envelope>,
 ): TrackPattern {
@@ -1580,11 +1616,11 @@ function resolveTrackPattern(
 
   const globalSource = globalPatterns.get(reference);
   if (globalSource !== undefined) {
-    return parsePattern(globalSource, `patterns.${reference}`, volume, isDrums, motifs, envelopes);
+    return parsePattern(globalSource, `patterns.${reference}`, volume, isDrums, tuning, motifs, envelopes);
   }
 
   try {
-    return parsePattern(reference, where, volume, isDrums, motifs, envelopes);
+    return parsePattern(reference, where, volume, isDrums, tuning, motifs, envelopes);
   } catch (error) {
     // A bare identifier that is not note-shaped is far more likely a mistyped
     // pattern name than an inline pattern, so report it as a lookup miss.
@@ -1653,6 +1689,7 @@ function resolvePatternForTrack(
   globalPatterns: ReadonlyMap<string, string>,
   motifs: ReadonlyMap<string, string>,
   envelopes: ReadonlyMap<string, Envelope>,
+  tuning: Tuning,
 ): TrackPattern {
   const local = track.patterns[reference];
   if (local !== undefined) return local;
@@ -1667,6 +1704,7 @@ function resolvePatternForTrack(
       `patterns.${reference}`,
       track.volume,
       track.isDrums,
+      tuning,
       motifs,
       envelopes,
     );
@@ -1676,7 +1714,15 @@ function resolvePatternForTrack(
 
   const looksInline = /[:\s~@\[\]/]/.test(reference);
   try {
-    const pattern = parsePattern(reference, `${where} (inline)`, track.volume, track.isDrums, motifs, envelopes);
+    const pattern = parsePattern(
+      reference,
+      `${where} (inline)`,
+      track.volume,
+      track.isDrums,
+      tuning,
+      motifs,
+      envelopes,
+    );
     cache.set(reference, pattern);
     return pattern;
   } catch (error) {
@@ -1696,6 +1742,7 @@ function parseArrangement(
   expectedBars: number | undefined,
   envelopes: ReadonlyMap<string, Envelope>,
   warnings: string[],
+  tuning: Tuning,
 ): ArrangementResult {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ScoreError('arrangement must be a non-empty array of sections');
@@ -1785,6 +1832,7 @@ function parseArrangement(
               globalPatterns,
               motifMaps[trackIndex] ?? new Map(),
               envelopes,
+              tuning,
             );
 
       const fillReference = fill?.patterns[track.name] ?? fill?.patterns[track.role];
@@ -1799,6 +1847,7 @@ function parseArrangement(
               globalPatterns,
               motifMaps[trackIndex] ?? new Map(),
               envelopes,
+              tuning,
             );
 
       if (sectionSteps % pattern.patternSteps !== 0) {
@@ -1907,6 +1956,91 @@ function parseHumanize(value: unknown): Humanize {
   };
 }
 
+/** Temperament spellings a model is likely to emit, normalised to canonical names. */
+const TEMPERAMENT_ALIASES: Readonly<Record<string, TemperamentName>> = {
+  equal: 'equal',
+  'equal-temperament': 'equal',
+  '12-tet': 'equal',
+  just: 'just',
+  'just-intonation': 'just',
+  pythagorean: 'pythagorean',
+  pythagoras: 'pythagorean',
+  meantone: 'meantone',
+  'quarter-comma-meantone': 'meantone',
+  werckmeister: 'werckmeister3',
+  'werckmeister-iii': 'werckmeister3',
+  werckmeister3: 'werckmeister3',
+  kirnberger: 'kirnberger3',
+  'kirnberger-iii': 'kirnberger3',
+  kirnberger3: 'kirnberger3',
+  young: 'young',
+  'young-1799': 'young',
+};
+
+function parseTemperament(value: unknown): TemperamentName {
+  if (value === undefined) return DEFAULT_TUNING.temperament;
+  if (typeof value !== 'string') {
+    throw new ScoreError(`tuning.temperament must be a string, got ${JSON.stringify(value)}`);
+  }
+  const key = value.trim().toLowerCase().replace(/[\s_]+/g, '-');
+  const temperament = TEMPERAMENT_ALIASES[key];
+  if (temperament === undefined) {
+    throw new ScoreError(
+      `tuning.temperament must be one of ${TEMPERAMENT_NAMES.join(', ')}, got ${JSON.stringify(value)}`,
+    );
+  }
+  return temperament;
+}
+
+/**
+ * Per-note cent offsets, keyed by note name in the wire format. The normalised
+ * form keys by MIDI number so frequencyOf never has to parse a name again.
+ */
+function parseTuningCents(value: unknown): ReadonlyMap<number, number> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new ScoreError(
+      'tuning.cents must be an object mapping note names to cent offsets, e.g. {"C4":2.5}',
+    );
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_TUNING_NOTES) {
+    throw new ScoreError(
+      `tuning.cents has ${entries.length} entries; use at most ${MAX_TUNING_NOTES} (one per MIDI note)`,
+    );
+  }
+  const cents = new Map<number, number>();
+  for (const [name, entry] of entries) {
+    const midi = parseNoteName(name);
+    if (midi === undefined) {
+      throw new ScoreError(`tuning.cents.${name}: use a note name such as C4 or F#3`);
+    }
+    if (midi < 0 || midi > 127) {
+      throw new ScoreError(`tuning.cents.${name}: MIDI note ${midi} is outside 0-127`);
+    }
+    if (cents.has(midi)) {
+      throw new ScoreError(
+        `tuning.cents.${name}: an enharmonic spelling already tunes MIDI note ${midi}; use one name per key`,
+      );
+    }
+    cents.set(midi, readRequiredNumber(entry, `tuning.cents.${name}`, -100, 100));
+  }
+  return cents;
+}
+
+function parseTuning(value: unknown): Tuning {
+  if (value === undefined) return DEFAULT_TUNING;
+  if (!isRecord(value)) {
+    throw new ScoreError('tuning must be an object with a4, temperament, and cents');
+  }
+  rejectUnknownKeys(value, ['a4', 'temperament', 'cents'], 'tuning');
+  return {
+    a4: readNumber(value.a4, 'tuning.a4', DEFAULT_TUNING.a4, 400, 480),
+    temperament: parseTemperament(value.temperament),
+    cents: parseTuningCents(value.cents),
+  };
+}
+
 function parseMode(value: unknown, hasArrangement: boolean): ScoreMode {
   if (value === undefined) return hasArrangement ? 'song' : 'loop';
   if (value === 'song' || value === 'loop') return value;
@@ -1950,6 +2084,7 @@ export function parseScore(input: string | unknown): Score {
       'patterns',
       'bars',
       'humanize',
+      'tuning',
       'tail',
     ],
     '',
@@ -1962,6 +2097,7 @@ export function parseScore(input: string | unknown): Score {
   const swing = readNumber(raw.swing, 'swing', 0, -0.5, 0.5);
   const seed = readNumber(raw.seed, 'seed', 0, 0, 2147483647, true);
   const humanize = parseHumanize(raw.humanize);
+  const tuning = parseTuning(raw.tuning);
   const tailSeconds = readNumber(raw.tail, 'tail', 0, 0, 30);
   const envelopes = parseEnvelopes(raw.envelopes);
   const samples = parseSamples(raw.samples);
@@ -1992,7 +2128,16 @@ export function parseScore(input: string | unknown): Score {
   const globalMotifs = new Map(Object.entries(parseStringRecord(raw.motifs, 'motifs')));
   const globalPatterns = parseGlobalPatterns(raw.patterns);
   const parsedTracks = raw.tracks.map((track, index) =>
-    parseTrack(track, index, globalMotifs, globalPatterns, envelopes, instruments, samples),
+    parseTrack(
+      track,
+      index,
+      globalMotifs,
+      globalPatterns,
+      envelopes,
+      instruments,
+      samples,
+      tuning,
+    ),
   );
   const baseTracks = parsedTracks.map((entry) => entry.track);
   const motifMaps = parsedTracks.map((entry) => entry.motifs);
@@ -2015,6 +2160,7 @@ export function parseScore(input: string | unknown): Score {
       expectedBars,
       envelopes,
       warnings,
+      tuning,
     );
     totalSteps = arrangement.totalSteps;
     bars = totalSteps / stepsPerBar;
@@ -2055,6 +2201,7 @@ export function parseScore(input: string | unknown): Score {
     swing,
     seed,
     humanize,
+    tuning,
     tracks,
     sections,
     tailSeconds,

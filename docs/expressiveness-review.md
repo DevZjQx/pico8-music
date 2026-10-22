@@ -103,7 +103,7 @@ renderScore
 | [鼓与打击乐](#p0-1-鼓与打击乐) | P0 | 基础鼓、`~ghost`/`~flam`/`~roll` 与 per-hit `~pitch`/`~decay`/`~tone` 已实现 |
 | [段落与编曲](#p0-2-段落与编曲) | P0 | 基础段落、`fill`、`energy`、`riser`、`tail` 已实现 |
 | [复音与和声](#p0-3-复音与和声) | P0 | 显式与命名和弦、更多轨数已实现；`voices`、`key`/`scale`、voice leading 未做 |
-| [发音法、门限、动态](#p0-4-发音法门限动态) | P0 | slot/gate、命名包络、参数化 slide/vib 已实现；参数化 arp、力度映射未做 |
+| [发音法、门限、动态](#p0-4-发音法门限动态) | P0 | slot/gate、命名包络、参数化 slide/vib、力度到 cutoff/drive 已实现；参数化 arp 未做 |
 | [旋律、动机与乐句](#p0-5-旋律动机与乐句) | P0 | motif 引用与变换已实现，乐句级与和声进行未做 |
 | [Groove、humanize、tuplet](#p1-1-groovehumanizetuplet) | P1 | swing、seed、humanize 已实现；tuplet 未做 |
 | [滤波、自动化、sidechain](#p1-2-滤波自动化sidechain) | P1 | 部分实现（M3） |
@@ -190,7 +190,7 @@ renderScore
 
 **验收：** gate 变短会降低 RMS 但不改变事件起点；slide 在指定时间内到达目标音高；vibrato 的 rate/depth 可测量；ghost note 的频谱重心低于正常 hit。
 
-**现状：slot/gate 分离与 per-note ADSR 已实现。** `C4:4g2` / `C4:4g6` 分别覆盖 staccato 和 legato；音高和事件起点不变。顶层 `envelopes` + `~pluck` 提供命名 per-note ADSR；`~slide(steps)`（0.05–8）与 `~vib(depth[,rate])`（0–2 半音，0.1–20 Hz）已参数化，无参数时行为与旧版一致。仍不做：参数化 arp（只有固定的 `arpfast` / `arpslow`）、力度映射到滤波/衰减——`@力度` 仍然只乘振幅。
+**现状：slot/gate 分离、per-note ADSR 与力度到音色已实现。** `C4:4g2` / `C4:4g6` 分别覆盖 staccato 和 legato；音高和事件起点不变。顶层 `envelopes` + `~pluck` 提供命名 per-note ADSR；`~slide(steps)`（0.05–8）与 `~vib(depth[,rate])`（0–2 半音，0.1–20 Hz）已参数化，无参数时行为与旧版一致。乐器可以写 `velocity: {cutoffOctaves 0-6, drive 0-1}`，让 `@力度` 在乘振幅之外还打开滤波 cutoff 并叠加 drive；不写或全 0 时旧 score 逐样本不变，`cutoffOctaves` 需要 `filter`，`sample` 乐器不接受该字段。humanize 的力度起伏也会参与映射。仍不做：参数化 arp（只有固定的 `arpfast` / `arpslow`）、力度映射到 decay/FM index。
 
 #### P0-5 旋律、动机与乐句
 

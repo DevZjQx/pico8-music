@@ -548,6 +548,39 @@ test('reads additive stretch and tilt and rejects them on other voice types', ()
   );
 });
 
+test('parses velocity-to-timbre offsets and rejects them without a filter or on samples', () => {
+  const instrumentOf = (instrument: unknown, extra: Record<string, unknown> = {}) =>
+    parseScore({ ...extra, tracks: [{ instrument, pattern: 'C4:4' }] }).tracks[0]?.instrument;
+
+  const mapped = instrumentOf({
+    type: 'additive',
+    filter: 1200,
+    velocity: { cutoffOctaves: 2, drive: 0.4 },
+  });
+  assert.deepEqual(mapped?.velocity, { cutoffOctaves: 2, drive: 0.4 });
+
+  assert.throws(
+    () => instrumentOf({ type: 'chip', velocity: { cutoffOctaves: 2 } }),
+    /cutoffOctaves needs .*filter/,
+  );
+  assert.throws(
+    () => instrumentOf({ type: 'chip', filter: 1200, velocity: { cutoffOctaves: 7 } }),
+    /cutoffOctaves must be between 0 and 6/,
+  );
+  assert.throws(
+    () => instrumentOf({ type: 'chip', velocity: { drive: 2 } }),
+    /drive must be between 0 and 1/,
+  );
+  assert.throws(
+    () =>
+      instrumentOf(
+        { type: 'sample', sample: 'tone', velocity: { drive: 0.2 } },
+        { samples: { tone: 'assets/tone.wav' } },
+      ),
+    /sample instruments do not accept velocity/,
+  );
+});
+
 test('parses per-hit drum pitch, decay, and tone alongside articulations', () => {
   const parsed = parseScore({
     tracks: [
@@ -1417,4 +1450,74 @@ test('rejects malformed samples and sample instruments', () => {
     }),
     /unknown sample "missing"/,
   );
+});
+
+test('defaults to 12-TET at A440', () => {
+  const parsed = parseScore({ tracks: [{ pattern: 'A4:4 C4:4' }] });
+  assert.equal(parsed.tuning.a4, 440);
+  assert.equal(parsed.tuning.temperament, 'equal');
+  assert.equal(parsed.tuning.cents.size, 0);
+  const [a4, c4] = parsed.tracks[0]?.events ?? [];
+  assert.ok(Math.abs((a4?.frequency ?? 0) - 440) < 1e-9);
+  assert.ok(Math.abs((c4?.frequency ?? 0) - 261.6255653005986) < 1e-9);
+});
+
+test('applies the A4 reference to every note', () => {
+  const parsed = parseScore({
+    tuning: { a4: 442 },
+    tracks: [{ pattern: 'A4:4 C4:4' }],
+  });
+  const [a4, c4] = parsed.tracks[0]?.events ?? [];
+  assert.ok(Math.abs((a4?.frequency ?? 0) - 442) < 1e-9);
+  assert.ok(Math.abs((c4?.frequency ?? 0) - 442 * 2 ** (-9 / 12)) < 1e-9);
+});
+
+test('a temperament moves pitch classes but keeps A4 exact', () => {
+  const parsed = parseScore({
+    tuning: { temperament: 'just' },
+    tracks: [{ pattern: 'A4:4 C4:4 E4:4' }],
+  });
+  const [a4, c4, e4] = parsed.tracks[0]?.events ?? [];
+  assert.ok(Math.abs((a4?.frequency ?? 0) - 440) < 1e-9);
+  // 5-limit just major third is exactly 5/4, regardless of the A anchor.
+  assert.ok(Math.abs((e4?.frequency ?? 0) / (c4?.frequency ?? 1) - 1.25) < 1e-12);
+});
+
+test('per-note cents stack on top of the temperament', () => {
+  const base = parseScore({
+    tuning: { temperament: 'pythagorean' },
+    tracks: [{ pattern: 'A4:4 C4:4' }],
+  });
+  const tuned = parseScore({
+    tuning: { temperament: 'pythagorean', cents: { C4: 12 } },
+    tracks: [{ pattern: 'A4:4 C4:4' }],
+  });
+  const baseC4 = base.tracks[0]?.events[1]?.frequency ?? 0;
+  const tunedC4 = tuned.tracks[0]?.events[1]?.frequency ?? 0;
+  assert.ok(Math.abs(tunedC4 / baseC4 - 2 ** (12 / 1200)) < 1e-12);
+  assert.ok(Math.abs((tuned.tracks[0]?.events[0]?.frequency ?? 0) - 440) < 1e-9);
+});
+
+test('section pattern overrides are tuned too', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    tuning: { a4: 432 },
+    tracks: [{ name: 'lead', pattern: 'A4:4' }],
+    arrangement: [{ name: 'a', bars: 1, patterns: { lead: 'C4:4' } }],
+  });
+  const first = parsed.tracks[0]?.timeline?.[0];
+  assert.ok(Math.abs((first?.frequency ?? 0) - 432 * 2 ** (-9 / 12)) < 1e-9);
+});
+
+test('rejects illegal tuning fields and values', () => {
+  const parse = (tuning: unknown) => parseScore({ tuning, tracks: [{ pattern: 'C4:4' }] });
+  assert.throws(() => parse('440'), /tuning must be an object/);
+  assert.throws(() => parse({ reference: 440 }), /unknown field "reference"/);
+  assert.throws(() => parse({ a4: 300 }), /tuning\.a4 must be between 400 and 480/);
+  assert.throws(() => parse({ a4: '440' }), /tuning\.a4 must be a number/);
+  assert.throws(() => parse({ temperament: 'vallotti' }), /tuning\.temperament must be one of/);
+  assert.throws(() => parse({ cents: { H4: 2 } }), /tuning\.cents\.H4: use a note name/);
+  assert.throws(() => parse({ cents: { C4: 101 } }), /tuning\.cents\.C4 must be between -100 and 100/);
+  assert.throws(() => parse({ cents: { C4: 2, 'B#3': 3 } }), /enharmonic spelling already tunes MIDI note 60/);
+  assert.throws(() => parse({ cents: { C4: undefined } }), /tuning\.cents\.C4 is required/);
 });

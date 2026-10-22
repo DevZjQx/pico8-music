@@ -945,6 +945,34 @@ test('renders the M9 inharmonic and decaying additive example', async () => {
   assert.ok(output.report.peakDb <= -0.9);
 });
 
+test('renders the M10 tuned additive piano example', async () => {
+  const raw = await readFile(new URL('../examples/m10-tuning.json', import.meta.url), 'utf8');
+  const example = parseScore(raw);
+  assert.equal(example.tuning.a4, 442);
+  assert.equal(example.tuning.temperament, 'equal');
+  assert.equal(example.tuning.cents.get(84), 18, 'C6 sits 18 cents sharp');
+  assert.equal(example.tracks[0]?.instrument?.type, 'additive');
+  const first = example.tracks[0]?.events[0];
+  assert.ok(Math.abs((first?.frequency ?? 0) - 442 * 2 ** (-9 / 12)) < 1e-9);
+
+  const output = renderLoop(example, { post: [], minutes: 0.05 });
+  assert.ok(peak(output.wav) > 1000, 'M10 example must be audible');
+  assert.ok(output.report.peakDb <= -0.9);
+});
+
+test('renders the M11 velocity-to-timbre example', async () => {
+  const raw = await readFile(new URL('../examples/m11-velocity-timbre.json', import.meta.url), 'utf8');
+  const example = parseScore(raw);
+  assert.deepEqual(example.tracks[0]?.instrument?.velocity, {
+    cutoffOctaves: 2.5,
+    drive: 0.25,
+  });
+
+  const output = renderLoop(example, { post: [], minutes: 0.05 });
+  assert.ok(peak(output.wav) > 1000, 'M11 example must be audible');
+  assert.ok(output.report.peakDb <= -0.9);
+});
+
 function renderAdditiveNote(definition: Record<string, unknown>, pattern = 'A4:16'): Float32Array {
   return monoOf(
     renderLoop(
@@ -991,6 +1019,86 @@ test('tilt rolls off upper harmonics relative to the fundamental', () => {
     magnitudeBetween(samples, 4 * 440, 0.2, 1.8) / magnitudeBetween(samples, 440, 0.2, 1.8);
 
   assert.ok(ratioOf(tilted) < ratioOf(flat) * 0.5, `tilted ${ratioOf(tilted)} vs flat ${ratioOf(flat)}`);
+});
+
+test('velocity opens an instrument filter and adds drive', () => {
+  const render = (definition: Record<string, unknown>, volume: number) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          tracks: [
+            {
+              instrument: { type: 'additive', ...definition },
+              pattern: `A4:8@${volume} -:8`,
+            },
+          ],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+  const ratio = (samples: Float32Array, harmonic: number) =>
+    magnitudeBetween(samples, harmonic * 440, 0.05, 0.9) /
+    Math.max(1e-9, magnitudeBetween(samples, 440, 0.05, 0.9));
+
+  const cutoff = {
+    partials: [1, 0.6, 0.4, 0.3, 0.2, 0.15, 0.1],
+    filter: {
+      cutoffHz: 400,
+      resonance: 0.707,
+      envAmount: 0,
+      attack: 0,
+      decay: 0,
+      sustain: 1,
+      release: 0,
+    },
+    velocity: { cutoffOctaves: 4 },
+  };
+  const quiet = render(cutoff, 1);
+  const loud = render(cutoff, 7);
+  assert.ok(
+    ratio(loud, 4) > ratio(quiet, 4) * 2,
+    `loud ${ratio(loud, 4)} quiet ${ratio(quiet, 4)}`,
+  );
+
+  const drive = { partials: [1], velocity: { drive: 1 } };
+  const quietDrive = render(drive, 1);
+  const loudDrive = render(drive, 7);
+  assert.ok(
+    ratio(loudDrive, 3) > ratio(quietDrive, 3) * 3,
+    `loud drive ${ratio(loudDrive, 3)} quiet ${ratio(quietDrive, 3)}`,
+  );
+});
+
+test('an all-zero velocity mapping stays sample-identical', () => {
+  const render = (velocity?: Record<string, number>) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          tracks: [
+            {
+              instrument: {
+                type: 'additive',
+                partials: [1, 0.5, [0.3, 45, 0.5]],
+                ...(velocity === undefined ? {} : { velocity }),
+              },
+              pattern: 'A4:4@7',
+            },
+          ],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+
+  assert.deepEqual(
+    Array.from(render()),
+    Array.from(render({ cutoffOctaves: 0, drive: 0 })),
+  );
 });
 
 test('per-harmonic decay lets highs die before the fundamental', () => {
@@ -1304,4 +1412,27 @@ test('a sample instrument without a loaded bank fails explicitly', () => {
     tracks: [{ instrument: { type: 'sample', sample: 'tone' }, pattern: 'C4:4' }],
   });
   assert.throws(() => renderLoop(parsed, { post: [], minutes: 0.05 }), /missing from the render bank/);
+});
+
+test('the renderer sounds the tuned frequency, not the 12-TET default', () => {
+  const render = (tuning?: unknown) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          ...(tuning === undefined ? {} : { tuning }),
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          tracks: [{ waveform: 'triangle', pattern: 'A4:8' }],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+  const tuned = render({ a4: 442 });
+  assert.ok(
+    magnitudeAt(tuned, 442, 1) > magnitudeAt(tuned, 440, 1) * 5,
+    'energy must sit at the tuned A4',
+  );
+  const plain = render();
+  assert.ok(magnitudeAt(plain, 440, 1) > magnitudeAt(plain, 442, 1) * 5);
 });

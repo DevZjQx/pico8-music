@@ -65,10 +65,6 @@ export function parseNoteName(name: string): number | undefined {
   return Number.isFinite(midi) ? midi : undefined;
 }
 
-export function frequencyOf(midi: number): number {
-  return 440 * 2 ** ((midi - 69) / 12);
-}
-
 const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
 
 /** `60` → `C4`, `66` → `F#4`. Used when a motif transform rewrites pitches. */

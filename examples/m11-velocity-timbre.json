@@ -1,0 +1,41 @@
+{
+  "mode": "loop",
+  "bpm": 100,
+  "stepsPerBeat": 4,
+  "bars": 2,
+  "instruments": {
+    "piano": {
+      "type": "additive",
+      "partials": [
+        [1, 0, 1.8],
+        [0.5, 0, 1.1],
+        [0.28, 0, 0.7],
+        [0.16, 0, 0.45],
+        [0.09, 0, 0.28],
+        [0.05, 0, 0.18]
+      ],
+      "stretch": 0.0003,
+      "unison": 2,
+      "detune": 1.2,
+      "filter": {
+        "cutoffHz": 850,
+        "resonance": 0.8,
+        "envAmount": 2.2,
+        "attack": 0.002,
+        "decay": 0.5,
+        "sustain": 0.2,
+        "release": 0.25
+      },
+      "velocity": { "cutoffOctaves": 2.5, "drive": 0.25 }
+    }
+  },
+  "tracks": [
+    {
+      "name": "keys",
+      "role": "keys",
+      "instrument": "piano",
+      "volume": 5,
+      "pattern": "C4:2@6 E4:2@3 G4:2@5 C5:2@7 G4:2@2 E4:2@4 C4:2@6 -:2"
+    }
+  ]
+}

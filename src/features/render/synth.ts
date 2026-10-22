@@ -225,7 +225,14 @@ function renderMelodicNote(
   const voice =
     note.instrument === undefined || note.instrument.type === 'sample'
       ? undefined
-      : new InstrumentVoice(note.instrument, event.midi, rate, note.seed);
+      : new InstrumentVoice(
+          note.instrument,
+          event.midi,
+          rate,
+          note.seed,
+          event.frequency,
+          Math.max(0, Math.min(1, (event.volume / 7) * note.humanizeGain)),
+        );
   let phase = 0;
   const noteDuration = note.gateSamples / rate;
   const envelope = event.envelope ?? track.envelope;

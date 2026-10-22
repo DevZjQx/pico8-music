@@ -7,7 +7,8 @@ measures.
 **Owns.** PICO-8-flavoured synthesis (eight timbres, per-note volume, track or
 named ADSR envelopes, note effects and their parameters), the instrument layer
 (`chip` / band-limited `additive` / two-operator `fm` / persisted `sample`,
-unison detune, drive, per-note filter envelopes, sample pitch/loop/gain, and
+unison detune, drive, per-note filter envelopes, opt-in velocity-to-timbre
+(filter opening and drive), sample pitch/loop/gain, and
 drum sample replacement), polyphonic event scheduling (chords and legato
 gates overlap without voice stealing), swing offsets, deterministic
 `humanize` timing/velocity, synthetic drum voices and their articulations
@@ -57,12 +58,23 @@ band-limited at that pitch, and scales it by a measured peak rather than by the
 amplitude sum: phase and tilt then change the shape without moving the level,
 and additive/FM anchor at ~0.25 peak, while the chip waveforms keep their own
 0.25-0.5 peaks, so swapping voice types does not jump the mix beyond that
-palette. `stretch` (0-1) sharpens upper harmonics
+palette. A note's `velocity` mapping is opt-in: when absent, `InstrumentVoice` keeps the
+historical fixed filter cutoff and drive, sample for sample. When present, the
+normalised velocity (authored `@volume` times humanize gain, clamped to 0..1)
+opens the instrument filter by up to `cutoffOctaves` and adds up to `drive` on
+top of the base soft clip; the parser rejects `cutoffOctaves` without a filter
+and rejects the field on sample voices, where playback rate and the sample table
+own the timbre. Velocity still scales amplitude as before, so the mapping only
+adds the brightness half of the response. `stretch` (0-1) sharpens upper harmonics
 without detuning the fundamental, and a third partial item is an exponential
 decay time constant. Either one switches the note to per-partial synthesis with
 per-unison-voice phase and gain state; that path is still band-limited and still
 uses the cycle table only as its level reference, but a decayed gain is one
-multiply per partial per sample instead of an `exp()` call. The cost is a deliberate level shift for scores written before
+multiply per partial per sample instead of an `exp()` call. The additive voice
+receives the event's already-tuned frequency, so its band limit follows the
+score tuning; playback pitch comes from that same frequency, which keeps
+per-note cents and temperament audible through additive, FM, chip, and sample
+voices alike. The cost is a deliberate level shift for scores written before
 this: a peak-normalised additive voice sits about 2.6 dB above the old
 sum-normalised one.  a `roll` subdivides the event's slot, and a `flam` offsets the
 second hit by milliseconds, so both wrap at the loop seam with the same

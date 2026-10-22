@@ -1,0 +1,56 @@
+{
+  "bpm": 72,
+  "stepsPerBeat": 4,
+  "beatsPerBar": 4,
+  "bars": 2,
+  "tuning": {
+    "a4": 442,
+    "temperament": "equal",
+    "cents": {
+      "C1": -28,
+      "C2": -18,
+      "C3": -9,
+      "C4": 0,
+      "C5": 8,
+      "C6": 18,
+      "C7": 28,
+      "C8": 38
+    }
+  },
+  "instruments": {
+    "piano": {
+      "type": "additive",
+      "partials": [
+        [1, 0, 2.6],
+        [0.5, 0, 1.6],
+        [0.3, 0, 1.0],
+        [0.17, 0, 0.65],
+        [0.1, 0, 0.42],
+        [0.06, 0, 0.28],
+        [0.035, 0, 0.18],
+        [0.02, 0, 0.12]
+      ],
+      "stretch": 0.0002,
+      "unison": 2,
+      "detune": 1.2,
+      "drive": 0.02,
+      "filter": {
+        "cutoffHz": 7200,
+        "resonance": 0.7,
+        "envAmount": 0.6,
+        "attack": 0.002,
+        "decay": 0.8,
+        "sustain": 0.25,
+        "release": 0.3
+      }
+    }
+  },
+  "tracks": [
+    {
+      "role": "keys",
+      "instrument": "piano",
+      "volume": 6,
+      "pattern": "C4:4 [E4,G4,C5]:8 [D4,F4,A4]:4 -:4 [E4,G4,B4]:4 [D4,F4,A4]:8"
+    }
+  ]
+}

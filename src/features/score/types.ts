@@ -27,6 +27,36 @@ export type DrumName =
   | 'crash';
 
 /**
+ * Built-in temperaments. Each one is normalised so A stays at the score's
+ * `a4` reference; the other eleven pitch classes move around it. `equal` is
+ * the twelve-tone default, the rest are historical or just-intonation tables.
+ * A per-note cents offset can still move A4 itself on top of that.
+ */
+export type TemperamentName =
+  | 'equal'
+  | 'just'
+  | 'pythagorean'
+  | 'meantone'
+  | 'werckmeister3'
+  | 'kirnberger3'
+  | 'young';
+
+/**
+ * Absolute pitch reference for the whole score. Every note is derived from
+ * `a4`, the temperament's pitch-class offset, and an optional per-note cents
+ * correction, so a score can be tuned like an instrument (A=442, a stretched
+ * piano, a historical temperament) instead of being locked to 12-TET at 440.
+ */
+export interface Tuning {
+  /** A4 reference frequency in Hz, 400-480; default 440. */
+  readonly a4: number;
+  /** Built-in pitch-class table; default `equal`. */
+  readonly temperament: TemperamentName;
+  /** Per-MIDI-note cent offsets, -100..100, applied on top of the temperament. */
+  readonly cents: ReadonlyMap<number, number>;
+}
+
+/**
  * Amplitude shape shared by every note in a track, in seconds except
  * `sustain`, which is a 0..1 level. Release is measured backwards from the
  * end of the authored gate, so a staccato note fades before its slot ends and
@@ -116,6 +146,18 @@ export interface Partial {
 }
 
 /**
+ * Opt-in velocity-to-timbre response. Velocity already scales gain; these two
+ * offsets make a harder note brighter as well. Absent or all-zero leaves the
+ * historical render sample-identical.
+ */
+export interface VelocityMapping {
+  /** Octaves the instrument filter opens at full velocity, 0-6. */
+  readonly cutoffOctaves: number;
+  /** Extra post-filter soft-clip drive at full velocity, 0-1. */
+  readonly drive: number;
+}
+
+/**
  * A named or inline voice definition. `waveform` and `partials` apply to
  * `chip` and `additive` respectively; the FM fields only apply to `fm`.
  * Fields that do not match the type are rejected at parse time.
@@ -146,6 +188,8 @@ export interface Instrument {
   /** Post-filter soft clip, 0-1. */
   readonly drive: number;
   readonly filter?: InstrumentFilter;
+  /** Velocity-to-timbre offsets; absent keeps the historical fixed response. */
+  readonly velocity?: VelocityMapping;
 }
 
 /** Per-hit overrides accepted by drum tracks as `~pitch`, `~decay`, `~tone`. */
@@ -188,7 +232,7 @@ export interface NoteEvent {
   readonly voice?: number;
   /** MIDI note number; C4 = 60. Drum voices use a nominal key. */
   readonly midi: number;
-  /** Precomputed equal-tempered frequency in Hz. */
+  /** Precomputed frequency in Hz, already resolved through the score `tuning`. */
   readonly frequency: number;
   readonly effect: Effect;
   /** PICO-8-style per-note volume 0..7, one decimal allowed; `@volume` overrides the track default. */
@@ -289,6 +333,8 @@ export interface Score {
   readonly seed: number;
   /** Deterministic timing/velocity variation; zero depths are neutral. */
   readonly humanize: Humanize;
+  /** Pitch reference, temperament, and per-note corrections; 440 equal by default. */
+  readonly tuning: Tuning;
   readonly tracks: readonly ScoreTrack[];
   /** Empty in loop mode; contiguous and ordered in song mode. */
   readonly sections: readonly ScoreSection[];

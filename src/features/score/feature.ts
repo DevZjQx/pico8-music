@@ -5,6 +5,7 @@
 export { parseScore, ScoreError } from './parse.ts';
 export { SCORE_BRIEF, SCORE_HELP } from './help.ts';
 export { EFFECT_NAMES, WAVEFORM_NAMES } from './notes.ts';
+export { DEFAULT_TUNING, TEMPERAMENT_NAMES, frequencyOf, tuningCentsOf } from './tuning.ts';
 export type {
   DrumName,
   DrumParams,
@@ -22,8 +23,11 @@ export type {
   ScoreMode,
   ScoreSection,
   ScoreTrack,
+  TemperamentName,
   TrackDelay,
   TrackFilter,
   TrackPattern,
+  Tuning,
+  VelocityMapping,
   Waveform,
 } from './types.ts';

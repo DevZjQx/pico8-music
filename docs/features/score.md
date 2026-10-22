@@ -9,10 +9,12 @@ slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
 `Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`),
 score-level `swing` and `seed`, the grid (`stepsPerBeat`, `beatsPerBar`, and
 whole-bar patterns), deterministic `humanize` timing/velocity
-depths, motif definitions and transforms
+depths, the top-level `tuning` reference (`a4`, built-in temperament, and
+per-note cents), motif definitions and transforms
 (`@A.transpose(2).retrograde`), drum articulations (`~ghost`, `~flam(ms)`,
 `~roll(hits)`) and per-hit drum parameters (`~pitch`, `~decay`, `~tone`), the
-top-level `instruments` table and per-track `instrument` references, the
+top-level `instruments` table (including the opt-in `velocity` cutoff/drive
+mapping) and per-track `instrument` references, the
 top-level `samples` table (workspace WAV paths with root/loop/gain) and
 `drumSamples` replacements, loop vs song mode, named patterns, arrangement
 resolution (sections, mute, gain, filter and filter sweeps, `energy`, `fill`
@@ -80,8 +82,19 @@ phases and a score can design a shape (25% pulse, stepped harmonics) that no
 real-valued amplitude series reaches. Additive voices also accept `stretch`
 (0-1, inharmonic ratio) and `tilt` (0-4, spectral rolloff); these stay pure
 numbers here, and the render feature owns the table-vs-per-sample decision.
+`velocity: {cutoffOctaves, drive}` is validated here but interpreted by the
+renderer: it needs an instrument `filter` when `cutoffOctaves` is nonzero, and
+sample voices reject it because the sample table owns the voice. Leaving the
+field out, or writing zeros, keeps the old fixed response.
 Signs are kept rather than clamped because `0` and `-0.3` are different shapes,
-not a range error. Sample paths are validated as workspace-relative `.wav`
+not a range error. Tuning is resolved here rather than in the renderer: every
+`NoteEvent.frequency` is computed from `tuning.a4`, the temperament table
+(anchored at A, so the temperament alone never shifts A4), and the per-note
+cents map, which can move any key including A4. That keeps the
+renderer's only pitch input a single number, which is also what `slide`,
+`vibrato`, and `arp` operate on. The temperament tables are data, not DSP;
+`equal` is the neutral table that leaves old scores sample-identical. Sample
+paths are validated as workspace-relative `.wav`
 strings (no absolute paths, no `..` segments) but never opened here, so the
 score feature stays the bottom of the import graph and a missing file is an
 app-layer I/O error. A sample instrument accepts only `type` and `sample`;
