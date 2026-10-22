@@ -26,6 +26,7 @@ const PEAK_CEILING = 0.89;
 const DEFAULT_TONE_HZ = 9000;
 const DEFAULT_ROOM = 0.82;
 const DEFAULT_DAMP = 0.35;
+const DEFAULT_WET = 0.3;
 const DEFAULT_COMPRESS_THRESHOLD_DB = -18;
 const DEFAULT_COMPRESS_RATIO = 2;
 const DEFAULT_COMPRESS_ATTACK = 0.01;
@@ -83,7 +84,7 @@ function normalisePostStep(value: unknown, index: number): PostStep {
     case 'reverb':
       return {
         type: 'reverb',
-        wet: numberField(value.wet, `${path}.wet`, 0.3, 0, 1),
+        wet: numberField(value.wet, `${path}.wet`, DEFAULT_WET, 0, 1),
         room: numberField(value.room, `${path}.room`, DEFAULT_ROOM, 0, 0.98),
         damp: numberField(value.damp, `${path}.damp`, DEFAULT_DAMP, 0, 1),
       };
@@ -324,11 +325,16 @@ function applyPost(
         break;
       }
       case 'reverb': {
+        const wet = step.wet ?? DEFAULT_WET;
+        // A zero-wet reverb is a bypass, not a mono downmix. The reverb
+        // function takes a mono input, so skipping the step is what keeps the
+        // dry stereo image intact.
+        if (wet <= 0) break;
         ensureDcBlock();
         const reverbed = reverb(
           downmix(left, right),
           {
-            wet: step.wet ?? 0.3,
+            wet,
             room: step.room ?? DEFAULT_ROOM,
             damp: step.damp ?? DEFAULT_DAMP,
           },
@@ -431,7 +437,9 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   const preset = PRESETS[presetName];
   const chain = resolvePost(options, preset);
   const speed = chainSpeed(chain);
-  const hasReverb = chain.some((step) => step.type === 'reverb');
+  const hasReverb = chain.some(
+    (step) => step.type === 'reverb' && (step.wet ?? DEFAULT_WET) > 0,
+  );
   const loops = score.mode === 'song' ? 1 : hasReverb ? RENDER_LOOPS : 1;
 
   const signal = options.signal;

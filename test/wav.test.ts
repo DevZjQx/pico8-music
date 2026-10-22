@@ -81,4 +81,18 @@ test('the decoded floats stay within a couple of LSBs of the source', () => {
   }
   // 2 LSB of dither plus the 1/32767 vs 1/32768 scale mismatch.
   assert.ok(worst < 3.5 / 32767, `worst error ${worst * 32767} LSB`);
+  assert.equal(decoded.channels, 2);
+});
+
+test('decodeWav rejects malformed headers instead of returning nonsense', () => {
+  const source = new Float32Array(64).fill(0.25);
+  const wav = encodeWav(source, source, RATE);
+
+  const zeroRate = wav.slice();
+  new DataView(zeroRate.buffer, zeroRate.byteOffset, zeroRate.byteLength).setUint32(24, 0, true);
+  assert.throws(() => decodeWav(zeroRate), /invalid sample rate/);
+
+  const shortFmt = wav.slice();
+  new DataView(shortFmt.buffer, shortFmt.byteOffset, shortFmt.byteLength).setUint32(16, 8, true);
+  assert.throws(() => decodeWav(shortFmt), /fmt chunk is shorter than 16 bytes/);
 });

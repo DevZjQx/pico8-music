@@ -13,8 +13,9 @@ const TABLE_MASK = TABLE_SIZE - 1;
 const FILTER_BLOCK = 32;
 const MIN_CUTOFF_HZ = 40;
 /**
- * Additive tables peak here, like the chip waves (~0.25) and FM (`FM_PEAK`), so
- * changing a track's voice type does not jump its level.
+ * Additive tables peak here, like pulse/square chip waves and FM (~0.25).
+ * Triangle and tilted-saw chip waves peak nearer 0.5, so the chip palette
+ * itself spans roughly 0.25-0.5.
  */
 const TABLE_PEAK = 0.25;
 /** Two-operator FM peak, chosen to sit next to the chip waves. */

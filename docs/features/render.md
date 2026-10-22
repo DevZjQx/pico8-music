@@ -53,8 +53,9 @@ noise-based hats keep their spectrum; and an explicit `chip` instrument reuses
 static additive voice rebuilds its table per note from the score's harmonics,
 band-limited at that pitch, and scales it by a measured peak rather than by the
 amplitude sum: phase and tilt then change the shape without moving the level,
-and every voice type anchors at ~0.25 peak (chip, FM, additive), so swapping
-voice types does not jump the mix. `stretch` (0-1) sharpens upper harmonics
+and additive/FM anchor at ~0.25 peak, while the chip waveforms keep their own
+0.25-0.5 peaks, so swapping voice types does not jump the mix beyond that
+palette. `stretch` (0-1) sharpens upper harmonics
 without detuning the fundamental, and a third partial item is an exponential
 decay time constant. Either one switches the note to per-partial synthesis with
 per-unison-voice phase and gain state; that path is still band-limited and still
@@ -87,7 +88,8 @@ A sample voice advances a read position by `frequency / rootFrequency`, so the
 existing slide/vibrato/arp paths work unchanged; a one-shot stops at the file
 end and a loop wraps at the sample's length. Drum samples force one-shot
 playback (a looping kick must still decay), honor `~pitch`/`~tone`, and ignore
-`~decay`, which has no sample equivalent. Linear interpolation is deliberate:
+`~decay`, which has no sample equivalent; `~ghost` still lowers velocity and
+tone, but its shortened decay is synthetic-only. Linear interpolation is deliberate:
 the feature is asset playback, not a resampling library. Sample playback is
 deterministic from the file bytes and score, like every other voice.
 

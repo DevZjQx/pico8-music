@@ -86,6 +86,27 @@ test('the default preset keeps a full final pass with no zero-padded seam', () =
   assert.ok(seam <= Math.max(0.02, maxJump * 2), `seam ${seam}, max jump ${maxJump}`);
 });
 
+test('a zero-wet reverb bypasses instead of collapsing the stereo image', () => {
+  const panned = parseScore({
+    bpm: 120,
+    stepsPerBeat: 4,
+    bars: 1,
+    tracks: [
+      { waveform: 'triangle', pattern: 'C4:4', pan: -1 },
+      { waveform: 'triangle', pattern: 'E4:4', pan: 1 },
+    ],
+  });
+  const dry = renderLoop(panned, { post: [], minutes: 0.05 });
+  const wetZero = renderLoop(panned, {
+    post: [{ type: 'reverb', wet: 0 }],
+    minutes: 0.05,
+  });
+
+  assert.deepEqual(Array.from(wetZero.left), Array.from(dry.left));
+  assert.deepEqual(Array.from(wetZero.right), Array.from(dry.right));
+  assert.notDeepEqual(Array.from(wetZero.left), Array.from(wetZero.right));
+});
+
 test('post steps are applied in the order given', () => {
   const lowpassThenReverb = renderLoop(score, {
     post: [

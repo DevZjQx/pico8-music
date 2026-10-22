@@ -561,6 +561,11 @@ export function renderScore(
   addSectionRisers(left, right, score, rate, signal);
   applySectionFilter(left, score, rate);
   applySectionFilter(right, score, rate);
+  // The send bus is part of the section's mix too. Filtering it before the
+  // reverb keeps a low-passed section from returning unfiltered highs through
+  // its send tail; the reverb is linear, so filtering its input is equivalent
+  // to filtering its return.
+  if (sendBus) applySectionFilter(sendBus, score, rate);
 
   return { left, right, loopSamples, ...(sendBus === undefined ? {} : { sendBus }) };
 }

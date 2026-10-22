@@ -170,6 +170,15 @@ function readString(value: unknown, path: string, fallback: string): string {
   return value.trim();
 }
 
+/** Track volume matches the `@volume` grammar: 0-7 with at most one decimal. */
+function readVolume(value: unknown, path: string, fallback: number): number {
+  const volume = readNumber(value, path, fallback, 0, 7);
+  if (Math.abs(volume * 10 - Math.round(volume * 10)) > 1e-9) {
+    throw new ScoreError(`${path} must have at most one decimal place, got ${volume}`);
+  }
+  return volume;
+}
+
 function parseEnvelope(value: unknown, path: string): Envelope {
   if (value === undefined) return DEFAULT_ENVELOPE;
   if (!isRecord(value)) {
@@ -1220,6 +1229,9 @@ function parsePattern(
       if (parsed.volume !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry "@volume"`);
       }
+      if (parsed.effect !== 0 || parsed.envelopeName !== undefined) {
+        throw new ScoreError(`${where}: a rest cannot carry an effect or a named envelope`);
+      }
       if (parsed.drumEffect !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry a drum effect`);
       }
@@ -1321,7 +1333,7 @@ function parseStringRecord(value: unknown, path: string): Record<string, string>
     if (typeof entry !== 'string' || entry.trim() === '') {
       throw new ScoreError(`${path}.${key} must be a non-empty string`);
     }
-    output[key] = entry;
+    output[key] = entry.trim();
   }
   return output;
 }
@@ -1347,6 +1359,19 @@ function parseStringArray(value: unknown, path: string): readonly string[] {
     }
     return entry.trim();
   });
+}
+
+/** A section target is either a track's name or its role. */
+function validateTrackTargets(
+  targets: readonly string[],
+  path: string,
+  tracks: readonly ScoreTrack[],
+): void {
+  for (const target of targets) {
+    if (!tracks.some((track) => track.name === target || track.role === target)) {
+      throw new ScoreError(`${path}: unknown track or role ${JSON.stringify(target)}`);
+    }
+  }
 }
 
 interface ParsedTrack {
@@ -1439,8 +1464,14 @@ function parseTrack(
       `${path}.waveform: use 0-7 or one of triangle, tilted_saw, saw, square, pulse, organ, noise, phaser`,
     );
   }
+  // An explicit track.waveform wins over a chip instrument's own waveform, so
+  // the legacy field keeps its documented meaning when both are present.
+  const instrument =
+    resolved.instrument?.type === 'chip' && value.waveform !== undefined
+      ? { ...resolved.instrument, waveform }
+      : resolved.instrument;
 
-  const volume = readNumber(value.volume, `${path}.volume`, DEFAULTS.volume, 0, 7);
+  const volume = readVolume(value.volume, `${path}.volume`, DEFAULTS.volume);
   const envelope = parseEnvelope(value.envelope, `${path}.envelope`);
   const pan = readNumber(value.pan, `${path}.pan`, 0, -1, 1);
   const send = readNumber(value.send, `${path}.send`, 0, 0, 1);
@@ -1473,7 +1504,7 @@ function parseTrack(
       throw new ScoreError(`${path}.pattern must be a string such as "C4:4 E4:4 G4:8"`);
     }
     defaultPattern = resolveTrackPattern(
-      value.pattern,
+      value.pattern.trim(),
       `${path}.pattern`,
       patterns,
       globalPatterns,
@@ -1498,7 +1529,7 @@ function parseTrack(
       role,
       isDrums,
       waveform,
-      ...(resolved.instrument === undefined ? {} : { instrument: resolved.instrument }),
+      ...(instrument === undefined ? {} : { instrument }),
       volume,
       envelope,
       patternSteps: defaultPattern.patternSteps,
@@ -1693,6 +1724,9 @@ function parseArrangement(
       );
     }
     const patternOverrides = parseStringRecord(raw.patterns, `${path}.patterns`);
+    validateTrackTargets(Object.keys(patternOverrides), `${path}.patterns`, tracks);
+    validateTrackTargets(mute, `${path}.mute`, tracks);
+    validateTrackTargets(Object.keys(gains), `${path}.gains`, tracks);
     const fill = parseSectionFill(raw.fill, `${path}.fill`);
     const fillSteps = fill === undefined ? 0 : fill.bars * stepsPerBar;
     if (fill !== undefined && fillSteps > sectionSteps) {

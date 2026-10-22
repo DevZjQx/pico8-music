@@ -29,7 +29,8 @@ export type DrumName =
 /**
  * Amplitude shape shared by every note in a track, in seconds except
  * `sustain`, which is a 0..1 level. Release is measured backwards from the
- * end of the note's authored steps, so a note never rings past its slot.
+ * end of the authored gate, so a staccato note fades before its slot ends and
+ * a legato gate (`C4:4g6`) keeps sounding into the next slot.
  */
 export interface Envelope {
   readonly attack: number;

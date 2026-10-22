@@ -107,7 +107,7 @@ renderScore
 | [旋律、动机与乐句](#p0-5-旋律动机与乐句) | P0 | motif 引用与变换已实现，乐句级与和声进行未做 |
 | [Groove、humanize、tuplet](#p1-1-groovehumanizetuplet) | P1 | swing、seed、humanize 已实现；tuplet 未做 |
 | [滤波、自动化、sidechain](#p1-2-滤波自动化sidechain) | P1 | 部分实现（M3） |
-| [分层、立体声、空间](#p1-3-分层立体声空间) | P1 | pan/send/delay 已实现，unison 与 bus 未做 |
+| [分层、立体声、空间](#p1-3-分层立体声空间) | P1 | pan/send/delay 与 unison（M6）已实现；track group/bus 未做 |
 | [转场 FX](#p1-4-转场-fx) | P1 | 段落 `riser` 与 song `tail` 已实现；独立 impact/sub_drop FX 未做 |
 | [Mix / master](#p2-1-mix--master) | P2 | 已实现（M4）：tilt/saturate/compress/loudness/limiter |
 | [让模型「听见」结果](#p2-2-让模型听见结果) | P2 | 已实现（M4）：渲染报告 + `p8_analyze` |
@@ -135,7 +135,7 @@ renderScore
 
 **验收：** kick 的 body 基频 < 200 Hz，snare 的谱质心高于 kick，hat 高于 snare；pattern 的 hit 数与 onset 数一致；roll/flam 不产生 click。
 
-**现状：基础鼓与鼓效果已实现。** 8 个合成鼓 voice、`K/S/H/O/C/T/R/X` token、`@力度`、one-shot 尾音重叠已落地；M5 追加了 `~ghost`（降力度、缩短衰减、加低通）、`~flam[(ms)]`（5-40 ms 的第二下）和 `~roll[(hits)]` / `~roll4`（2-8 次均分 slot、力度递减）。鼓效果会过 motif 的 retrograde/augment/diminish，并在 loop 接缝内 wrap；独立 per-hit `~pitch` / `~decay` 仍不做，因为 `H`/`O` 已覆盖开闭镲差异，收益低于新增参数面。示例：`examples/m5-drums-fill.json`。
+**现状：基础鼓与鼓效果已实现。** 8 个合成鼓 voice、`K/S/H/O/C/T/R/X` token、`@力度`、one-shot 尾音重叠已落地；M5 追加了 `~ghost`（降力度、缩短衰减、加低通）、`~flam[(ms)]`（5-40 ms 的第二下）和 `~roll[(hits)]` / `~roll4`（2-8 次均分 slot、力度递减）。鼓效果会过 motif 的 retrograde/augment/diminish，并在 loop 接缝内 wrap；M6 另补了与 `~ghost`/`~flam`/`~roll` 正交叠加的 per-hit `~pitch` / `~decay` / `~tone`。示例：`examples/m5-drums-fill.json`。
 
 #### P0-2 段落与编曲
 
@@ -227,7 +227,7 @@ renderScore
 
 **验收：** swing 后奇数 16 分偏移可测量；同一 seed 渲染完全一致；三连 pattern 的总步数正确。
 
-**现状：swing、seed 与 humanize 已实现。** `swing: 0–0.5` 延后奇数 step，渲染确定；`seed` 影响 noise 波形、鼓的噪声瞬态与 humanize，用来生成同谱变体。`humanize: {timingMs: 0-50, velocity: 0-1}` 由 `(seed, track, event, voice)` 的无状态哈希决定，偏移在 loop 接缝处回绕，所以同一 pass 内变化、每个 pass 之间逐样本一致；默认 0 时旧 score 不变。tuplet 与 probability/ratchet 仍不做：tuplet 需要分数 step 网格，会同时改 parser、swing、段落对齐和循环接缝，成本远高于收益。
+**现状：swing、seed 与 humanize 已实现。** `swing: 0–0.5` 延后奇数 step，渲染确定；`seed` 影响 noise 波形、鼓的噪声瞬态、humanize 与段落 riser，用来生成同谱变体。`humanize: {timingMs: 0-50, velocity: 0-1}` 由 `(seed, track, event, voice)` 的无状态哈希决定，偏移在 loop 接缝处回绕，所以同一 pass 内变化、每个 pass 之间逐样本一致；默认 0 时旧 score 不变。tuplet 与 probability/ratchet 仍不做：tuplet 需要分数 step 网格，会同时改 parser、swing、段落对齐和循环接缝，成本远高于收益。
 
 #### P1-2 滤波、自动化、sidechain
 
@@ -262,7 +262,7 @@ renderScore
 
 **验收：** pan 改变 L/R 能量比；unison 的 side 能量 > 0；send 改变尾音长度而不影响干声。
 
-**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，loop 模式 3 遍预热）已实现；unison、track group 与 bus 级处理属于 M4。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
+**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。track group 与 bus 级处理仍未做。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
 
 #### P1-4 转场 FX
 
@@ -358,7 +358,7 @@ renderScore
 要点：
 
 - `role` 提供默认音色/包络/混音，模型只写偏离默认的部分。
-- `instrument.type` 现在是 `chip` / `fm` / `additive`（`drums` 仍可作为 track 标记）；`chip` 是音色类别，和 `mode`、`style` 不是一回事。`studio`/`lofi` style 按 role 填非芯片 instrument。
+- `instrument.type` 现在是 `chip` / `fm` / `additive` / `sample`（`drums` 仍可作为 track 标记）；`chip` 是音色类别，和 `mode`、`style` 不是一回事。`studio`/`lofi` style 按 role 填非芯片 instrument，`sample` 播放 `samples` 表里的 WAV。
 - `post: []` 表示干声；`preset: "dreamy"` 才等价于现在的 slow+reverb。
 - `glide`、`filter`、`pan`、`send` 都是 track 级默认，可被 note 级覆盖。
 
@@ -410,7 +410,7 @@ renderScore
 - `slow`/`tape` 与 `reverb` 分开；可以只 slow、只 reverb、都不做。
 - `speed` 与 `pitch` 分开：`tape` 是耦合的（像现在），`timeStretch` 只改速度，`varispeed` 只改音高。
 - `preset` 保留为 `post` 的快捷方式；新增 `style` 作为「作曲/音色/混音默认值」的快捷方式。两者不要混在一起。
-- 三个概念分开：`mode`（`pico` / `studio`）是能力上限，`style`（`chip` / `hitech` / `ambient`）只填默认值，`preset` 只管 post 链。`style` 不改变 `mode`；显式字段 > `style` > 内置默认值。
+- 三个概念分开：`mode`（`pico` / `studio`）是能力上限，`style`（`chip` / `hitech` / `ambient` / `studio` / `lofi`）只填默认值，`preset` 只管 post 链。`style` 不改变 `mode`；显式字段 > `style` > 内置默认值。
 - style 用 `chip` 而不是 `pico`，因为 `pico` 已经是 `mode` 的取值；`style: "chip"` 表达的是「按 PICO-8 约束做干声」的默认值组合，不是新的能力上限。
 
 ## 6. 架构调整
@@ -490,7 +490,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 - 重构：`renderScore()` 先给每条 track 一个独立 buffer，再做滤波、延迟、duck、pan、send，最后求和。per-track 处理不再是「接在总线上」的近似。
 - 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.5-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，loop 模式 3 遍预热）。
 - 验收：filter 静态开合的高频带能量比、LFO 的窗口能量起伏、段落扫频的首尾高频带比、pan 的左右 RMS、duck 的 kick 窗口 RMS、send 的尾音、delay 的偏移窗口 RMS 都有测试；示例 `examples/m3-space-motion.json`。
-- 仍不做：unison、任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
+- M6 已补 `unison`；仍不做 track group、任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
 
 ### 7.4 M4：能「混音」和「自检」
 
@@ -529,7 +529,7 @@ M5 把 P0-1 的鼓效果尾巴和 P0-2 的 `fill`/`energy` 作为一个包做，
 - 鼓：`~pitch` / `~decay` / `~tone` 与 `~ghost`/`~flam`/`~roll` 正交叠加，不再抢同一个后缀槽。
 - style：新增 `studio` 与 `lofi`，按 role（bass/lead/pad/keys/default）填非芯片音色；显式 `track.instrument` 优先。
 - 验证：显式 chip instrument 与旧 `waveform` 逐字节一致；additive/FM 与 chip 的渲染 hash 不同；`~pitch(12)` 抬高 kick 质心、`~decay(4)` 降低尾音 RMS；`studio`/`lofi` 不改变 loop 长度。
-- 仍不做：采样/波表文件、任意 FM 算子矩阵、per-note pan。
+- M6 当时仍不做采样/波表文件；M8 已补 `samples`/`drumSamples`，波表文件仍不做。任意 FM 算子矩阵、per-note pan 也仍不做。
 - M7：`additive.partials` 的元素可以是负振幅或 `[振幅, 相位度数]`，相位折进波表，归一化改成按实测峰值且锚定 0.25（与 chip/FM 一致）。于是「设计波形」成了分数内的事：25% 占空比脉冲（带偶次谐波）、相位阶梯、反向锯齿都能写出来，换相位只扭形状不改电平。旧 additive 分数相对电平会升约 2.6 dB，这是为了让三种 voice 可以互换而不跳音。
 - 验证：负振幅与 `[振幅, 180]` 渲染逐字节相同；相位转 90° 后 WAV 改变而峰值变化 ≤ 0.5 dB；方波与同电平 25% 脉冲的质心不同。
 - 示例：`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`。

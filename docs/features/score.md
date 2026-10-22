@@ -59,8 +59,8 @@ would turn the integer step grid into a fractional one across parse,
 arrangement, and loop seams. Non-4/4 meters are expressible with
 `beatsPerBar` (for example 3 for 3/4, or 6 with `stepsPerBeat: 2` for 6/8);
 fractional meters and tuplets are not. Track count is a render-budget cap (1-32), not a
-musical rule; `score` only validates that cap and leaves the arrangement size to
-the model. `humanize` is carried as two depths and resolved by the renderer
+musical rule; `score` validates that cap together with the 256-section and
+15-minute budgets, and leaves the musical shape to the model. `humanize` is carried as two depths and resolved by the renderer
 against the score seed, so `score` never has to know the timing grid's sample
 rate. Drum articulations are parsed into a `DrumEffect`
 on the event instead of DSP parameters, so a motif transform can carry them
@@ -82,8 +82,8 @@ strings (no absolute paths, no `..` segments) but never opened here, so the
 score feature stays the bottom of the import graph and a missing file is an
 app-layer I/O error. A sample instrument accepts only `type` and `sample`;
 voice fields such as `unison` or `filter` are rejected instead of silently
-ignored. `samples` is capped at 16 entries and 30 s/32 MB per file in the app
-layer because those are render-budget limits, not composition rules.
+ignored. `samples` is capped at 16 entries in the parser and 30 s/32 MB per file in
+the app layer because those are render-budget limits, not composition rules.
 
 **Boundary evidence.** Deleting this folder breaks `render/feature.ts`,
 `app/render-service.ts`, and therefore both host adapters; the syntax rules

@@ -108,12 +108,24 @@ test('rejects invalid per-note volumes and envelopes', () => {
     /volume must be a number between 0 and 7/,
   );
   assert.throws(() => parseScore({ tracks: [{ pattern: '-:4@3' }] }), /rest cannot carry/);
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: '-:4~slide' }] }),
+    /rest cannot carry an effect or a named envelope/,
+  );
+  assert.throws(
+    () => parseScore({ envelopes: { pluck: {} }, tracks: [{ pattern: '-:4~pluck' }] }),
+    /rest cannot carry an effect or a named envelope/,
+  );
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4@3@4' }] }), /at most one/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { sustain: 2 } }] }), /\.sustain/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { attack: -1 } }] }), /\.attack/);
   assert.throws(
     () => parseScore({ tracks: [{ pattern: 'C4:4', volume: 7.5 }] }),
     /between 0 and 7/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', volume: 4.55 }] }),
+    /at most one decimal place/,
   );
 });
 
@@ -1022,6 +1034,31 @@ test('parses section energy and replaces the last bar with a fill pattern', () =
   const fillBar = drums.filter((event) => event.step >= 48);
   assert.equal(fillBar.length, 16);
   assert.ok(fillBar.every((event) => event.drum === 'snare'));
+});
+
+test('rejects arrangement pattern, mute, and gain targets that match no track', () => {
+  const base = {
+    mode: 'song',
+    tracks: [{ name: 'lead', role: 'lead', pattern: 'C4:4' }],
+  };
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, patterns: { bass: 'C2:4' } }] }),
+    /arrangement\[0\]\.patterns: unknown track or role "bass"/,
+  );
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, mute: ['bass'] }] }),
+    /arrangement\[0\]\.mute: unknown track or role "bass"/,
+  );
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, gains: { bass: 0.5 } }] }),
+    /arrangement\[0\]\.gains: unknown track or role "bass"/,
+  );
+
+  const byRole = parseScore({
+    ...base,
+    arrangement: [{ bars: 1, patterns: { lead: 'C5:4' }, mute: [], gains: { lead: 0.5 } }],
+  });
+  assert.ok(byRole.tracks[0]?.timeline?.every((event) => event.midi === 72 && event.gain === 0.5));
 });
 
 test('validates section fills', () => {

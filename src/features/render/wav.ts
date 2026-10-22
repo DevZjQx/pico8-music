@@ -2,6 +2,7 @@ export interface DecodedWav {
   readonly left: Float32Array;
   readonly right: Float32Array;
   readonly rate: number;
+  readonly channels: 1 | 2;
 }
 
 /**
@@ -75,14 +76,18 @@ export function decodeWav(bytes: Uint8Array): DecodedWav {
     const size = view.getUint32(offset + 4, true);
     const body = offset + 8;
     if (id === 'fmt ') {
+      if (size < 16 || body + 16 > bytes.length) {
+        throw new Error('not a WAV file: fmt chunk is shorter than 16 bytes');
+      }
       format = view.getUint16(body, true);
       channels = view.getUint16(body + 2, true);
       rate = view.getUint32(body + 4, true);
       bits = view.getUint16(body + 14, true);
     } else if (id === 'data') {
-      dataStart = body;
-      dataBytes = Math.min(size, bytes.length - body);
-      break;
+      if (dataStart < 0) {
+        dataStart = body;
+        dataBytes = Math.min(size, bytes.length - body);
+      }
     }
     offset = body + size + (size % 2);
   }
@@ -90,6 +95,9 @@ export function decodeWav(bytes: Uint8Array): DecodedWav {
   if (dataStart < 0 || dataBytes <= 0) throw new Error('not a WAV file: no data chunk');
   if (format !== 1) throw new Error(`unsupported WAV encoding ${format}; only PCM is supported`);
   if (bits !== 16) throw new Error(`unsupported WAV bit depth ${bits}; only 16-bit PCM is supported`);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new Error('not a WAV file: missing or invalid sample rate');
+  }
   if (channels !== 1 && channels !== 2) {
     throw new Error(`unsupported WAV channel count ${channels}; only mono and stereo are supported`);
   }
@@ -103,7 +111,7 @@ export function decodeWav(bytes: Uint8Array): DecodedWav {
     right[i] = channels === 2 ? view.getInt16(frame + 2, true) / 32768 : (left[i] ?? 0);
   }
 
-  return { left, right, rate };
+  return { left, right, rate, channels };
 }
 
 /** The 44-byte stereo 16-bit PCM header for a streamed render. */

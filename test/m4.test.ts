@@ -262,6 +262,19 @@ test('an explicit chip instrument renders exactly like the legacy waveform', () 
   const a = renderLoop(legacy, { post: [], minutes: 0.05 });
   const b = renderLoop(explicit, { post: [], minutes: 0.05 });
   assert.ok(Buffer.from(a.wav).equals(Buffer.from(b.wav)), 'chip instruments must keep the old path');
+
+  // The track-level legacy field wins when both it and a chip instrument name a waveform.
+  const overridden = parseScore({
+    tracks: [
+      {
+        role: 'lead',
+        waveform: 'saw',
+        instrument: { type: 'chip', waveform: 'pulse' },
+        pattern: 'C4:4 E4:4 G4:4',
+      },
+    ],
+  });
+  assert.ok(Buffer.from(renderLoop(overridden, { post: [], minutes: 0.05 }).wav).equals(Buffer.from(a.wav)));
 });
 
 test('additive partials take a phase, so the model can design the shape', () => {

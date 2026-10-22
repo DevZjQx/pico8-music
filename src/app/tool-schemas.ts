@@ -130,8 +130,9 @@ type PlainSchema = Record<string, unknown>;
  * DSH reads parameters through a lossless-JSON boundary. TypeBox keeps a
  * non-enumerable `~kind` tag on every node, so the raw schema must be detached
  * first. DSH also supports only its raw-schema subset: TypeBox's `anyOf` (the
- * literal unions here never overlap) maps to `oneOf`, and range keywords such
- * as `minimum` are dropped because the service validates them at execution.
+ * literal unions here never overlap) maps to `oneOf`, and range keywords are
+ * dropped because the render service clamps those values to their documented
+ * bounds at execution.
  */
 const DSH_SCHEMA_KEYS = new Set([
   'type',

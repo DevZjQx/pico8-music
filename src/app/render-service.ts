@@ -348,7 +348,7 @@ export async function executeAnalyze(args: AnalyzeArgs, exec: ToolExecution = {}
   const analysis = analyseAudio(decoded.left, decoded.right, decoded.rate);
   return [
     `Analyzed ${inputPath}`,
-    `duration ${analysis.seconds.toFixed(1)} s · ${decoded.rate} Hz stereo`,
+    `duration ${analysis.seconds.toFixed(1)} s · ${decoded.rate} Hz ${decoded.channels === 1 ? 'mono' : 'stereo'}`,
     formatReport(analysis),
   ].join('\n');
 }
