@@ -4,7 +4,7 @@
 // Does not own: score validation or note naming — the score feature decides
 // what a score is; this feature only consumes it.
 export { renderLoop } from './render.ts';
-export { analyseAudio, formatReport, sectionEnergies } from './analyze.ts';
+export { analyseAudio, analyseStem, formatReport, measureAudio, sectionEnergies } from './analyze.ts';
 export { integratedLufs } from './loudness.ts';
 export {
   createDitherState,
@@ -18,6 +18,18 @@ export { SampleVoice, renderSampleOneShot } from './sample.ts';
 export type { SampleSource } from './sample.ts';
 export { PRESETS } from './presets.ts';
 export { STYLES } from './styles.ts';
+export { TARGETS, isTargetName, resolveTarget } from './target.ts';
 export type { PresetName } from './presets.ts';
-export type { StyleName, PostStep, RenderOptions, RenderOutput } from './types.ts';
-export type { Analysis, BandEnergy, SectionReading } from './analyze.ts';
+export type { Quality, StyleName, PostStep, RenderOptions, RenderOutput } from './types.ts';
+export type { TargetInput, TargetName, TargetProfile, ResolvedTarget } from './target.ts';
+export type {
+  Analysis,
+  AnalysisFacts,
+  BandEnergy,
+  Finding,
+  FindingKind,
+  SectionReading,
+  StemReading,
+  TargetCheck,
+  TargetReading,
+} from './analyze.ts';

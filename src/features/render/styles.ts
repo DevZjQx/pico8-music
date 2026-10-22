@@ -1,5 +1,5 @@
 import type { Instrument } from '../score/feature.ts';
-import type { PostStep, StyleName } from './types.ts';
+import type { PostStep, Quality, StyleName } from './types.ts';
 
 /**
  * Style presets fill the post chain and, for the non-chip styles, role-based
@@ -15,6 +15,13 @@ export interface StyleDefinition {
   readonly post: readonly PostStep[];
   /** Lower-case role name to instrument; `default` covers unnamed roles. */
   readonly instruments?: Readonly<Record<string, Instrument>>;
+  /** Oscillator precision this style expects; an explicit option wins. */
+  readonly quality?: Quality;
+  /** Master defaults applied after the post chain; explicit options win. */
+  readonly master?: {
+    readonly width?: number;
+    readonly monoBelowHz?: number;
+  };
 }
 
 /** Style defaults are plain harmonic series; a score can add phases itself. */
@@ -45,6 +52,20 @@ const fm = (options: Partial<Instrument> = {}): Instrument => ({
 
 const SAW_PARTIALS = [1, 0.5, 1 / 3, 0.25, 0.2, 1 / 6, 1 / 7, 0.125, 1 / 9, 0.1, 1 / 11, 1 / 12];
 const STRING_PARTIALS = [1, 0.62, 0.44, 0.3, 0.22, 0.16, 0.12, 0.09, 0.07, 0.055, 0.045, 0.035];
+
+/** Soft uses low-order partials and a slow attack instead of a chip pulse. */
+const SOFT_KEYS = additive([1, 0.45, 0.18, 0.07], {
+  filter: {
+    cutoffHz: 3000,
+    resonance: 0.6,
+    envAmount: 0.5,
+    attack: 0.02,
+    decay: 0.5,
+    sustain: 0.45,
+    release: 0.3,
+  },
+  drive: 0.04,
+});
 
 const STUDIO_KEYS = fm({
   ratio: 3,
@@ -135,6 +156,71 @@ export const STYLES: Record<StyleName, StyleDefinition> = {
       keys: STUDIO_KEYS,
       default: STUDIO_KEYS,
     },
+  },
+  soft: {
+    post: [
+      { type: 'lowpass', cutoffHz: 5200 },
+      {
+        type: 'reverb',
+        wet: 0.32,
+        room: 0.8,
+        damp: 0.45,
+        predelayMs: 25,
+        lowCutHz: 180,
+        highCutHz: 6000,
+        modDepth: 0.2,
+        modRateHz: 0.55,
+      },
+      { type: 'saturate', drive: 0.08, mix: 0.2 },
+      { type: 'loudness', targetLufs: -16 },
+      { type: 'limiter', ceilingDb: -1, release: 0.15 },
+    ],
+    instruments: {
+      bass: additive([1, 0.35, 0.15, 0.06], {
+        filter: {
+          cutoffHz: 600,
+          resonance: 0.8,
+          envAmount: 1,
+          attack: 0.02,
+          decay: 0.4,
+          sustain: 0.5,
+          release: 0.3,
+        },
+        drive: 0.04,
+      }),
+      lead: additive([1, 0.3, 0.12, 0.05, 0.02], {
+        filter: {
+          cutoffHz: 2600,
+          resonance: 0.7,
+          envAmount: 0.6,
+          attack: 0.03,
+          decay: 0.5,
+          sustain: 0.5,
+          release: 0.35,
+        },
+        drive: 0.03,
+      }),
+      // A weak fundamental keeps a soft pad airy instead of parking its
+      // energy in the 150-500 Hz overlap; the ear still supplies the root.
+      pad: additive([0.25, 1, 0.5, 0.25, 0.12], {
+        unison: 2,
+        detuneCents: 4,
+        filter: {
+          cutoffHz: 1700,
+          resonance: 0.6,
+          envAmount: 0.4,
+          attack: 0.08,
+          decay: 0.7,
+          sustain: 0.65,
+          release: 0.5,
+        },
+        drive: 0.02,
+      }),
+      keys: SOFT_KEYS,
+      default: SOFT_KEYS,
+    },
+    quality: 'clean',
+    master: { width: 1.2, monoBelowHz: 110 },
   },
   lofi: {
     post: [

@@ -1,13 +1,16 @@
 /**
  * Render report: the measurements the model needs to judge its own output.
  *
- * Everything is computed from the finished stereo buffer (after the post and
- * master chain), so the numbers describe what the WAV actually sounds like.
- * Spectrum and onset figures use fixed windows; peak, RMS, width, and loudness
- * use every sample. See docs/evaluation.md for the dimensions.
+ * The final mix is computed from the finished stereo buffer (after the post and
+ * master chain), so those numbers describe what the WAV actually sounds like.
+ * Stem summaries and the pre-post snapshot reuse the same primitives on their
+ * own buffers, which is what makes attribution possible. Spectrum and onset
+ * figures use fixed windows; peak, RMS, width, and loudness use every sample.
+ * See docs/evaluation.md and docs/analysis-roadmap.md for the dimensions.
  */
 
 import { integratedLufs } from './loudness.ts';
+import { resolveTarget, type ResolvedTarget, type TargetInput, type TargetProfile } from './target.ts';
 
 export interface BandEnergy {
   /** 20-60 Hz, as a fraction of the measured spectrum. */
@@ -27,7 +30,8 @@ export interface SectionReading {
   readonly rmsDb: number;
 }
 
-export interface Analysis {
+/** Measurements shared by the final mix and the pre-post snapshot. */
+export interface AnalysisFacts {
   readonly seconds: number;
   readonly peakDb: number;
   readonly rmsDb: number;
@@ -35,17 +39,91 @@ export interface Analysis {
   readonly lufs: number;
   readonly centroidHz: number;
   readonly bands: BandEnergy;
+  /** 150-500 Hz share of the same spectrum; overlaps `low` and `mid`. */
+  readonly lowMid: number;
+  /** 2-5 kHz share of the same spectrum; a diagnostic subset of `high`. */
+  readonly harsh: number;
   /** Side/mid RMS ratio: 0 is mono, 1 is a hard-panned source. */
   readonly width: number;
   readonly onsetPerSecond: number;
   readonly sections: readonly SectionReading[];
+}
+
+/** One track measured before pan/sum; only the summary is retained. */
+export interface StemReading {
+  readonly name: string;
+  readonly role: string;
+  readonly rmsDb: number;
+  readonly peakDb: number;
+  readonly centroidHz: number;
+  readonly bands: BandEnergy;
+  readonly lowMid: number;
+  readonly harsh: number;
+  readonly onsetPerSecond: number;
+  readonly pan: number;
+  readonly send: number;
+  /** Chip pulse/saw/organ whose highest note is at or above C6. */
+  readonly aliasRisk: boolean;
+}
+
+export type FindingKind =
+  | 'alias-risk'
+  | 'mud'
+  | 'masking'
+  | 'harsh'
+  | 'dynamics'
+  | 'post-mud'
+  | 'post-harsh'
+  | 'post-dynamics'
+  | 'target';
+
+/** One dimension against the declared target; `ok` is a range check, not a score. */
+export interface TargetCheck {
+  readonly field: 'lowMid' | 'harsh' | 'crest' | 'width' | 'lufs' | 'centroidHz';
+  readonly value: number;
+  readonly min?: number;
+  readonly max?: number;
+  readonly ok: boolean;
+}
+
+export interface TargetReading {
+  readonly name: string;
+  readonly passed: number;
+  readonly total: number;
+  readonly checks: readonly TargetCheck[];
+}
+
+/**
+ * One diagnostic observation. Findings are not pass/fail gates: they name a
+ * symptom, attribute it when stems/dry data are available, and suggest a knob.
+ */
+export interface Finding {
+  readonly kind: FindingKind;
+  readonly message: string;
+  readonly attribution?: string;
+  readonly next?: string;
+}
+
+export interface Analysis extends AnalysisFacts {
+  /** Per-track summaries; present on renders, absent when re-reading a WAV. */
+  readonly stems?: readonly StemReading[];
+  /** Pre-post-chain facts; present on renders, absent when re-reading a WAV. */
+  readonly dry?: AnalysisFacts;
+  readonly findings: readonly Finding[];
   readonly warnings: readonly string[];
+  /** Present only when the caller supplied a target profile. */
+  readonly target?: TargetReading;
 }
 
 export interface AnalysisOptions {
   readonly sections?: readonly SectionReading[];
   /** Extra warnings from the render stage, e.g. a safety-net trim. */
   readonly extraWarnings?: readonly string[];
+  readonly stems?: readonly StemReading[];
+  /** Pre-post facts, used to separate arrangement from post processing. */
+  readonly dry?: AnalysisFacts;
+  /** Optional target name or inline ranges. */
+  readonly target?: TargetInput;
 }
 
 const SILENCE_DB = -120;
@@ -111,6 +189,8 @@ function fft(real: Float64Array, imaginary: Float64Array): void {
 interface SpectrumReading {
   readonly centroidHz: number;
   readonly bands: BandEnergy;
+  readonly lowMid: number;
+  readonly harsh: number;
 }
 
 /**
@@ -127,6 +207,8 @@ function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
     return {
       centroidHz: 0,
       bands: { sub: 0, low: 0, mid: 0, high: 0, air: 0 },
+      lowMid: 0,
+      harsh: 0,
     };
   }
 
@@ -164,6 +246,8 @@ function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
   } as const;
 
   const sums = { sub: 0, low: 0, mid: 0, high: 0, air: 0 };
+  let lowMidSum = 0;
+  let harshSum = 0;
   let weighted = 0;
   let total = 0;
 
@@ -173,6 +257,11 @@ function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
     const binMagnitude = magnitude[bin] ?? 0;
     total += binMagnitude;
     weighted += frequency * binMagnitude;
+    // These two are diagnostic shares, not additional disjoint bands: low-mid
+    // overlaps low/mid, and presence is a subset of high. Keeping them out of
+    // `bands` means the five published shares still sum to one.
+    if (frequency >= 150 && frequency < 500) lowMidSum += binMagnitude;
+    if (frequency >= 2000 && frequency < 5000) harshSum += binMagnitude;
     for (const [band, [from, to]] of Object.entries(edges) as [keyof typeof sums, readonly [number, number]][]) {
       if (frequency >= from && frequency < to) {
         sums[band] += binMagnitude;
@@ -182,7 +271,12 @@ function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
   }
 
   if (total <= 0 || frameCount === 0) {
-    return { centroidHz: 0, bands: { sub: 0, low: 0, mid: 0, high: 0, air: 0 } };
+    return {
+      centroidHz: 0,
+      bands: { sub: 0, low: 0, mid: 0, high: 0, air: 0 },
+      lowMid: 0,
+      harsh: 0,
+    };
   }
 
   return {
@@ -194,6 +288,8 @@ function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
       high: sums.high / total,
       air: sums.air / total,
     },
+    lowMid: lowMidSum / total,
+    harsh: harshSum / total,
   };
 }
 
@@ -210,6 +306,50 @@ function countOnsets(mono: Float32Array): number {
     previous = rms;
   }
   return count;
+}
+
+export interface StemOptions {
+  readonly name: string;
+  readonly role: string;
+  readonly pan: number;
+  readonly send: number;
+  readonly aliasRisk: boolean;
+}
+
+/**
+ * Measures one track buffer before pan/sum. This is what makes attribution
+ * possible: the final mix cannot say which track owns the low-mid energy. No
+ * audio is returned or retained, so 32 tracks stay O(one track) in memory.
+ */
+export function analyseStem(
+  mono: Float32Array,
+  rate: number,
+  options: StemOptions,
+): StemReading {
+  const seconds = mono.length / rate;
+  const spectrum = readSpectrum(mono, rate);
+  let peak = 0;
+  let squares = 0;
+  for (let i = 0; i < mono.length; i += 1) {
+    const value = mono[i] ?? 0;
+    const magnitude = Math.abs(value);
+    if (magnitude > peak) peak = magnitude;
+    squares += value * value;
+  }
+  return {
+    name: options.name,
+    role: options.role,
+    rmsDb: dbOf(Math.sqrt(squares / Math.max(1, mono.length))),
+    peakDb: dbOf(peak),
+    centroidHz: spectrum.centroidHz,
+    bands: spectrum.bands,
+    lowMid: spectrum.lowMid,
+    harsh: spectrum.harsh,
+    onsetPerSecond: seconds > 0 ? countOnsets(mono) / seconds : 0,
+    pan: options.pan,
+    send: options.send,
+    aliasRisk: options.aliasRisk,
+  };
 }
 
 function mixed(left: Float32Array, right: Float32Array): Float32Array {
@@ -295,6 +435,264 @@ export function sectionEnergies(
 }
 
 /**
+ * Measures a finished buffer without judging it. Exported so the renderer can
+ * snapshot the pre-post mix with exactly the same code as the final report.
+ */
+export function measureAudio(
+  left: Float32Array,
+  right: Float32Array,
+  rate: number,
+  sections: readonly SectionReading[] = [],
+): AnalysisFacts {
+  const seconds = Math.min(left.length, right.length) / rate;
+  const mono = mixed(left, right);
+  const spectrum = readSpectrum(mono, rate);
+  return {
+    seconds,
+    peakDb: dbOf(peakOf(left, right)),
+    rmsDb: dbOf(rmsOf(left, right)),
+    lufs: integratedLufs([left, right], rate),
+    centroidHz: spectrum.centroidHz,
+    bands: spectrum.bands,
+    lowMid: spectrum.lowMid,
+    harsh: spectrum.harsh,
+    width: widthOf(left, right),
+    onsetPerSecond: seconds > 0 ? countOnsets(mono) / seconds : 0,
+    sections,
+  };
+}
+
+/** Thresholds are observations, not pass/fail gates; calibrate with A/B renders. */
+const MUD_LOW_MID = 0.25;
+const HARSH_PRESENCE = 0.22;
+const MASK_LOW_MID = 0.2;
+const MASK_MID = 0.45;
+const LOW_CREST = 9;
+const POST_DELTA = 0.05;
+const POST_CREST_DELTA = 3;
+
+function stemLabel(stem: StemReading): string {
+  return stem.name === stem.role ? stem.name : `${stem.name}(${stem.role})`;
+}
+
+function linearRms(rmsDb: number): number {
+  return 10 ** (rmsDb / 20);
+}
+
+interface RankedStem {
+  readonly stem: StemReading;
+  readonly rank: number;
+}
+
+/** Ranks stems by absolute contribution, not by their own spectral share alone. */
+function rankStems(
+  stems: readonly StemReading[],
+  metric: (stem: StemReading) => number,
+): RankedStem[] {
+  return stems
+    .filter((stem) => stem.rmsDb > SILENCE_DB + 1)
+    .map((stem) => ({ stem, rank: linearRms(stem.rmsDb) * metric(stem) }))
+    .filter((entry) => entry.rank > 0)
+    .sort((a, b) => b.rank - a.rank);
+}
+
+function inRange(value: number, min: number | undefined, max: number | undefined): boolean {
+  if (!Number.isFinite(value)) return false;
+  if (min !== undefined && value < min) return false;
+  if (max !== undefined && value > max) return false;
+  return true;
+}
+
+function formatRange(min: number | undefined, max: number | undefined, unit = ''): string {
+  if (min !== undefined && max !== undefined) return `${min}${unit}..${max}${unit}`;
+  if (max !== undefined) return `max ${max}${unit}`;
+  return `min ${min}${unit}`;
+}
+
+function targetFindings(analysis: AnalysisFacts, target: ResolvedTarget): {
+  reading: TargetReading;
+  findings: Finding[];
+} {
+  const profile: TargetProfile = target.profile;
+  const crest = analysis.peakDb - analysis.rmsDb;
+  const checks: TargetCheck[] = [];
+  const findings: Finding[] = [];
+
+  const add = (
+    field: TargetCheck['field'],
+    value: number,
+    min: number | undefined,
+    max: number | undefined,
+    subject: string,
+    unit: string,
+    next: string,
+  ): void => {
+    const ok = inRange(value, min, max);
+    checks.push({ field, value, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }), ok });
+    if (ok) return;
+    const shown = field === 'lufs' ? (Number.isFinite(value) ? value.toFixed(1) : 'silent') : value.toFixed(field === 'crest' ? 1 : field === 'width' ? 2 : 0);
+    const unitSuffix = field === 'lowMid' || field === 'harsh' ? '%' : unit;
+    const valueText = field === 'lowMid' || field === 'harsh' ? `${Math.round(value * 100)}%` : `${shown}${unitSuffix}`;
+    findings.push({
+      kind: 'target',
+      message: `${subject} ${valueText} is outside ${target.name} ${formatRange(
+        min === undefined ? undefined : field === 'lowMid' || field === 'harsh' ? Math.round(min * 100) : min,
+        max === undefined ? undefined : field === 'lowMid' || field === 'harsh' ? Math.round(max * 100) : max,
+      )}${field === 'lowMid' || field === 'harsh' ? '%' : unit}`,
+      next,
+    });
+  };
+
+  if (profile.lowMidMax !== undefined) {
+    add('lowMid', analysis.lowMid, undefined, profile.lowMidMax, '150-500 Hz', '', 'high-pass or shelve the bass/pad, or move one part up an octave');
+  }
+  if (profile.harshMax !== undefined) {
+    add('harsh', analysis.harsh, undefined, profile.harshMax, '2-5 kHz', '', 'soften the waveform, lower presence with tilt, or reduce drive');
+  }
+  if (profile.crestMin !== undefined) {
+    add('crest', crest, profile.crestMin, undefined, 'crest', ' dB', 'lower the loudness target or compression, and leave more rests');
+  }
+  if (profile.width !== undefined) {
+    add('width', analysis.width, profile.width[0], profile.width[1], 'width', '', 'widen or narrow the send/pan; width is side/mid RMS');
+  }
+  if (profile.lufs !== undefined) {
+    add('lufs', analysis.lufs, profile.lufs[0], profile.lufs[1], 'LUFS', '', 'adjust the loudness step or the arrangement density');
+  }
+  if (profile.centroidHz !== undefined) {
+    add('centroidHz', analysis.centroidHz, profile.centroidHz[0], profile.centroidHz[1], 'centroid', ' Hz', 'tilt, lowpass, or change the register of the brightest part');
+  }
+
+  return {
+    reading: {
+      name: target.name,
+      passed: checks.filter((check) => check.ok).length,
+      total: checks.length,
+      checks,
+    },
+    findings,
+  };
+}
+
+/**
+ * Turns measured symptoms into attributed, actionable observations. When stems
+ * are present the finding names the likely tracks; `dry` separates arrangement
+ * from post processing. No finding is a hard gate.
+ */
+function findingsFor(
+  analysis: AnalysisFacts,
+  stems: readonly StemReading[] | undefined,
+  dry: AnalysisFacts | undefined,
+  target: ResolvedTarget | undefined,
+): Finding[] {
+  const findings: Finding[] = [];
+  const crest = analysis.peakDb - analysis.rmsDb;
+
+  const alias = (stems ?? []).filter((stem) => stem.aliasRisk);
+  if (alias.length > 0) {
+    findings.push({
+      kind: 'alias-risk',
+      message: `pulse/saw/organ above C6 in ${alias.map(stemLabel).join(', ')}`,
+      next: 'switch to additive or triangle, drop the part an octave, or keep the grit deliberately',
+    });
+  }
+
+  if (analysis.lowMid >= MUD_LOW_MID) {
+    const top = rankStems(stems ?? [], (stem) => stem.lowMid)
+      .slice(0, 2)
+      .map((entry) => stemLabel(entry.stem));
+    findings.push({
+      kind: 'mud',
+      message: `150-500 Hz is ${formatPercent(analysis.lowMid)} of the spectrum`,
+      ...(top.length > 0 ? { attribution: `mostly ${top.join(' + ')}` } : {}),
+      next: 'high-pass or EQ 150-500 Hz on the bass/pad, move one part up an octave, or shorten overlapping gates',
+    });
+  }
+
+  const lowMidMasking = rankStems(stems ?? [], (stem) =>
+    stem.lowMid >= MASK_LOW_MID ? stem.lowMid : 0,
+  );
+  if (lowMidMasking.length >= 2 && analysis.lowMid < MUD_LOW_MID) {
+    findings.push({
+      kind: 'masking',
+      message: `${lowMidMasking
+        .slice(0, 2)
+        .map((entry) => stemLabel(entry.stem))
+        .join(' and ')} both carry 150-500 Hz`,
+      next: 'separate their registers or carve one with a high-pass',
+    });
+  }
+
+  const midMasking = rankStems(stems ?? [], (stem) =>
+    stem.bands.mid >= MASK_MID ? stem.bands.mid : 0,
+  );
+  if (midMasking.length >= 2) {
+    findings.push({
+      kind: 'masking',
+      message: `${midMasking
+        .slice(0, 2)
+        .map((entry) => stemLabel(entry.stem))
+        .join(' and ')} both sit in 250 Hz-2 kHz`,
+      next: 'pan them apart, change one octave, or shorten one part',
+    });
+  }
+
+  if (analysis.harsh >= HARSH_PRESENCE) {
+    const top = rankStems(stems ?? [], (stem) => stem.harsh)
+      .slice(0, 2)
+      .map((entry) => stemLabel(entry.stem));
+    findings.push({
+      kind: 'harsh',
+      message: `2-5 kHz is ${formatPercent(analysis.harsh)} of the spectrum`,
+      ...(top.length > 0 ? { attribution: `mostly ${top.join(' + ')}` } : {}),
+      next: 'use a softer waveform or additive partials, lower 2-5 kHz with tilt, or reduce instrument drive',
+    });
+  }
+
+  if (crest < LOW_CREST && Number.isFinite(analysis.lufs) && analysis.lufs > -12) {
+    findings.push({
+      kind: 'dynamics',
+      message: `crest is ${crest.toFixed(1)} dB`,
+      next: 'lower the loudness target, reduce saturation/compression, or leave more rests',
+    });
+  }
+
+  if (target !== undefined) {
+    findings.push(...targetFindings(analysis, target).findings);
+  }
+
+  if (dry !== undefined) {
+    const lowMidDelta = analysis.lowMid - dry.lowMid;
+    if (lowMidDelta >= POST_DELTA && analysis.lowMid >= MUD_LOW_MID) {
+      findings.push({
+        kind: 'post-mud',
+        message: `post added ${formatPercent(lowMidDelta)} low-mid (dry ${formatPercent(dry.lowMid)} → ${formatPercent(analysis.lowMid)})`,
+        next: 'check reverb wet/room, lowpass and saturation; try a low-cut on the reverb or less wet',
+      });
+    }
+
+    const harshDelta = analysis.harsh - dry.harsh;
+    if (harshDelta >= POST_DELTA && analysis.harsh >= HARSH_PRESENCE) {
+      findings.push({
+        kind: 'post-harsh',
+        message: `post added ${formatPercent(harshDelta)} 2-5 kHz (dry ${formatPercent(dry.harsh)} → ${formatPercent(analysis.harsh)})`,
+        next: 'reduce saturation drive/mix, or use a darker tilt',
+      });
+    }
+
+    const crestDelta = dry.peakDb - dry.rmsDb - crest;
+    if (crestDelta >= POST_CREST_DELTA) {
+      findings.push({
+        kind: 'post-dynamics',
+        message: `post reduced crest by ${crestDelta.toFixed(1)} dB`,
+        next: 'lower the loudness target or compression ratio, or reduce saturation mix',
+      });
+    }
+  }
+
+  return findings;
+}
+
+/**
  * Builds the report from the finished buffer. `sections` is optional because a
  * loop has no arrangement; a song passes its per-section readings in.
  */
@@ -304,27 +702,22 @@ export function analyseAudio(
   rate: number,
   options: AnalysisOptions = {},
 ): Analysis {
-  const seconds = Math.min(left.length, right.length) / rate;
-  const mono = mixed(left, right);
-  const spectrum = readSpectrum(mono, rate);
-  const sections = options.sections ?? [];
-  const lufs = integratedLufs([left, right], rate);
-  const analysis: Omit<Analysis, 'warnings'> = {
-    seconds,
-    peakDb: dbOf(peakOf(left, right)),
-    rmsDb: dbOf(rmsOf(left, right)),
-    lufs,
-    centroidHz: spectrum.centroidHz,
-    bands: spectrum.bands,
-    width: widthOf(left, right),
-    onsetPerSecond: seconds > 0 ? countOnsets(mono) / seconds : 0,
-    sections,
+  const facts = measureAudio(left, right, rate, options.sections ?? []);
+  const target = resolveTarget(options.target);
+  const findings = findingsFor(facts, options.stems, options.dry, target);
+  const targetReading = target === undefined ? undefined : targetFindings(facts, target).reading;
+  return {
+    ...facts,
+    ...(options.stems === undefined ? {} : { stems: options.stems }),
+    ...(options.dry === undefined ? {} : { dry: options.dry }),
+    ...(targetReading === undefined ? {} : { target: targetReading }),
+    findings,
+    warnings: warningsFor(facts, options.extraWarnings ?? []),
   };
-  return { ...analysis, warnings: warningsFor(analysis, options.extraWarnings ?? []) };
 }
 
 function warningsFor(
-  analysis: Omit<Analysis, 'warnings'>,
+  analysis: AnalysisFacts,
   extraWarnings: readonly string[],
 ): string[] {
   const warnings: string[] = [];
@@ -360,13 +753,38 @@ function formatPercent(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;
 }
 
+function formatSigned(value: number, digits: number): string {
+  const text = value.toFixed(digits);
+  return value > 0 ? `+${text}` : text;
+}
+
+function formatSignedPercent(value: number): string {
+  const points = Math.round(value * 100);
+  return points > 0 ? `+${points}%` : `${points}%`;
+}
+
+function formatStems(stems: readonly StemReading[]): string | undefined {
+  const ranked = [...stems]
+    .filter((stem) => stem.rmsDb > SILENCE_DB + 1)
+    .sort((a, b) => b.rmsDb - a.rmsDb);
+  if (ranked.length === 0) return undefined;
+  const top = ranked.slice(0, 6);
+  const text = top
+    .map((stem) => {
+      const alias = stem.aliasRisk ? ' !alias' : '';
+      return `${stemLabel(stem)} ${stem.rmsDb.toFixed(1)}dBFS ${Math.round(stem.centroidHz)}Hz low-mid ${formatPercent(stem.lowMid)} pan ${stem.pan.toFixed(2)}${alias}`;
+    })
+    .join(' · ');
+  return `${text}${ranked.length > top.length ? ` · +${ranked.length - top.length} more` : ''}`;
+}
+
 /** Compact multi-line text shared by the render and analyze tool results. */
 export function formatReport(analysis: Analysis): string {
   const lufs = Number.isFinite(analysis.lufs) ? analysis.lufs.toFixed(1) : 'silent';
   const { bands } = analysis;
   const lines = [
     `report peak ${formatDb(analysis.peakDb)} · RMS ${formatDb(analysis.rmsDb)} · LUFS ${lufs}`,
-    `report spectrum centroid ${Math.round(analysis.centroidHz)} Hz · sub ${formatPercent(bands.sub)} low ${formatPercent(bands.low)} mid ${formatPercent(bands.mid)} high ${formatPercent(bands.high)} air ${formatPercent(bands.air)}`,
+    `report spectrum centroid ${Math.round(analysis.centroidHz)} Hz · sub ${formatPercent(bands.sub)} low ${formatPercent(bands.low)} mid ${formatPercent(bands.mid)} high ${formatPercent(bands.high)} air ${formatPercent(bands.air)} · low-mid ${formatPercent(analysis.lowMid)} · 2-5k ${formatPercent(analysis.harsh)}`,
     `report space width ${analysis.width.toFixed(2)} · onsets ${analysis.onsetPerSecond.toFixed(1)}/s`,
   ];
   if (analysis.sections.length > 0) {
@@ -374,6 +792,43 @@ export function formatReport(analysis: Analysis): string {
       .map((section) => `${section.name} ${formatDb(section.rmsDb)}`)
       .join(' · ');
     lines.push(`report sections ${sections}`);
+  }
+  if (analysis.stems !== undefined) {
+    const stems = formatStems(analysis.stems);
+    if (stems !== undefined) lines.push(`report stems ${stems}`);
+  }
+  if (analysis.dry !== undefined) {
+    const dry = analysis.dry;
+    const centroidDelta = analysis.centroidHz - dry.centroidHz;
+    const lowMidDelta = analysis.lowMid - dry.lowMid;
+    const crest = analysis.peakDb - analysis.rmsDb;
+    const crestDelta = dry.peakDb - dry.rmsDb - crest;
+    const widthDelta = analysis.width - dry.width;
+    if (
+      Math.abs(centroidDelta) >= 20 ||
+      Math.abs(lowMidDelta) >= 0.01 ||
+      Math.abs(crestDelta) >= 0.2 ||
+      Math.abs(widthDelta) >= 0.02
+    ) {
+      lines.push(
+        `report post-delta centroid ${formatSigned(centroidDelta, 0)} Hz · low-mid ${formatSignedPercent(lowMidDelta)} · crest ${formatSigned(crestDelta, 1)} dB · width ${formatSigned(widthDelta, 2)}`,
+      );
+    }
+  }
+  if (analysis.target !== undefined) {
+    lines.push(
+      `report target ${analysis.target.name}: ${analysis.target.passed}/${analysis.target.total} checks in range`,
+    );
+  }
+  if (analysis.findings.length === 0) {
+    lines.push('report findings: none');
+  } else {
+    for (const finding of analysis.findings) {
+      const attribution =
+        finding.attribution === undefined ? '' : ` (${finding.attribution})`;
+      lines.push(`report finding ${finding.kind}: ${finding.message}${attribution}`);
+      if (finding.next !== undefined) lines.push(`report next: ${finding.next}`);
+    }
   }
   lines.push(
     `report warnings: ${analysis.warnings.length > 0 ? analysis.warnings.join('; ') : 'none'}`,

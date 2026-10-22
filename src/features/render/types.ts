@@ -1,13 +1,29 @@
 import type { Analysis } from './analyze.ts';
 import type { PresetName } from './presets.ts';
 import type { SampleSource } from './sample.ts';
+import type { TargetInput } from './target.ts';
 
 /** One step in the post chain. An empty chain means a dry render. */
 export type PostStep =
   | { readonly type: 'tape'; readonly speed?: number }
   | { readonly type: 'slow'; readonly speed?: number }
   | { readonly type: 'lowpass'; readonly cutoffHz?: number; readonly toneHz?: number }
-  | { readonly type: 'reverb'; readonly wet?: number; readonly room?: number; readonly damp?: number }
+  | {
+      readonly type: 'reverb';
+      readonly wet?: number;
+      readonly room?: number;
+      readonly damp?: number;
+      /** Delay the send before it enters the comb bank, 0-200 ms. */
+      readonly predelayMs?: number;
+      /** High-pass the wet return, 20-1000 Hz. */
+      readonly lowCutHz?: number;
+      /** Low-pass the wet return, 1000-20000 Hz. */
+      readonly highCutHz?: number;
+      /** Slow delay modulation depth, 0-1 (about 0-5 ms). */
+      readonly modDepth?: number;
+      /** Modulation rate in Hz, 0.05-5. */
+      readonly modRateHz?: number;
+    }
   | { readonly type: 'tilt'; readonly tiltDb?: number }
   | { readonly type: 'saturate'; readonly drive?: number; readonly mix?: number }
   | {
@@ -22,17 +38,37 @@ export type PostStep =
   | { readonly type: 'limiter'; readonly ceilingDb?: number; readonly release?: number };
 
 /**
- * A style fills the post-chain defaults and, for `studio` and `lofi`, the
+ * A style fills the post-chain defaults, and for the non-chip styles the
  * role-based instrument defaults; it never changes `mode` or the score.
  * `chip` is the dry PICO-8-constrained default, `hitech` glues and normalises a
- * busy mix, `ambient` is the slowed-and-reverbed variant.
+ * busy mix, `ambient` is the slowed-and-reverbed variant, `studio`/`lofi`
+ * leave the chip palette, and `soft` is the low-order, clean, slow-attack
+ * variant.
  */
-export type StyleName = 'chip' | 'hitech' | 'ambient' | 'studio' | 'lofi';
+export type StyleName = 'chip' | 'hitech' | 'ambient' | 'studio' | 'lofi' | 'soft';
+
+/**
+ * Oscillator precision. `pico` is the historical direct-form chip render;
+ * `clean` band-limits saw and pulse edges and limits the FM sideband index so
+ * high notes fold less. It is opt-in because it changes the waveform.
+ */
+export type Quality = 'pico' | 'clean';
 
 export interface RenderOptions {
   readonly preset?: PresetName;
   /** Style defaults; ignored when `post` is present, invalid together with `preset`. */
   readonly style?: StyleName;
+  /** Oscillator precision; defaults to the style's choice, else `pico`. */
+  readonly quality?: Quality;
+  /**
+   * Master side gain: 0 folds to mono, 1 is unchanged, 2 doubles the side
+   * signal. Omitted leaves the stereo image untouched.
+   */
+  readonly width?: number;
+  /** Folds everything below this frequency to mono; omitted means no fold. */
+  readonly monoBelowHz?: number;
+  /** Optional target profile; findings then name deviations without scoring. */
+  readonly target?: TargetInput;
   /** When present, replaces the preset/style chain entirely. `[]` renders dry. */
   readonly post?: readonly PostStep[];
   /** 0.5-1.5; shorthand for a tape/slow step. */

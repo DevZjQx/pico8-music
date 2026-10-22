@@ -165,3 +165,49 @@ export function applyLimiter(
     right[i] = clamp(limitedRight, -ceiling, ceiling);
   }
 }
+
+/**
+ * Master side gain, expressed as the final side/mid ratio multiplier. 0 folds
+ * the mix to mono, 1 is a bypass, and 2 doubles the side signal. It runs after
+ * the ordered post chain, so a reverb's width can be tamed without touching
+ * the arrangement's pan.
+ */
+export function applyWidth(left: Float32Array, right: Float32Array, width: number): void {
+  const gain = clamp(width, 0, 2);
+  if (gain === 1) return;
+  for (let i = 0; i < left.length; i += 1) {
+    const mid = ((left[i] ?? 0) + (right[i] ?? 0)) * 0.5;
+    const side = ((left[i] ?? 0) - (right[i] ?? 0)) * 0.5 * gain;
+    left[i] = mid + side;
+    right[i] = mid - side;
+  }
+}
+
+/**
+ * Folds the band below `hz` to mono by removing it from the side channel and
+ * leaving the mid untouched. Bass and kick then share one stable centre
+ * without collapsing the rest of the stereo image.
+ */
+export function applyMonoBelow(
+  left: Float32Array,
+  right: Float32Array,
+  hz: number,
+  rate: number,
+): void {
+  const length = Math.min(left.length, right.length);
+  if (length === 0) return;
+  const side = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) {
+    side[i] = ((left[i] ?? 0) - (right[i] ?? 0)) * 0.5;
+  }
+  const coefficient = 1 - Math.exp((-2 * Math.PI * hz) / rate);
+  let low = 0;
+  for (let i = 0; i < length; i += 1) {
+    const input = side[i] ?? 0;
+    low += coefficient * (input - low);
+    const high = input - low;
+    const mid = ((left[i] ?? 0) + (right[i] ?? 0)) * 0.5;
+    left[i] = mid + high;
+    right[i] = mid - high;
+  }
+}

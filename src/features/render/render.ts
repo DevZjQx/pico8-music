@@ -1,13 +1,15 @@
 import type { Score } from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
-import { analyseAudio, sectionEnergies } from './analyze.ts';
+import { analyseAudio, measureAudio, sectionEnergies, type AnalysisFacts } from './analyze.ts';
 import { copyWindow, dcBlock, limitPeak, lowpass, repeat, resample, reverb } from './dsp.ts';
 import {
   applyCompressor,
   applyLimiter,
   applyLoudness,
+  applyMonoBelow,
   applySaturation,
   applyTilt,
+  applyWidth,
   gainToDb,
 } from './master.ts';
 import { PRESETS, isPresetName } from './presets.ts';
@@ -61,6 +63,16 @@ function numberField(
   return clamp(value, min, max);
 }
 
+function optionalNumberField(
+  value: unknown,
+  path: string,
+  min: number,
+  max: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  return numberField(value, path, min, min, max);
+}
+
 function normalisePostStep(value: unknown, index: number): PostStep {
   const path = `post[${index}]`;
   if (!isRecord(value)) {
@@ -81,13 +93,24 @@ function normalisePostStep(value: unknown, index: number): PostStep {
         cutoffHz: numberField(cutoff, `${path}.cutoffHz`, DEFAULT_TONE_HZ, 100, RATE / 2),
       };
     }
-    case 'reverb':
+    case 'reverb': {
+      const predelayMs = optionalNumberField(value.predelayMs, `${path}.predelayMs`, 0, 200);
+      const lowCutHz = optionalNumberField(value.lowCutHz, `${path}.lowCutHz`, 20, 1000);
+      const highCutHz = optionalNumberField(value.highCutHz, `${path}.highCutHz`, 1000, 20000);
+      const modDepth = optionalNumberField(value.modDepth, `${path}.modDepth`, 0, 1);
+      const modRateHz = optionalNumberField(value.modRateHz, `${path}.modRateHz`, 0.05, 5);
       return {
         type: 'reverb',
         wet: numberField(value.wet, `${path}.wet`, DEFAULT_WET, 0, 1),
         room: numberField(value.room, `${path}.room`, DEFAULT_ROOM, 0, 0.98),
         damp: numberField(value.damp, `${path}.damp`, DEFAULT_DAMP, 0, 1),
+        ...(predelayMs === undefined ? {} : { predelayMs }),
+        ...(lowCutHz === undefined ? {} : { lowCutHz }),
+        ...(highCutHz === undefined ? {} : { highCutHz }),
+        ...(modDepth === undefined ? {} : { modDepth }),
+        ...(modRateHz === undefined ? {} : { modRateHz }),
       };
+    }
     case 'tilt':
       return {
         type: 'tilt',
@@ -329,6 +352,11 @@ function applyPost(
             wet,
             room: step.room ?? DEFAULT_ROOM,
             damp: step.damp ?? DEFAULT_DAMP,
+            ...(step.predelayMs === undefined ? {} : { predelayMs: step.predelayMs }),
+            ...(step.lowCutHz === undefined ? {} : { lowCutHz: step.lowCutHz }),
+            ...(step.highCutHz === undefined ? {} : { highCutHz: step.highCutHz }),
+            ...(step.modDepth === undefined ? {} : { modDepth: step.modDepth }),
+            ...(step.modRateHz === undefined ? {} : { modRateHz: step.modRateHz }),
           },
           RATE,
         );
@@ -430,6 +458,11 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
       throw new Error('style and preset cannot be combined; style already fills the post chain');
     }
   }
+  const styleDefinition = options.style === undefined ? undefined : STYLES[options.style];
+  const quality = options.quality ?? styleDefinition?.quality ?? 'pico';
+  if (quality !== 'pico' && quality !== 'clean') {
+    throw new Error(`quality must be pico or clean, got ${JSON.stringify(quality)}`);
+  }
   const preset = PRESETS[presetName];
   const chain = resolvePost(options, preset);
   const speed = chainSpeed(chain);
@@ -439,11 +472,42 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   const loops = score.mode === 'song' ? 1 : hasReverb ? RENDER_LOOPS : 1;
 
   const signal = options.signal;
-  const roleInstruments = options.style === undefined ? undefined : STYLES[options.style].instruments;
+  const roleInstruments = styleDefinition?.instruments;
   throwIfAborted(signal);
-  const song = renderScore(score, RATE, signal, roleInstruments, options.samples);
+  const song = renderScore(
+    score,
+    RATE,
+    signal,
+    roleInstruments,
+    options.samples,
+    quality,
+  );
   throwIfAborted(signal);
   if (song.sendBus) addSendReverb(song, score.mode === 'song' ? 1 : RENDER_LOOPS);
+  // Snapshot the mix before the post chain. The final report uses the same
+  // measurement code, so `post-delta` compares like with like and can say
+  // whether an effect (rather than the arrangement) caused a symptom.
+  let dry: AnalysisFacts | undefined;
+  if (chain.length > 0) {
+    const dryContentSamples =
+      score.mode === 'song' && score.tailSeconds > 0
+        ? Math.round(
+            (song.loopSamples * score.durationSeconds) /
+              (score.durationSeconds + score.tailSeconds),
+          )
+        : undefined;
+    const drySections =
+      score.mode === 'song'
+        ? sectionEnergies(
+            song.left,
+            song.right,
+            score.sections,
+            score.totalSteps,
+            dryContentSamples,
+          )
+        : [];
+    dry = measureAudio(song.left, song.right, RATE, drySections);
+  }
   const sourceLeft = loops > 1 ? repeat(song.left, loops) : song.left;
   const sourceRight = loops > 1 ? repeat(song.right, loops) : song.right;
   throwIfAborted(signal);
@@ -469,6 +533,17 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
     finalRight = copyWindow(right, start, loopSamples);
   }
 
+  // Master width/mono are opt-in and run after the ordered chain, so they can
+  // tame a reverb's stereo return without changing the arrangement's pan.
+  const masterWidth = optionNumber(options.width, 'width') ?? styleDefinition?.master?.width;
+  const monoBelowHz = optionNumber(options.monoBelowHz, 'monoBelowHz') ?? styleDefinition?.master?.monoBelowHz;
+  if (monoBelowHz !== undefined) {
+    applyMonoBelow(finalLeft, finalRight, clamp(monoBelowHz, 20, 500), RATE);
+  }
+  if (masterWidth !== undefined) {
+    applyWidth(finalLeft, finalRight, clamp(masterWidth, 0, 2));
+  }
+
   // Reverb can push the sum past full scale. Trim the finished loop with one
   // shared gain instead of clamping samples: attenuation is distortion-free and
   // does not disturb the seam between repeats.
@@ -492,6 +567,9 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
   const report = analyseAudio(finalLeft, finalRight, RATE, {
     sections,
     extraWarnings: [...score.warnings, ...trimmed],
+    stems: song.stems,
+    ...(dry === undefined ? {} : { dry }),
+    ...(options.target === undefined ? {} : { target: options.target }),
   });
 
   if (loopSamples > MAX_OUTPUT_SAMPLES) {

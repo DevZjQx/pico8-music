@@ -19,6 +19,10 @@
 
 M4 之后这些指标由 `p8_music` 的渲染报告自动给出（peak/RMS/LUFS、质心与五个频带、宽度、onset 密度、分段 RMS、警告），`p8_analyze` 可以对已有 WAV 重测；报告是测量，不是评分，主观判断仍然以上面的维度和盲听为准。
 
+M2 之后可以用 `target` 声明一个 profile 或内联范围。报告不会给总分，只增加一条 `report target <name>: n/m checks in range`，并对每个越界维度给一条 `target` finding。目标仍然基于下面这些已有维度，所以偏差可以被解释；`soft` style 自带一组低阶 additive 乐器、clean 振荡器和较慢 attack，用来演示 profile 落在范围内。
+
+M1 之后报告还包含可归因的诊断：`stems`（每条轨的 RMS/质心/频带/low-mid/pan/alias-risk）、`dry`（post 链之前的同口径测量）、`findings`（mud/harsh/masking/alias-risk/dynamics 及 post 增量）。`p8_analyze` 的 `detail: "raw"` 会把完整分析写成同目录的 `*.analysis.json`，避免把逐项数据塞进上下文。设计与后续 M2/M3 见 [`analysis-roadmap.md`](./analysis-roadmap.md)。
+
 ## 测试策略
 
 - 保留现有确定性测试。

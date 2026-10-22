@@ -92,10 +92,11 @@ test('p8_help returns the full score reference', async () => {
   assert.match(text, /p8_music arguments passed next to score/);
   assert.match(text, /inside the score JSON is an error/);
   // Instruments and the styles that select them must be discoverable here.
-  assert.match(text, /instruments:/);
+  assert.match(text, /## Instruments/);
+  assert.match(text, /"instruments":/);
   assert.match(text, /additive/);
   assert.match(text, /studio, or lofi/);
-  assert.match(text, /~pitch\(semitones/);
+  assert.match(text, /~pitch/);
 });
 
 test('/p8m prints the reference into the session', async () => {

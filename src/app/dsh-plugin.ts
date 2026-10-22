@@ -62,7 +62,7 @@ function registerTools(tools: ToolRuntime): void {
   register({
     name: 'p8_help',
     description:
-      'Show the PICO-8 score DSL reference: modes, pattern tokens, drums, chords, effects, mix, post chain. The same text as /p8m.',
+      'Show the PICO-8 score DSL reference: modes, pattern tokens, drums, chords, effects, mix, post chain, targets. The same text as /p8m.',
     parameters: helpParameters,
     output,
     async execute(): Promise<string> {
@@ -91,7 +91,7 @@ function registerTools(tools: ToolRuntime): void {
   register({
     name: 'p8_analyze',
     description:
-      'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, and warnings. Use it to re-check a p8_music output.',
+      'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, findings, and warnings. Optional target ranges turn misses into deviations without a score. detail:raw writes the full analysis to a sibling .analysis.json.',
     parameters: analyzeParameters,
     output,
     async execute(args: AnalyzeArgs, exec: ToolExecution) {

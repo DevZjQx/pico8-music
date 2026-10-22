@@ -2,6 +2,16 @@ export interface ReverbOptions {
   readonly wet: number;
   readonly room: number;
   readonly damp: number;
+  /** Milliseconds before the send enters the comb bank, 0-200. */
+  readonly predelayMs?: number;
+  /** High-pass the wet return; absent leaves it untouched. */
+  readonly lowCutHz?: number;
+  /** Low-pass the wet return; absent leaves it untouched. */
+  readonly highCutHz?: number;
+  /** Slow delay modulation depth, 0-1 (about 0-5 ms). */
+  readonly modDepth?: number;
+  /** Modulation rate in Hz; ignored when `modDepth` is 0. */
+  readonly modRateHz?: number;
 }
 
 export interface StereoAudio {
@@ -85,6 +95,62 @@ function reverbChannel(
   return output;
 }
 
+function delaySend(
+  input: Float32Array,
+  predelayMs: number,
+  modDepth: number,
+  modRateHz: number,
+  rate: number,
+): Float32Array {
+  const baseDelay = Math.max(0, predelayMs) * 0.001 * rate;
+  const depth = clamp(modDepth, 0, 1) * 0.005 * rate;
+  const maxDelay = baseDelay + depth;
+  if (maxDelay < 0.5) return input;
+
+  const size = Math.ceil(maxDelay) + 4;
+  const line = new Float32Array(size);
+  const output = new Float32Array(input.length);
+  for (let i = 0; i < input.length; i += 1) {
+    line[i % size] = input[i] ?? 0;
+    // Unipolar so the read index never runs ahead of the write index when the
+    // caller uses modulation without a predelay.
+    const modulation =
+      depth === 0 ? 0 : depth * 0.5 * (1 + Math.sin((2 * Math.PI * modRateHz * i) / rate));
+    const read = i - (baseDelay + modulation);
+    if (read < 0) continue;
+    const index = Math.floor(read);
+    const fraction = read - index;
+    const first = line[((index % size) + size) % size] ?? 0;
+    const second = line[(((index + 1) % size) + size) % size] ?? 0;
+    output[i] = first + (second - first) * fraction;
+  }
+  return output;
+}
+
+/** One-pole wet-return filters; they stay off unless the caller asks. */
+function filterWet(samples: Float32Array, lowCutHz: number | undefined, highCutHz: number | undefined, rate: number): void {
+  if (lowCutHz !== undefined) {
+    const pole = Math.exp((-2 * Math.PI * lowCutHz) / rate);
+    let previousInput = 0;
+    let previousOutput = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const input = samples[i] ?? 0;
+      const output = input - previousInput + pole * previousOutput;
+      previousInput = input;
+      previousOutput = output;
+      samples[i] = output;
+    }
+  }
+  if (highCutHz !== undefined) {
+    const coefficient = 1 - Math.exp((-2 * Math.PI * highCutHz) / rate);
+    let value = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      value += coefficient * ((samples[i] ?? 0) - value);
+      samples[i] = value;
+    }
+  }
+}
+
 function downmix(input: StereoAudio): Float32Array {
   const length = Math.min(input.left.length, input.right.length);
   const output = new Float32Array(length);
@@ -107,8 +173,20 @@ export function reverb(input: StereoAudio, options: ReverbOptions, rate: number)
   const dry = 1 - wet;
 
   const mono = downmix(input);
-  const leftReverb = reverbChannel(mono, 0, scale, feedback, damp);
-  const rightReverb = reverbChannel(mono, STEREO_SPREAD, scale, feedback, damp);
+  // The delay/modulation stage is a send-side effect: the dry path keeps its
+  // original alignment, which is why a predelay does not smear the direct
+  // sound. With both fields absent it returns the send unchanged.
+  const send = delaySend(
+    mono,
+    options.predelayMs ?? 0,
+    options.modDepth ?? 0,
+    options.modRateHz ?? 0.7,
+    rate,
+  );
+  const leftReverb = reverbChannel(send, 0, scale, feedback, damp);
+  const rightReverb = reverbChannel(send, STEREO_SPREAD, scale, feedback, damp);
+  filterWet(leftReverb, options.lowCutHz, options.highCutHz, rate);
+  filterWet(rightReverb, options.lowCutHz, options.highCutHz, rate);
   const left = new Float32Array(mono.length);
   const right = new Float32Array(mono.length);
 

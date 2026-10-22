@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
 import { parseScore, type SampleSpec, type Score } from '../features/score/feature.ts';
 import {
@@ -12,9 +12,11 @@ import {
   renderLoop,
   type PostStep,
   type PresetName,
+  type Quality,
   type RenderOutput,
   type SampleSource,
   type StyleName,
+  type TargetInput,
 } from '../features/render/feature.ts';
 
 export interface RenderArgs {
@@ -25,6 +27,14 @@ export interface RenderArgs {
   readonly preset?: string;
   /** Style defaults for the post chain; cannot be combined with `preset`. */
   readonly style?: string;
+  /** `pico` (default) or `clean`; a style may choose its own default. */
+  readonly quality?: string;
+  /** Master side gain, 0-2; omitted leaves the image untouched. */
+  readonly width?: number;
+  /** Fold sub-bass to mono below this frequency; omitted means no fold. */
+  readonly monoBelowHz?: number;
+  /** Target profile name or inline ranges; validated by the render feature. */
+  readonly target?: unknown;
   /** Explicit post chain; `[]` renders dry. Omit to use the style or preset chain. */
   readonly post?: readonly PostStep[];
   readonly speed?: number;
@@ -32,10 +42,16 @@ export interface RenderArgs {
   readonly toneHz?: number;
   readonly minutes?: number;
   readonly out?: string;
+  /** `summary` (default) or `raw`: write the complete render report beside the WAV. */
+  readonly detail?: string;
 }
 
 export interface AnalyzeArgs {
   readonly path: string;
+  /** `summary` (default) or `raw`: write the complete analysis beside the WAV. */
+  readonly detail?: string;
+  /** Optional target profile name or inline ranges; validated by the render feature. */
+  readonly target?: unknown;
 }
 
 export interface ToolExecution {
@@ -209,7 +225,7 @@ function presetOf(value: string | undefined): PresetName | undefined {
   return value as PresetName;
 }
 
-const STYLE_NAMES: readonly StyleName[] = ['chip', 'hitech', 'ambient', 'studio', 'lofi'];
+const STYLE_NAMES: readonly StyleName[] = ['chip', 'hitech', 'ambient', 'studio', 'lofi', 'soft'];
 
 function styleOf(value: string | undefined): StyleName | undefined {
   if (value === undefined) return undefined;
@@ -218,6 +234,19 @@ function styleOf(value: string | undefined): StyleName | undefined {
     throw new Error(`unknown style ${JSON.stringify(value)}; use ${STYLE_NAMES.join(', ')}`);
   }
   return match;
+}
+
+/** The feature's `resolveTarget` is the authority; the app only forwards. */
+function targetOf(value: unknown): TargetInput | undefined {
+  return value === undefined ? undefined : (value as TargetInput);
+}
+
+function qualityOf(value: string | undefined): Quality | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'pico' && value !== 'clean') {
+    throw new Error(`unknown quality ${JSON.stringify(value)}; use pico or clean`);
+  }
+  return value;
 }
 
 function chainLabel(args: RenderArgs, style: StyleName | undefined, preset: PresetName | undefined): {
@@ -297,20 +326,30 @@ async function scoreJsonOf(args: RenderArgs, cwd: string): Promise<string> {
 /** Shared by both host adapters: validate, render, write, summarise, report. */
 export async function executeRender(args: RenderArgs, exec: ToolExecution = {}): Promise<string> {
   if (exec.signal?.aborted) throw new Error('render aborted');
+  const detail = args.detail ?? 'summary';
+  if (detail !== 'summary' && detail !== 'raw') {
+    throw new Error('detail must be summary or raw');
+  }
 
   const cwd = workspaceDirectory(exec);
   const score = parseScore(await scoreJsonOf(args, cwd));
   const sampleBank = await loadSampleBank(score, cwd);
   const preset = presetOf(args.preset);
   const style = styleOf(args.style);
+  const quality = qualityOf(args.quality);
+  const target = targetOf(args.target);
   const outputPath = workspacePath(args.out ?? 'pico8-music.wav', 'out', cwd);
   const output = renderLoop(score, {
     preset,
     style,
+    ...(quality === undefined ? {} : { quality }),
     post: args.post,
     speed: optionalNumber(args.speed, 'speed'),
     wet: optionalNumber(args.wet, 'wet'),
     toneHz: optionalNumber(args.toneHz, 'toneHz'),
+    width: optionalNumber(args.width, 'width'),
+    monoBelowHz: optionalNumber(args.monoBelowHz, 'monoBelowHz'),
+    ...(target === undefined ? {} : { target }),
     minutes: optionalNumber(args.minutes, 'minutes'),
     signal: exec.signal,
     samples: sampleBank,
@@ -323,7 +362,7 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
 
   const repeats = output.repeats;
   const chain = chainLabel(args, style, preset);
-  return [
+  const lines = [
     `Rendered ${outputPath}`,
     `duration ${output.durationSeconds.toFixed(1)} s · loop ${output.loopSeconds.toFixed(2)} s × ${repeats} · ${output.rate} Hz stereo`,
     `mode ${score.mode} · ${chain.mode} · speed ${output.speed.toFixed(2)} · score ${score.bpm} bpm, ${score.bars} bars, ${score.tracks.length} tracks`,
@@ -332,7 +371,25 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
       : [`samples ${score.samples.size} · ${[...score.samples.keys()].join(', ')}`]),
     `post ${chain.post}`,
     formatReport(output.report),
-  ].join('\n');
+  ];
+  if (detail === 'raw') {
+    // Render-time data (stems, dry) cannot be reconstructed from a WAV, so the
+    // complete report is persisted here rather than in the tool result.
+    const rawPath = /\.wav$/i.test(outputPath)
+      ? outputPath.replace(/\.wav$/i, '.analysis.json')
+      : `${outputPath}.analysis.json`;
+    await writeFile(
+      rawPath,
+      JSON.stringify(
+        { path: outputPath, rate: output.rate, analysis: output.report },
+        (_key, value) => (typeof value === 'number' && !Number.isFinite(value) ? null : value),
+        2,
+      ),
+      'utf8',
+    );
+    lines.push(`raw analysis ${rawPath}`);
+  }
+  return lines.join('\n');
 }
 
 /** Analyses an existing WAV so the model can re-check a render without redoing it. */
@@ -341,14 +398,42 @@ export async function executeAnalyze(args: AnalyzeArgs, exec: ToolExecution = {}
   if (typeof args.path !== 'string' || args.path.trim() === '') {
     throw new Error('path must point at a 16-bit PCM WAV file');
   }
+  const detail = args.detail ?? 'summary';
+  if (detail !== 'summary' && detail !== 'raw') {
+    throw new Error('detail must be summary or raw');
+  }
 
   const inputPath = workspacePath(args.path, 'path', workspaceDirectory(exec));
   const bytes = await readFile(inputPath);
   const decoded = decodeWav(bytes);
-  const analysis = analyseAudio(decoded.left, decoded.right, decoded.rate);
-  return [
+  const target = targetOf(args.target);
+  const analysis = analyseAudio(
+    decoded.left,
+    decoded.right,
+    decoded.rate,
+    target === undefined ? {} : { target },
+  );
+  const lines = [
     `Analyzed ${inputPath}`,
     `duration ${analysis.seconds.toFixed(1)} s · ${decoded.rate} Hz ${decoded.channels === 1 ? 'mono' : 'stereo'}`,
     formatReport(analysis),
-  ].join('\n');
+  ];
+  if (detail === 'raw') {
+    // The artifact keeps the complete report out of the model's context until
+    // it actually needs a field; `summary` stays the default for every call.
+    // Append rather than replace: a render already owns `<out>.analysis.json`,
+    // so the WAV-only report must not overwrite the richer render artifact.
+    const rawPath = `${inputPath}.analysis.json`;
+    await writeFile(
+      rawPath,
+      JSON.stringify(
+        { path: inputPath, rate: decoded.rate, channels: decoded.channels, analysis },
+        (_key, value) => (typeof value === 'number' && !Number.isFinite(value) ? null : value),
+        2,
+      ),
+      'utf8',
+    );
+    lines.push(`raw analysis ${rawPath}`);
+  }
+  return lines.join('\n');
 }

@@ -27,6 +27,7 @@ export type {
   TrackDelay,
   TrackFilter,
   TrackPattern,
+  TrackShelf,
   Tuning,
   VelocityMapping,
   Waveform,

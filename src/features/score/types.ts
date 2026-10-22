@@ -214,6 +214,14 @@ export interface TrackFilter {
   readonly lfoDepth: number;
 }
 
+/** One RBJ shelf; `gainDb` is the shelf gain, not the band level. */
+export interface TrackShelf {
+  /** Corner frequency in Hz. */
+  readonly hz: number;
+  /** Gain in dB, -24..24; 0 is a no-op. */
+  readonly gainDb: number;
+}
+
 /** Per-track feedback delay, timed in score steps. */
 export interface TrackDelay {
   readonly steps: number;
@@ -287,6 +295,12 @@ export interface ScoreTrack {
   /** 0..1 sidechain depth triggered by kick hits. */
   readonly duck: number;
   readonly filter?: TrackFilter;
+  /** 12 dB/oct high-pass, 20-4000 Hz; absent leaves the stem untouched. */
+  readonly highpassHz?: number;
+  /** Low shelf; absent or 0 dB leaves the stem untouched. */
+  readonly lowShelf?: TrackShelf;
+  /** High shelf; absent or 0 dB leaves the stem untouched. */
+  readonly highShelf?: TrackShelf;
   readonly delay?: TrackDelay;
 }
 

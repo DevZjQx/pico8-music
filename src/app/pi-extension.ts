@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { SCORE_BRIEF, SCORE_HELP } from '../features/score/feature.ts';
-import { executeAnalyze, executeRender, type RenderArgs } from './render-service.ts';
+import { executeAnalyze, executeRender, type AnalyzeArgs, type RenderArgs } from './render-service.ts';
 import { analyzeParameters, helpParameters, musicParameters } from './tool-schemas.ts';
 
 // Only the surface this extension uses. Picking the real SDK signatures keeps the
@@ -48,9 +48,10 @@ export default function pico8Music(pi: PiApi): void {
       'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. Call p8_help first for the score DSL.',
     promptSnippet: 'Render a PICO-8-style loop or song to a WAV file',
     promptGuidelines: [
-      'Call p8_help before composing a score; it holds the JSON DSL, drum tokens, chords, and post chain.',
-      'Use as many tracks as the arrangement needs; use post: [] for dry output.',
-      'Read the report warnings and revise dark, narrow, or sparse mixes before finishing.',
+      'Call p8_help before composing; it holds the DSL, drum tokens, chords, and post chain.',
+      'Use post: [] for dry output.',
+      'Read findings and post-delta to attribute mud/harshness; target adds deviations, not a score.',
+      'Revise dark, narrow, sparse, or low-mid-heavy mixes.',
     ],
     parameters: musicParameters,
     // Two calls targeting the same `out` path must not overlap.
@@ -76,11 +77,11 @@ export default function pico8Music(pi: PiApi): void {
     name: 'p8_analyze',
     label: 'PICO-8 render report',
     description:
-      'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, and warnings.',
+      'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, findings, and warnings. Optional target ranges turn misses into deviations without a score. detail:raw writes the full analysis to a sibling .analysis.json.',
     parameters: analyzeParameters,
     execute(
       _toolCallId: string,
-      args: { path: string },
+      args: AnalyzeArgs,
       signal?: AbortSignal,
       _onUpdate?: unknown,
       ctx?: PiToolContext,

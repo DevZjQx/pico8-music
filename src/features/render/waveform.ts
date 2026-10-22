@@ -1,4 +1,5 @@
 import type { Waveform } from '../score/feature.ts';
+import type { Quality } from './types.ts';
 
 export interface WaveState {
   phase: number;
@@ -14,6 +15,29 @@ export function createWaveState(seed: number): WaveState {
 function random(state: WaveState): number {
   state.seed = (state.seed * 1664525 + 1013904223) >>> 0;
   return (state.seed / 0x100000000) * 2 - 1;
+}
+
+function fraction(value: number): number {
+  return value - Math.floor(value);
+}
+
+/**
+ * Standard two-point PolyBLEP residual. `t` is the phase distance from the
+ * discontinuity in turns and `dt` is the per-sample phase advance. It rounds a
+ * jump over two samples, which is what removes the folded harmonics of a
+ * direct-form saw or pulse.
+ */
+function polyBlep(t: number, dt: number): number {
+  if (dt <= 0) return 0;
+  if (t < dt) {
+    const x = t / dt;
+    return x + x - x * x - 1;
+  }
+  if (t > 1 - dt) {
+    const x = (t - 1) / dt;
+    return x * x + 2 * x + 1;
+  }
+  return 0;
 }
 
 /**
@@ -57,4 +81,56 @@ export function sampleWaveform(waveform: Waveform, state: WaveState, key: number
       return (triangle + detuned) / 6;
     }
   }
+}
+
+/**
+ * Band-limited variant of the chip palette. Only waveforms with a jump
+ * discontinuity need a correction: saw (2) and the two pulses (3, 4). The
+ * triangle, tilted saw, organ, noise, and phaser shapes are continuous, so they
+ * keep the historical formula; a clean render of those is sample-identical.
+ */
+export function sampleWaveformClean(
+  waveform: Waveform,
+  state: WaveState,
+  key: number,
+  advance: number,
+): number {
+  const t = fraction(state.phase);
+
+  switch (waveform) {
+    case 2: {
+      // Naive ramp plus the edge at the half-cycle wrap.
+      const naive = (t < 0.5 ? t : t - 1) * 0.653;
+      return naive - 0.653 * polyBlep(fraction(t - 0.5), advance);
+    }
+    case 3:
+      return (
+        (t < 0.5 ? 0.25 : -0.25) +
+        0.5 * polyBlep(t, advance) -
+        0.5 * polyBlep(fraction(t - 0.5), advance)
+      );
+    case 4: {
+      const duty = 0.316;
+      return (
+        (t < duty ? 0.25 : -0.25) +
+        0.5 * polyBlep(t, advance) -
+        0.5 * polyBlep(fraction(t - duty), advance)
+      );
+    }
+    default:
+      return sampleWaveform(waveform, state, key);
+  }
+}
+
+/** Dispatch for callers that carry the render quality. */
+export function sampleWaveformAt(
+  quality: Quality,
+  waveform: Waveform,
+  state: WaveState,
+  key: number,
+  advance: number,
+): number {
+  return quality === 'clean'
+    ? sampleWaveformClean(waveform, state, key, advance)
+    : sampleWaveform(waveform, state, key);
 }

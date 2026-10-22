@@ -19,7 +19,8 @@ top-level `samples` table (workspace WAV paths with root/loop/gain) and
 `drumSamples` replacements, loop vs song mode, named patterns, arrangement
 resolution (sections, mute, gain, filter and filter sweeps, `energy`, `fill`
 pattern replacement, and `riser` bars), the song-end `tail`, the mix-stage
-fields a track exposes (`pan`, `send`, `duck`, `filter`, `delay`), the
+fields a track exposes (`pan`, `send`, `duck`, `filter`, `highpassHz`,
+`lowShelf`, `highShelf`, `delay`), the
 model-facing DSL reference (`help.ts`), and the normalised `Score` the renderer
 consumes.
 
@@ -74,7 +75,10 @@ without knowing how they sound; per-hit pitch/decay/tone travel separately as
 `DrumParams`, so they compose with `~ghost`/`~flam`/`~roll` instead of competing
 for the one articulation slot. `instrument` accepts a name, an inline object,
 and the built-in `chip`/`fm`/`additive`/`drums` shorthands, which keeps old
-`{type: "chip", waveform}` scores valid. An additive harmonic is a bare
+`{type: "chip", waveform}` scores valid. A track shelf accepts a bare gain at
+the conventional 250 Hz / 4 kHz corner or an explicit `{hz, gainDb}` object;
+both forms normalise to the same `TrackShelf`, and 0 dB is preserved so the
+renderer can skip a true no-op. An additive harmonic is a bare
 amplitude, a negative amplitude (the same wave mirrored),
 `[amplitude, phaseDegrees]`, or `[amplitude, phaseDegrees, decaySeconds]`; the
 parser folds signs into phases, so the render side only ever sees magnitudes and

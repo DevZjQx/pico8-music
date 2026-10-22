@@ -11,21 +11,26 @@ unison detune, drive, per-note filter envelopes, opt-in velocity-to-timbre
 (filter opening and drive), sample pitch/loop/gain, and
 drum sample replacement), polyphonic event scheduling (chords and legato
 gates overlap without voice stealing), swing offsets, deterministic
-`humanize` timing/velocity, synthetic drum voices and their articulations
+`humanize` timing/velocity, an opt-in `quality: "clean"` band-limited chip/FM
+path, synthetic drum voices and their articulations
 (`ghost`, `flam`, `roll`) and per-hit `pitch` / `decay` / `tone`, arrangement
 `riser` sweeps, song-end `tail` extension, song timelines, section `energy`
 gain/filter scaling, per-track
-buffers and the mix stage (state-variable low-pass with LFO and resonance, step-timed feedback
-delay, kick-triggered ducking, equal-power pan, reverb send), section filtering
+buffers and the mix stage (state-variable low-pass with LFO and resonance,
+per-track high-pass and low/high shelves, step-timed feedback delay,
+kick-triggered ducking, equal-power pan, reverb send), section filtering
 and filter sweeps, resampling for the slowed pitch drop, tone shaping,
-Freeverb-style reverb, steady-state loop extraction, a shared peak ceiling
+Freeverb-style reverb with optional send predelay, wet low/high cut, and slow
+delay modulation, master width/low-band mono, steady-state loop extraction, a shared peak ceiling
 instead of per-sample clipping, repetition to the requested length, and WAV
 encoding. It also owns the post-chain contract: `tape`/`slow`, `lowpass`,
 `reverb`, the master steps `tilt` / `saturate` / `compress` / `loudness` /
 `limiter`, the `[]` dry path, the `chip` / `hitech` / `ambient` / `studio` /
-`lofi` style templates (including role-based instrument defaults), BS.1770
-integrated loudness, the render report (peak, RMS, spectrum,
-width, onsets, section energies, warnings), cooperative abort checks, and WAV
+`lofi` / `soft` style templates (including role-based instrument defaults and
+style-level quality/master defaults), optional target profiles and their
+range checks, BS.1770 integrated loudness, the render report (peak, RMS,
+spectrum, width, onsets, section energies, warnings, per-stem summaries, a
+pre-post snapshot, and attributed findings), cooperative abort checks, and WAV
 decoding for `p8_analyze`.
 
 **Does not own.** Score validation, note/drum naming, or arrangement
@@ -95,8 +100,37 @@ implementation so a target can be verified, and `limiter` is a real gain
 envelope rather than the shared `limitPeak` trim, which stays last as a
 16-bit safety net. Spectrum analysis uses the magnitude spectrum, not power:
 power weighting lets one loud kick hide the hats that decide whether a loop is
-actually dark. The DC block runs before the first master step so the limiter
+actually dark. The report also keeps two diagnostic shares outside the five
+published bands: low-mid (150-500 Hz) and presence (2-5 kHz). Stem summaries
+are measured before pan/sum and never retain track audio, so attribution stays
+O(one track) in memory; the pre-post snapshot uses the same measurement code as
+the final report, which is what makes `post-delta` a like-for-like comparison.
+Findings are observations, not gates: they name a symptom, attribute it when
+stems/dry data exist, and suggest a knob. `alias-risk` is a score-level
+heuristic (direct-form chip wave at or above C6), not a spectral measurement,
+and `p8_analyze` deliberately has no stems or dry snapshot because a finished
+WAV cannot support attribution. The DC block runs before the first master step so the limiter
 sees the final signal rather than a high-pass overshoot of it.
+
+Clean quality is an oscillator switch, not a master step. Chip saw and pulse
+use PolyBLEP at their jump edges; triangle, tilted saw, organ, noise, and
+phaser are continuous and keep the historical formula, so clean is
+sample-identical there. FM stays two-operator but caps its modulation index
+with Carson's rule so the highest significant sideband stays under Nyquist at
+high pitches. `quality: "pico"` and an omitted `quality` are the same path, so
+old scores remain sample-exact; a style may choose `clean` as its default and
+an explicit `quality` always wins. The per-track high-pass and shelves are RBJ
+biquads applied after the instrument/track filter and before delay/duck, so
+one part can lose its 150-500 Hz overlap without a global lowpass; a zero-gain
+shelf is skipped. Master `width` and `monoBelowHz` run after the ordered post
+chain: width scales the side signal, and the mono fold removes only the
+low-passed side band, leaving the mid and the rest of the image intact. Both
+are absent by default and therefore do not change an old render. Reverb
+`predelayMs` and modulation delay only the send, so the dry path keeps its
+alignment; `lowCutHz` and `highCutHz` filter only the wet return. A target is a
+set of ranges (`lowMidMax`, `harshMax`, `crestMin`, `width`, `lufs`,
+`centroidHz`) that turns misses into `target` findings and a passed/total
+summary line; it never collapses to a single score or changes the render.
 
 A sample voice advances a read position by `frequency / rootFrequency`, so the
 existing slide/vibrato/arp paths work unchanged; a one-shot stops at the file

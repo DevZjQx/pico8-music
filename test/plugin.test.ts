@@ -69,9 +69,14 @@ test('registers p8_music and p8_help as DSH tools', () => {
   assert.ok(music?.parameters?.properties?.post);
   assert.ok(music?.parameters?.properties?.toneHz);
   assert.ok(music?.parameters?.properties?.style);
+  assert.ok(music?.parameters?.properties?.quality);
+  assert.ok(music?.parameters?.properties?.width);
+  assert.ok(music?.parameters?.properties?.monoBelowHz);
+  assert.ok(music?.parameters?.properties?.target);
 
   const analyze = captured.tools.get('p8_analyze');
   assert.deepEqual(analyze?.parameters?.required, ['path']);
+  assert.ok(analyze?.parameters?.properties?.target);
   assert.match(analyze?.description ?? '', /LUFS/);
 
   const help = captured.tools.get('p8_help');

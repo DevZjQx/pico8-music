@@ -72,3 +72,111 @@ export function filterTrack(samples: Float32Array, filter: TrackFilter, rate: nu
     }
   }
 }
+
+interface Biquad {
+  readonly b0: number;
+  readonly b1: number;
+  readonly b2: number;
+  readonly a1: number;
+  readonly a2: number;
+}
+
+/** RBJ high-pass with Q = 0.707 (12 dB/oct). */
+function highpassCoefficients(cutoffHz: number, rate: number): Biquad {
+  const w0 = (2 * Math.PI * cutoffHz) / rate;
+  const cos = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * Math.SQRT1_2);
+  const a0 = 1 + alpha;
+  return {
+    b0: ((1 + cos) / 2) / a0,
+    b1: (-(1 + cos)) / a0,
+    b2: ((1 + cos) / 2) / a0,
+    a1: (-2 * cos) / a0,
+    a2: (1 - alpha) / a0,
+  };
+}
+
+/** RBJ shelving filter with slope S = 1. `gainDb` > 0 boosts. */
+function shelfCoefficients(
+  type: 'low' | 'high',
+  frequency: number,
+  gainDb: number,
+  rate: number,
+): Biquad {
+  const A = 10 ** (gainDb / 40);
+  const w0 = (2 * Math.PI * frequency) / rate;
+  const cos = Math.cos(w0);
+  const sin = Math.sin(w0);
+  const alpha = (sin / 2) * Math.SQRT2;
+  const twoSqrtAAlpha = 2 * Math.sqrt(A) * alpha;
+  const lowA0 = (A + 1) + (A - 1) * cos + twoSqrtAAlpha;
+  const highA0 = (A + 1) - (A - 1) * cos + twoSqrtAAlpha;
+
+  if (type === 'low') {
+    const a0 = lowA0;
+    return {
+      b0: (A * ((A + 1) - (A - 1) * cos + twoSqrtAAlpha)) / a0,
+      b1: (2 * A * ((A - 1) - (A + 1) * cos)) / a0,
+      b2: (A * ((A + 1) - (A - 1) * cos - twoSqrtAAlpha)) / a0,
+      a1: (-2 * ((A - 1) + (A + 1) * cos)) / a0,
+      a2: ((A + 1) + (A - 1) * cos - twoSqrtAAlpha) / a0,
+    };
+  }
+
+  const a0 = highA0;
+  return {
+    b0: (A * ((A + 1) + (A - 1) * cos + twoSqrtAAlpha)) / a0,
+    b1: (-2 * A * ((A - 1) + (A + 1) * cos)) / a0,
+    b2: (A * ((A + 1) + (A - 1) * cos - twoSqrtAAlpha)) / a0,
+    a1: (2 * ((A - 1) - (A + 1) * cos)) / a0,
+    a2: ((A + 1) - (A - 1) * cos - twoSqrtAAlpha) / a0,
+  };
+}
+
+function applyBiquad(samples: Float32Array, coefficients: Biquad): void {
+  const { b0, b1, b2, a1, a2 } = coefficients;
+  let x1 = 0;
+  let x2 = 0;
+  let y1 = 0;
+  let y2 = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const x = samples[i] ?? 0;
+    const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1;
+    x1 = x;
+    y2 = y1;
+    y1 = y;
+    samples[i] = y;
+  }
+}
+
+export interface TrackEqSettings {
+  readonly highpassHz?: number;
+  readonly lowShelf?: { readonly hz: number; readonly gainDb: number };
+  readonly highShelf?: { readonly hz: number; readonly gainDb: number };
+}
+
+/**
+ * Per-track tone shaping before delay and ducking. The high-pass removes the
+ * muddy 150-500 Hz overlap from one part without darkening the whole mix, and
+ * the shelves let a part keep its body while tucking presence. A zero-gain
+ * shelf is skipped so an authored no-op stays sample-identical.
+ */
+export function applyTrackEq(samples: Float32Array, eq: TrackEqSettings, rate: number): void {
+  const limit = Math.min(MAX_HZ, rate * 0.45);
+  if (eq.highpassHz !== undefined && eq.highpassHz > MIN_HZ) {
+    applyBiquad(samples, highpassCoefficients(clamp(eq.highpassHz, MIN_HZ, limit), rate));
+  }
+  if (eq.lowShelf !== undefined && eq.lowShelf.gainDb !== 0) {
+    applyBiquad(
+      samples,
+      shelfCoefficients('low', clamp(eq.lowShelf.hz, MIN_HZ, limit), eq.lowShelf.gainDb, rate),
+    );
+  }
+  if (eq.highShelf !== undefined && eq.highShelf.gainDb !== 0) {
+    applyBiquad(
+      samples,
+      shelfCoefficients('high', clamp(eq.highShelf.hz, MIN_HZ, limit), eq.highShelf.gainDb, rate),
+    );
+  }
+}

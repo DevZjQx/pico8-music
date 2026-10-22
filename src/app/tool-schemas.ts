@@ -7,11 +7,73 @@ import { Type } from 'typebox';
  */
 export const helpParameters = Type.Object({}, { additionalProperties: false });
 
+const targetProfile = Type.Object(
+  {
+    lowMidMax: Type.Optional(
+      Type.Number({ minimum: 0, maximum: 1, description: 'maximum 150-500 Hz share' }),
+    ),
+    harshMax: Type.Optional(
+      Type.Number({ minimum: 0, maximum: 1, description: 'maximum 2-5 kHz share' }),
+    ),
+    crestMin: Type.Optional(
+      Type.Number({ description: 'minimum peak-minus-RMS crest in dB' }),
+    ),
+    width: Type.Optional(
+      Type.Array(Type.Number(), {
+        minItems: 2,
+        maxItems: 2,
+        description: 'allowed [min, max] side/mid RMS ratio',
+      }),
+    ),
+    lufs: Type.Optional(
+      Type.Array(Type.Number(), {
+        minItems: 2,
+        maxItems: 2,
+        description: 'allowed [min, max] integrated loudness',
+      }),
+    ),
+    centroidHz: Type.Optional(
+      Type.Array(Type.Number(), {
+        minItems: 2,
+        maxItems: 2,
+        description: 'allowed [min, max] spectrum centroid in Hz',
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const target = Type.Optional(
+  Type.Union(
+    [
+      Type.Literal('soft'),
+      Type.Literal('clear'),
+      Type.Literal('punchy'),
+      Type.Literal('bright'),
+      Type.Literal('dark'),
+      Type.Literal('lofi'),
+      Type.Literal('hitech'),
+      targetProfile,
+    ],
+    {
+      description:
+        'optional profile name or inline ranges; findings then name deviations from the declared target, without a total score',
+    },
+  ),
+);
+
 export const analyzeParameters = Type.Object(
   {
     path: Type.String({
       description: 'workspace-relative path to a 16-bit PCM WAV, usually a previous p8_music output',
     }),
+    detail: Type.Optional(
+      Type.Union([Type.Literal('summary'), Type.Literal('raw')], {
+        description:
+          'summary (default) or raw: write the complete analysis to a sibling .analysis.json and return its path',
+      }),
+    ),
+    target,
   },
   { additionalProperties: false },
 );
@@ -45,6 +107,11 @@ const postStep = Type.Object(
     makeupDb: Type.Optional(Type.Number({ minimum: -12, maximum: 24 })),
     targetLufs: Type.Optional(Type.Number({ minimum: -40, maximum: -5 })),
     ceilingDb: Type.Optional(Type.Number({ minimum: -12, maximum: 0 })),
+    predelayMs: Type.Optional(Type.Number({ minimum: 0, maximum: 200 })),
+    lowCutHz: Type.Optional(Type.Number({ minimum: 20, maximum: 1000 })),
+    highCutHz: Type.Optional(Type.Number({ minimum: 1000, maximum: 20000 })),
+    modDepth: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+    modRateHz: Type.Optional(Type.Number({ minimum: 0.05, maximum: 5 })),
   },
   { additionalProperties: false },
 );
@@ -76,12 +143,19 @@ export const musicParameters = Type.Object(
           Type.Literal('ambient'),
           Type.Literal('studio'),
           Type.Literal('lofi'),
+          Type.Literal('soft'),
         ],
         {
           description:
-            'sound defaults: dry chip, glued hitech, slowed ambient, non-chip studio, warm lofi',
+            'sound defaults: dry chip, glued hitech, slowed ambient, non-chip studio, warm lofi, clean slow-attack soft',
         },
       ),
+    ),
+    quality: Type.Optional(
+      Type.Union([Type.Literal('pico'), Type.Literal('clean')], {
+        description:
+          'pico keeps the direct-form chip output; clean band-limits saw/pulse and limits FM sidebands; style default',
+      }),
     ),
     post: Type.Optional(
       Type.Array(postStep, {
@@ -110,6 +184,21 @@ export const musicParameters = Type.Object(
         description: 'low-pass cutoff; default comes from the preset or post',
       }),
     ),
+    width: Type.Optional(
+      Type.Number({
+        minimum: 0,
+        maximum: 2,
+        description: 'master side gain after the post chain: 0 mono, 1 unchanged, 2 wide',
+      }),
+    ),
+    monoBelowHz: Type.Optional(
+      Type.Number({
+        minimum: 20,
+        maximum: 500,
+        description: 'fold everything below this frequency to mono; omitted means no fold',
+      }),
+    ),
+    target,
     minutes: Type.Optional(
       Type.Number({
         minimum: 0.05,
@@ -119,6 +208,12 @@ export const musicParameters = Type.Object(
     ),
     out: Type.Optional(
       Type.String({ description: 'workspace-relative output .wav path; default pico8-music.wav' }),
+    ),
+    detail: Type.Optional(
+      Type.Union([Type.Literal('summary'), Type.Literal('raw')], {
+        description:
+          'summary (default) or raw: write the complete render report, including stems and dry facts, to a sibling .analysis.json',
+      }),
     ),
   },
   { additionalProperties: false },

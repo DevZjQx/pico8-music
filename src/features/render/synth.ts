@@ -7,13 +7,15 @@ import type {
   ScoreTrack,
 } from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
+import { analyseStem, type StemReading } from './analyze.ts';
 import { renderDrumHit } from './drums.ts';
-import { applyAutomatedLowpass, filterTrack } from './filters.ts';
+import { applyAutomatedLowpass, applyTrackEq, filterTrack } from './filters.ts';
 import { addSectionRisers } from './fx.ts';
 import { InstrumentVoice } from './instrument.ts';
 import { applyDelay, applyDuck, panGains } from './mix.ts';
 import { SampleVoice, renderSampleOneShot, type SampleSource } from './sample.ts';
-import { createWaveState, sampleWaveform } from './waveform.ts';
+import { createWaveState, sampleWaveformAt } from './waveform.ts';
+import type { Quality } from './types.ts';
 
 export interface SongAudio {
   readonly left: Float32Array;
@@ -21,6 +23,8 @@ export interface SongAudio {
   readonly loopSamples: number;
   /** Mono send bus, present only when some track has `send > 0`. */
   readonly sendBus?: Float32Array;
+  /** Per-track measurements taken before pan/sum; no track audio is retained. */
+  readonly stems: readonly StemReading[];
 }
 
 const ARP_SEMITONES = [0, 4, 7, 12] as const;
@@ -211,6 +215,7 @@ function renderMelodicNote(
   loopSamples: number,
   wrap: boolean,
   sampleBank: ReadonlyMap<string, SampleSource> | undefined,
+  quality: Quality,
   signal?: AbortSignal,
 ): void {
   const { track, event } = note;
@@ -232,6 +237,7 @@ function renderMelodicNote(
           note.seed,
           event.frequency,
           Math.max(0, Math.min(1, (event.volume / 7) * note.humanizeGain)),
+          quality,
         );
   let phase = 0;
   const noteDuration = note.gateSamples / rate;
@@ -307,7 +313,8 @@ function renderMelodicNote(
     wave.phase = phase;
 
     const key = Math.min(63, Math.max(0, event.midi - 36));
-    samples[index] = (samples[index] ?? 0) + sampleWaveform(track.waveform, wave, key) * gain;
+    samples[index] =
+      (samples[index] ?? 0) + sampleWaveformAt(quality, track.waveform, wave, key, frequency / rate) * gain;
   }
 }
 
@@ -510,6 +517,33 @@ function instrumentFor(track: ScoreTrack, defaults: RoleInstruments | undefined)
 }
 
 /**
+ * Direct-form chip waves fold harmonics above Nyquist back into the audible
+ * band. This is a cheap score-level warning, not a spectral measurement: the
+ * report says "risk" and the model can A/B the clean additive path.
+ */
+const ALIAS_WAVEFORMS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5]);
+const ALIAS_FLOOR_MIDI = 84; // C6
+
+function aliasRiskOf(track: ScoreTrack, quality: Quality): boolean {
+  if (track.isDrums) return false;
+  const waveform =
+    track.instrument?.type === 'chip'
+      ? track.instrument.waveform
+      : track.instrument === undefined
+        ? track.waveform
+        : undefined;
+  if (waveform === undefined || !ALIAS_WAVEFORMS.has(waveform)) return false;
+  // PolyBLEP removes the jump that folds on saw and pulse. The continuous
+  // waveforms in the risk set (tilted saw, organ) keep the heuristic.
+  if (quality === 'clean' && (waveform === 2 || waveform === 3 || waveform === 4)) return false;
+  const events = track.timeline ?? track.events;
+  for (const event of events) {
+    if (event.midi >= ALIAS_FLOOR_MIDI) return true;
+  }
+  return false;
+}
+
+/**
  * Renders one sample-exact pass of the score. Each track gets its own buffer so
  * filters, panning, delay, ducking, and sends stay per-track; the buffers are
  * summed only after the mix-stage processing.
@@ -520,6 +554,7 @@ export function renderScore(
   signal?: AbortSignal,
   roleInstruments?: RoleInstruments,
   sampleBank?: ReadonlyMap<string, SampleSource>,
+  quality: Quality = 'pico',
 ): SongAudio {
   const musicSamples = Math.max(1, Math.round(score.durationSeconds * rate));
   const tailSamples = score.mode === 'song' ? Math.max(0, Math.round(score.tailSeconds * rate)) : 0;
@@ -530,6 +565,7 @@ export function renderScore(
   const hasSend = score.tracks.some((track) => track.send > 0);
   const sendBus = hasSend ? new Float32Array(loopSamples) : undefined;
   const kicks = collectKickOffsets(score, rate, sampleBank, signal);
+  const stems: StemReading[] = [];
 
   score.tracks.forEach((track, trackIndex) => {
     throwIfAborted(signal);
@@ -547,15 +583,38 @@ export function renderScore(
     } else {
       const instrument = instrumentFor(track, roleInstruments);
       for (const note of buildMelodicNotes(score, rate, track, trackIndex, instrument, signal)) {
-        renderMelodicNote(buffer, note, score, rate, loopSamples, wrap, sampleBank, signal);
+        renderMelodicNote(buffer, note, score, rate, loopSamples, wrap, sampleBank, quality, signal);
       }
     }
 
     if (track.filter) filterTrack(buffer, track.filter, rate);
+    if (track.highpassHz !== undefined || track.lowShelf !== undefined || track.highShelf !== undefined) {
+      applyTrackEq(
+        buffer,
+        {
+          ...(track.highpassHz === undefined ? {} : { highpassHz: track.highpassHz }),
+          ...(track.lowShelf === undefined ? {} : { lowShelf: track.lowShelf }),
+          ...(track.highShelf === undefined ? {} : { highShelf: track.highShelf }),
+        },
+        rate,
+      );
+    }
     if (track.delay) {
       applyDelay(buffer, track.delay, score.stepSeconds, rate, loopSamples, wrap, signal);
     }
     if (track.duck > 0) applyDuck(buffer, kicks, track.duck, rate, loopSamples, wrap, signal);
+
+    // Measure the finished stem before pan/send: this is the only place where
+    // the report can attribute a band to a track without keeping its audio.
+    stems.push(
+      analyseStem(buffer, rate, {
+        name: track.name,
+        role: track.role,
+        pan: track.pan,
+        send: track.send,
+        aliasRisk: aliasRiskOf(track, quality),
+      }),
+    );
 
     const [leftGain, rightGain] = panGains(track.pan);
     for (let i = 0; i < loopSamples; i += 1) {
@@ -579,5 +638,5 @@ export function renderScore(
   // to filtering its return.
   if (sendBus) applySectionFilter(sendBus, score, rate);
 
-  return { left, right, loopSamples, ...(sendBus === undefined ? {} : { sendBus }) };
+  return { left, right, loopSamples, stems, ...(sendBus === undefined ? {} : { sendBus }) };
 }

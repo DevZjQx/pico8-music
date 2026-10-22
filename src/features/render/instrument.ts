@@ -1,5 +1,6 @@
 import type { Instrument, InstrumentFilter, Partial } from '../score/feature.ts';
-import { createWaveState, sampleWaveform, type WaveState } from './waveform.ts';
+import { createWaveState, sampleWaveformAt, type WaveState } from './waveform.ts';
+import type { Quality } from './types.ts';
 
 // Owns: turning one Instrument definition into per-note samples. The chip path
 // deliberately reuses waveform.ts unchanged, so an explicit chip instrument is
@@ -173,6 +174,7 @@ export class InstrumentVoice {
   private readonly instrument: Instrument;
   private readonly rate: number;
   private readonly key: number;
+  private readonly quality: Quality;
   private readonly voices: readonly UnisonVoice[];
   private readonly table?: Float32Array;
   /** Present when stretch or a per-partial decay needs per-sample synthesis. */
@@ -199,10 +201,12 @@ export class InstrumentVoice {
     seed: number,
     frequency: number,
     velocity = 1,
+    quality: Quality = 'pico',
   ) {
     this.instrument = instrument;
     this.rate = rate;
     this.key = clamp(midi - 36, 0, 63);
+    this.quality = quality;
     const mapping = instrument.velocity;
     const normalizedVelocity = clamp(velocity, 0, 1);
     this.cutoffScale =
@@ -336,7 +340,7 @@ export class InstrumentVoice {
     switch (this.instrument.type) {
       case 'chip': {
         voice.wave.phase = phase;
-        return sampleWaveform(this.instrument.waveform, voice.wave, this.key);
+        return sampleWaveformAt(this.quality, this.instrument.waveform, voice.wave, this.key, advance);
       }
       case 'additive': {
         const table = this.table;
@@ -351,7 +355,15 @@ export class InstrumentVoice {
       case 'fm': {
         const ratio = this.instrument.ratio ?? 2;
         const decay = this.instrument.indexDecay ?? 0.3;
-        const index = (this.instrument.index ?? 3) * Math.exp(-seconds / decay);
+        let index = (this.instrument.index ?? 3) * Math.exp(-seconds / decay);
+        if (this.quality === 'clean') {
+          // Carson's rule: the highest significant sideband sits near
+          // f0*ratio*(index+1). Cap the index so it stays under Nyquist
+          // instead of folding back into the audible band. This changes the
+          // timbre at high pitches, which is the point of opting in.
+          const modulationHz = Math.max(1, advance * this.rate * ratio);
+          index = Math.min(index, Math.max(0, 0.45 * this.rate / (2 * modulationHz) - 1));
+        }
         return Math.sin(2 * Math.PI * phase + index * Math.sin(2 * Math.PI * ratio * phase)) * FM_PEAK;
       }
       case 'sample':

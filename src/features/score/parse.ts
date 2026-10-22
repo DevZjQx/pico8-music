@@ -31,6 +31,7 @@ import type {
   TrackDelay,
   TrackFilter,
   TrackPattern,
+  TrackShelf,
   Tuning,
   VelocityMapping,
   Waveform,
@@ -1453,6 +1454,26 @@ function parseTrackFilter(value: unknown, path: string): TrackFilter | undefined
   };
 }
 
+/**
+ * A shelf is `{hz, gainDb}` or a bare gain for the conventional corner
+ * (250 Hz low, 4 kHz high). A zero gain is kept as authored; the renderer
+ * skips it, so it stays a true no-op.
+ */
+function parseTrackShelf(value: unknown, path: string, defaultHz: number): TrackShelf | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') {
+    return { hz: defaultHz, gainDb: readRequiredNumber(value, path, -24, 24) };
+  }
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be a gain in dB or an object with hz and gainDb`);
+  }
+  rejectUnknownKeys(value, ['hz', 'frequency', 'gainDb', 'gain'], path);
+  return {
+    hz: readNumber(value.hz ?? value.frequency, `${path}.hz`, defaultHz, 20, 20000),
+    gainDb: readRequiredNumber(value.gainDb ?? value.gain, `${path}.gainDb`, -24, 24),
+  };
+}
+
 function parseTrackDelay(value: unknown, path: string): TrackDelay | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
@@ -1494,6 +1515,9 @@ function parseTrack(
       'send',
       'duck',
       'filter',
+      'highpassHz',
+      'lowShelf',
+      'highShelf',
       'delay',
       'motifs',
       'patterns',
@@ -1530,6 +1554,12 @@ function parseTrack(
   const send = readNumber(value.send, `${path}.send`, 0, 0, 1);
   const duck = readNumber(value.duck, `${path}.duck`, 0, 0, 1);
   const filter = parseTrackFilter(value.filter, `${path}.filter`);
+  const highpassHz =
+    value.highpassHz === undefined
+      ? undefined
+      : readNumber(value.highpassHz, `${path}.highpassHz`, 20, 20, 4000);
+  const lowShelf = parseTrackShelf(value.lowShelf, `${path}.lowShelf`, 250);
+  const highShelf = parseTrackShelf(value.highShelf, `${path}.highShelf`, 4000);
   const delay = parseTrackDelay(value.delay, `${path}.delay`);
 
   const localMotifs = parseStringRecord(value.motifs, `${path}.motifs`);
@@ -1594,6 +1624,9 @@ function parseTrack(
       send,
       duck,
       ...(filter === undefined ? {} : { filter }),
+      ...(highpassHz === undefined ? {} : { highpassHz }),
+      ...(lowShelf === undefined ? {} : { lowShelf }),
+      ...(highShelf === undefined ? {} : { highShelf }),
       ...(delay === undefined ? {} : { delay }),
     },
     motifs,
