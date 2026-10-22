@@ -162,7 +162,7 @@ export interface DrumParams {
 export interface TrackFilter {
   /** Base cutoff in Hz. */
   readonly cutoffHz: number;
-  /** Filter Q; 0.707 is flat, up to 20 for an acid peak. */
+  /** Filter Q, 0.05-20; 0.707 is flat, high values give an acid peak. */
   readonly resonance: number;
   /** Cutoff LFO rate in Hz; 0 disables the LFO. */
   readonly lfoHz: number;
@@ -267,7 +267,7 @@ export interface ScoreSection {
  * and the event's position, so every loop pass stays identical.
  */
 export interface Humanize {
-  /** Maximum timing offset in milliseconds, applied in both directions. */
+  /** Maximum timing offset in milliseconds (0-150), applied in both directions. */
   readonly timingMs: number;
   /** 0..1 velocity depth; the gain varies by up to +/- 50% at 1. */
   readonly velocity: number;

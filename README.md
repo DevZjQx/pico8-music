@@ -92,9 +92,9 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `stepsPerBeat` | 1-8 整数 | 4 |
 | `beatsPerBar` | 1-16 整数；3 表示 3/4，6 配 `stepsPerBeat:2` 表示 6/8 | 4 |
 | `bars` | 1-64 整数（song 模式的 section 也是 1-64，可选总 `bars` 为 1-256） | 4 |
-| `swing` | 0-0.5 | 0 |
-| `humanize` | `{timingMs:0-50, velocity:0-1}`；确定性时序/力度扰动，0 不改变旧渲染 | 关闭 |
-| `tail` | 0-15 秒，song 模式在最后一步后多渲染一段让混响和 one-shot 收尾 | 0 |
+| `swing` | -0.5..0.5；正数延后奇数 step，负数提前 | 0 |
+| `humanize` | `{timingMs:0-150, velocity:0-1}`；确定性时序/力度扰动，0 不改变旧渲染 | 关闭 |
+| `tail` | 0-30 秒，song 模式在最后一步后多渲染一段让混响和 one-shot 收尾 | 0 |
 | `seed` | 0-2147483647 整数，影响 noise 音色、鼓瞬态、humanize 与段落 riser | 0 |
 | `motifs` | 可选，命名动机：`{"A":"C4:1 E4:1"}` | 空 |
 | `envelopes` | 可选，命名 ADSR：`{"pluck":{"attack":0.001,...}}` | 空 |
@@ -114,7 +114,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `waveform` | `0-7` 或 `triangle`、`tilted_saw`、`saw`、`square`、`pulse`、`organ`、`noise`、`phaser`，默认 `pulse`；只在没有 `instrument` 或 chip instrument 时生效 |
 | `instrument` | 可选，顶层 `instruments` 里的名字、内联定义，或 `chip`/`fm`/`additive`/`drums`，也可以引用 `samples` 里的素材；显式写入时优先于 style 的 role 默认值 |
 | `volume` | 0-7（可带一位小数），默认 5。没有 `@力度` 的音符用它 |
-| `envelope` | 可选 ADSR：`{attack, decay, sustain, release}`，单位秒（`sustain` 是 0-1 电平） |
+| `envelope` | 可选 ADSR：`{attack, decay, sustain, release}`，attack/decay/release 为 0-30 秒（`sustain` 是 0-1 电平） |
 | `pan` | -1（左）..1（右），默认 0；等功率，居中不改变音量 |
 | `send` | 0-1，送入轨道混响 send；默认 0 |
 | `duck` | 0-1，被鼓轨 kick 触发的压低深度；默认 0 |
@@ -125,15 +125,15 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - 力度：`C4:4@6`，0-7，可带一位小数（`@4.5`）；写 `@6~slide` 或 `~slide@6` 都可以。
 - 效果：`slide`、`vibrato`、`drop`、`fadein`、`fadeout`、`arpfast`、`arpslow`。`slide(n)` / `vib(depth[,rateHz])` 可带参数。鼓轨不用这些效果，改用 `~ghost` / `~flam` / `~roll`（见下文）。
 - 门限：`C4:4g2` 占 4 步、只响 2 步（staccato）；`C4:4g6` 响 6 步，会盖住下一格（legato）。省略 `g` 时门限等于占位长度。
-- 和弦：`[C4,E4,G4]:4` 或命名和弦 `Cmaj7`、`Fm/E`，最多 4 个音；和弦级 `@力度`/`~效果` 作用于所有声部。
+- 和弦：`[C4,E4,G4]:4` 显式 voicing 最多 8 个音；命名和弦 `Cmaj7`、`Fm/E` 最多展开成 4 个音；和弦级 `@力度`/`~效果` 作用于所有声部。
 - 每个 track 先渲染到自己的 buffer，再做滤波、延迟、duck、pan 和 send，最后求和；所以这些参数互不串轨。
 - 未知字段会直接报错，不会被静默忽略：`pan`、`send`、`duck`、`filter`、`delay` 都是 track 的平铺字段，不要写成 `"mix": {...}`。
 - 不写 `instrument` 时走原来的 8 波形路径，逐样本不变；写 `instrument` 才换发声器。
-- `swing`：0-0.5，奇数 step 延后 `swing * stepSeconds`；同一输入渲染确定。
+- `swing`：-0.5..0.5，奇数 step 偏移 `swing * stepSeconds`（正数延后、负数提前，最多半格）；同一输入渲染确定。
 - `humanize`：`timingMs` 让每个事件有 ±N 毫秒的确定性偏移，`velocity` 让力度有 ±50% 的确定性起伏；两者都由 `seed` 和事件位置决定，loop 内每个 pass 完全一致。默认 0，旧 score 逐样本不变。
-- `tail`：只在 song 模式有效，在最后一个 step 之后多渲染 N 秒（最多 15 秒），让 send/post 混响和鼓的 one-shot 自然收尾；loop 模式禁止 `tail`，否则会破坏无缝循环。
+- `tail`：只在 song 模式有效，在最后一个 step 之后多渲染 N 秒（最多 30 秒），让 send/post 混响和鼓的 one-shot 自然收尾；loop 模式禁止 `tail`，否则会破坏无缝循环。
 - 每个 pattern 会重复填满 `bars`；每小节 `beatsPerBar` 拍（默认 4），循环长度 = `bars * beatsPerBar * stepsPerBeat` 步。
-- 单轨可写和弦，最多 4 个同时发声的声部；一条 track 是一个编曲声部/总线，和弦声部不要各占一条轨。需要更多层次时增加 track。鼓轨的 one-shot 独立渲染，尾音可以和后续 hit 重叠。
+- 单轨可写显式和弦，最多 8 个同时发声的声部；一条 track 是一个编曲声部/总线，和弦声部不要各占一条轨。需要更多层次时增加 track。鼓轨的 one-shot 独立渲染，尾音可以和后续 hit 重叠。
 
 ### 和弦、包络与效果参数
 
@@ -174,7 +174,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 | `additive` | `partials`：1-16 个谐波，第 1 个是基频；元素是振幅 `0-1`、负振幅（同一形状镜像）、`[振幅, 相位度数]` 或 `[振幅, 相位度数, 衰减秒数]`；另外可选 `stretch` 0-1（非谐）和 `tilt` 0-4（压暗） | 默认按音符频率做带限波表并峰值归一化；`stretch` 或逐谐波衰减时改为逐 partial 合成。模型可以用 `partials` 自己设计波形（25% 占空比脉冲、阶梯谐波），也可以用 `stretch` 做钟/金属、用逐谐波衰减做拨弦/电钢 |
 | `fm` | `ratio` 0.25-8、`index` 0-12、`indexDecay` 0.01-4 秒 | 两算子相位调制，电钢/钟/贝斯类音色 |
 
-三种类型共用：`unison` 1-4、`detune` 0-50 音分、`drive` 0-1，以及逐音滤波包络 `filter: {cutoffHz, resonance, envAmount, attack, decay, sustain, release}`；`envAmount` 是截止频率被包络推开的八度数（0-6）。
+三种类型共用：`unison` 1-4、`detune` 0-50 音分、`drive` 0-1，以及逐音滤波包络 `filter: {cutoffHz, resonance 0.05-20, envAmount, attack, decay, sustain, release}`；`envAmount` 是截止频率被包络推开的八度数（0-6）。
 
 ```json
 {
@@ -330,7 +330,7 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 ### 混音与空间
 
 - `pan` 用等功率声像，居中时左右都是 1.0，保持旧 score 的音量。
-- `filter`：`cutoffHz` 100-20000；`resonance`（别名 `q`）0.5-20；`lfoHz` 0-20，`lfoDepth` 0-4 个八度。LFO 调制截止频率，适合 acid bass 和缓慢移动的 pad。
+- `filter`：`cutoffHz` 100-20000；`resonance`（别名 `q`）0.05-20；`lfoHz` 0-20，`lfoDepth` 0-4 个八度。LFO 调制截止频率，适合 acid bass 和缓慢移动的 pad。
 - `delay`：`steps` 1-64，`feedback` 0-0.95，`mix` 0-1。loop 模式会先跑 3 遍再取最后一遍，延迟尾巴在循环接缝处连续；延迟不短于一圈时按循环长度折叠，不会变成静音。song 模式中超过歌曲长度的延迟还没到达，因此是静音。
 - `duck`：所有鼓轨的 kick 都会触发；每轨独立深度，启动约 5 ms、释放约 110 ms。
 - `send`：所有开 send 的轨道汇入一条 mono send 总线，经过一个独立混响后加回干声；它发生在 `post` 链之前，因此会跟随 `tape`/`lowpass` 一起被处理。

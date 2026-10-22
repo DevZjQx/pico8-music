@@ -79,8 +79,13 @@ function buildTimeline(score: Score, track: ScoreTrack, signal?: AbortSignal): r
   return events;
 }
 
+/**
+ * Positive swing delays odd steps, negative swing pushes them earlier. The
+ * parser caps the magnitude at half a step, so an odd step can never cross
+ * the even step before it.
+ */
 function swingSeconds(score: Score, step: number): number {
-  return score.swing > 0 && step % 2 === 1 ? score.swing * score.stepSeconds : 0;
+  return score.swing !== 0 && step % 2 === 1 ? score.swing * score.stepSeconds : 0;
 }
 
 /** Folds the score seed into a per-event seed without losing integer precision. */

@@ -87,6 +87,12 @@ test('parses an envelope and defaults it to the declick edges', () => {
   const partial = parseScore({ tracks: [{ pattern: 'C4:4', envelope: { decay: 0.2 } }] });
   assert.equal(partial.tracks[0]?.envelope.decay, 0.2);
   assert.equal(partial.tracks[0]?.envelope.attack, 0.004);
+
+  const swell = parseScore({
+    tracks: [{ pattern: 'C4:4', envelope: { attack: 30, release: 30 } }],
+  });
+  assert.equal(swell.tracks[0]?.envelope.attack, 30);
+  assert.equal(swell.tracks[0]?.envelope.release, 30);
 });
 
 test('accepts fractional per-note and track volumes', () => {
@@ -119,6 +125,10 @@ test('rejects invalid per-note volumes and envelopes', () => {
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4@3@4' }] }), /at most one/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { sustain: 2 } }] }), /\.sustain/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { attack: -1 } }] }), /\.attack/);
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { attack: 30.1 } }] }),
+    /envelope\.attack must be between 0 and 30/,
+  );
   assert.throws(
     () => parseScore({ tracks: [{ pattern: 'C4:4', volume: 7.5 }] }),
     /between 0 and 7/,
@@ -743,17 +753,28 @@ test('parses chords and gate lengths into polyphonic events', () => {
   const legato = parseScore({ tracks: [{ pattern: 'C4:4g8' }] });
   assert.equal(legato.tracks[0]?.events[0]?.steps, 4);
   assert.equal(legato.tracks[0]?.events[0]?.gateSteps, 8);
+
+  const wide = parseScore({ tracks: [{ pattern: '[C4,D4,E4,F4,G4,A4,B4,C5]:4' }] });
+  assert.deepEqual(
+    wide.tracks[0]?.events.map((event) => event.voice),
+    [0, 1, 2, 3, 4, 5, 6, 7],
+  );
 });
 
 test('rejects invalid chords, drum chords, and swing values', () => {
   assert.throws(
-    () => parseScore({ tracks: [{ pattern: '[C4,E4,F4,G4,A4]:4' }] }),
-    /use at most 4/,
+    () => parseScore({ tracks: [{ pattern: '[C4,D4,E4,F4,G4,A4,B4,C5,D5]:4' }] }),
+    /use at most 8/,
   );
   assert.throws(
     () => parseScore({ tracks: [{ pattern: '[C4,E4,G4]:4' }], swing: 0.6 }),
-    /swing must be between 0 and 0.5/,
+    /swing must be between -0.5 and 0.5/,
   );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4' }], swing: -0.6 }),
+    /swing must be between -0.5 and 0.5/,
+  );
+  assert.equal(parseScore({ tracks: [{ pattern: 'C4:4' }], swing: -0.25 }).swing, -0.25);
   assert.throws(
     () => parseScore({ tracks: [{ role: 'drums', pattern: '[K,S]:1' }] }),
     /drum chords are not supported/,
@@ -998,6 +1019,32 @@ test('parses a section filter sweep', () => {
   assert.equal(parsed.sections[1]?.filterEndHz, undefined);
 });
 
+test('accepts a heavily damped filter resonance on tracks and instruments', () => {
+  const track = parseScore({
+    tracks: [{ pattern: 'C2:4', filter: { cutoffHz: 800, resonance: 0.3 } }],
+  });
+  assert.equal(track.tracks[0]?.filter?.resonance, 0.3);
+
+  const instrument = parseScore({
+    instruments: { reese: { type: 'chip', filter: { cutoffHz: 900, resonance: 0.3 } } },
+    tracks: [{ instrument: 'reese', pattern: 'C2:4' }],
+  });
+  assert.equal(instrument.tracks[0]?.instrument?.filter?.resonance, 0.3);
+
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C2:4', filter: { cutoffHz: 800, resonance: 0.04 } }] }),
+    /resonance must be between 0.05 and 20/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        instruments: { thin: { type: 'chip', filter: { cutoffHz: 900, resonance: 0.04 } } },
+        tracks: [{ pattern: 'C2:4' }],
+      }),
+    /resonance must be between 0.05 and 20/,
+  );
+});
+
 test('parses section energy and replaces the last bar with a fill pattern', () => {
   const parsed = parseScore({
     mode: 'song',
@@ -1228,9 +1275,13 @@ test('parses humanize depths, a section riser, and a song tail', () => {
 });
 
 test('rejects humanize, riser, and tail values outside their range', () => {
+  assert.equal(
+    parseScore({ humanize: { timingMs: 150 }, tracks: [{ pattern: 'C4:4' }] }).humanize.timingMs,
+    150,
+  );
   assert.throws(
-    () => parseScore({ humanize: { timingMs: 60 }, tracks: [{ pattern: 'C4:4' }] }),
-    /humanize.timingMs must be between 0 and 50/,
+    () => parseScore({ humanize: { timingMs: 150.1 }, tracks: [{ pattern: 'C4:4' }] }),
+    /humanize.timingMs must be between 0 and 150/,
   );
   assert.throws(
     () => parseScore({ humanize: { velocity: 2 }, tracks: [{ pattern: 'C4:4' }] }),
@@ -1248,6 +1299,23 @@ test('rejects humanize, riser, and tail values outside their range', () => {
   assert.throws(
     () => parseScore({ tail: 2, tracks: [{ pattern: 'C4:4' }] }),
     /tail requires mode "song"/,
+  );
+  const longTail = parseScore({
+    mode: 'song',
+    tail: 30,
+    tracks: [{ pattern: 'C4:4' }],
+    arrangement: [{ name: 'only', bars: 1 }],
+  });
+  assert.equal(longTail.tailSeconds, 30);
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        tail: 30.1,
+        tracks: [{ pattern: 'C4:4' }],
+        arrangement: [{ name: 'only', bars: 1 }],
+      }),
+    /tail must be between 0 and 30/,
   );
 });
 

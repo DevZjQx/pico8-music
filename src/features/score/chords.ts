@@ -3,8 +3,10 @@
  *
  * The wire format already accepts explicit voicings (`[C4,E4,G4]`). A chord
  * name is a compact front end for the same thing: the parser expands it to
- * MIDI notes, so the renderer never sees a chord name. Qualities are capped at
- * four voices to match the explicit chord limit.
+ * MIDI notes, so the renderer never sees a chord name. Named qualities stay
+ * capped at four voices: explicit voicings now allow eight, but keeping the
+ * named expansions at four preserves their slash-bass voicing rules and the
+ * renders of existing scores.
  */
 
 import { normaliseName } from './notes.ts';
@@ -68,7 +70,7 @@ const QUALITY_ALIASES: Record<string, string> = {
 const SEMITONES: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
 const ROOT_RE = /^([A-Ga-g])([#b]?)(.*)$/;
 const PITCH_RE = /^([A-Ga-g])([#b]?)(-?\d{1,2})?$/;
-const MAX_CHORD_NOTES = 4;
+const MAX_NAMED_CHORD_NOTES = 4;
 const DEFAULT_ROOT_OCTAVE = 4;
 
 function pitchClassOf(letter: string, accidental: string): number | undefined {
@@ -172,7 +174,7 @@ export function parseChordName(text: string): number[] | undefined {
   const chordTones = intervals.map((interval) => rootMidi + interval);
 
   if (bassPart === undefined) {
-    return chordTones.slice(0, MAX_CHORD_NOTES);
+    return chordTones.slice(0, MAX_NAMED_CHORD_NOTES);
   }
 
   const bassMatch = PITCH_RE.exec(bassPart);
@@ -189,7 +191,7 @@ export function parseChordName(text: string): number[] | undefined {
 
   // A four-note quality plus a slash bass would exceed the voice cap. Drop the
   // fifth first, then the root, so the third and the seventh/extension survive.
-  if (chordTones.length >= MAX_CHORD_NOTES) {
+  if (chordTones.length >= MAX_NAMED_CHORD_NOTES) {
     const pitchClass = (midi: number) => (((midi - rootMidi) % 12) + 12) % 12;
     let drop = chordTones.findIndex((midi) => pitchClass(midi) === 7);
     if (drop === -1) drop = chordTones.findIndex((midi) => pitchClass(midi) === 0);
@@ -199,7 +201,7 @@ export function parseChordName(text: string): number[] | undefined {
   const notes = [bassMidi, ...chordTones];
   notes.sort((a, b) => a - b);
   const unique = notes.filter((midi, index) => index === 0 || midi !== notes[index - 1]);
-  return unique.slice(0, MAX_CHORD_NOTES);
+  return unique.slice(0, MAX_NAMED_CHORD_NOTES);
 }
 
 export function isChordName(text: string): boolean {

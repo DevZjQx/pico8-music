@@ -48,7 +48,8 @@ have to repeat every track's tokens for every section.
 **Exceptions.** Drum tokens intentionally share letters with note names (`C`
 is clap on a drum track, but `C4` is a note elsewhere). Uppercase `R` is rim;
 lowercase `r` remains a rest for backwards compatibility. Named chords expand
-to the same MIDI notes as the explicit form, capped at four voices. A digit
+to the same MIDI notes as the explicit form; explicit voicings accept up to
+eight voices, while named qualities stay capped at four. A digit
 quality that is also an octave (`C7`, `C5`, `C6`, `C9`) is shadowed by the
 note parser, so the brace form (`{C7}`) forces the chord reading; `G7/B` is
 safe because the slash rules out a note. Envelope names may not collide with

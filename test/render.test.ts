@@ -552,10 +552,15 @@ test('swing delays odd steps deterministically', () => {
 
   const straightOnset = firstAudibleSample(make(0));
   const swungOnset = firstAudibleSample(make(0.5));
-  assert.ok(straightOnset >= 0 && swungOnset >= 0);
+  const pushedOnset = firstAudibleSample(make(-0.5));
+  assert.ok(straightOnset >= 0 && swungOnset >= 0 && pushedOnset >= 0);
   assert.ok(
     swungOnset - straightOnset > 2000,
     `straight ${straightOnset}, swung ${swungOnset}`,
+  );
+  assert.ok(
+    straightOnset - pushedOnset > 2000,
+    `straight ${straightOnset}, pushed ${pushedOnset}`,
   );
 });
 

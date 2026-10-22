@@ -151,7 +151,7 @@ renderScore
 
 **验收：** 段落边界采样级精确；mute/unmute 正确；总小节数正确；loop 模式与旧 score 完全兼容。
 
-**现状：段落、`fill`、`energy`、`riser` 与 `tail` 已实现。** section 支持 `bars`、`patterns`、`mute`、`gain`/`gains`、`filter`、`energy`（0-1，缩放段增益与滤波截止）、`fill`（用指定 pattern 替换最后 1-2 小节的普通 pattern，可按 track name/role 指定）和 `riser`（1-64 小节的噪声+正弦上行扫频，结束在段落边界）。顶层 `tail`（0-15 秒，仅 song）在最后一步后多渲染一段，让 send/post 混响和 one-shot 收尾；loop 模式拒绝 `tail` 以保持无缝。独立的 `impact`/`sub_drop` 采样 FX 仍未做。
+**现状：段落、`fill`、`energy`、`riser` 与 `tail` 已实现。** section 支持 `bars`、`patterns`、`mute`、`gain`/`gains`、`filter`、`energy`（0-1，缩放段增益与滤波截止）、`fill`（用指定 pattern 替换最后 1-2 小节的普通 pattern，可按 track name/role 指定）和 `riser`（1-64 小节的噪声+正弦上行扫频，结束在段落边界）。顶层 `tail`（0-30 秒，仅 song）在最后一步后多渲染一段，让 send/post 混响和 one-shot 收尾；loop 模式拒绝 `tail` 以保持无缝。独立的 `impact`/`sub_drop` 采样 FX 仍未做。
 
 #### P0-3 复音与和声
 
@@ -168,7 +168,7 @@ renderScore
 
 **验收：** 三和弦渲染出三个预期基频峰；voice stealing 不产生 click；和弦轨与鼓/贝斯轨可同时存在。
 
-**现状：显式和弦与命名和弦已实现，轨数不再锁死在 4。** `[C4,E4,G4]:4` 展开成同一 step 的三个 `NoteEvent`，每个声部独立振荡器和包络；最多 4 个音。命名和弦（`Cmaj7`、`Fm/E`、`{C7}`）与斜杠低音在解析期展开成 midi，渲染路径与显式写法完全一致。`tracks` 现在是 1-32：4 是默认建议而不是音乐规则。`voices` 字段、`key`/`scale`、voice leading 和 `studio` 模式仍不做。
+**现状：显式和弦与命名和弦已实现，轨数不再锁死在 4。** `[C4,E4,G4]:4` 展开成同一 step 的三个 `NoteEvent`，每个声部独立振荡器和包络；显式 voicing 最多 8 个音，命名和弦仍最多 4 个音。命名和弦（`Cmaj7`、`Fm/E`、`{C7}`）与斜杠低音在解析期展开成 midi，渲染路径与显式写法完全一致。`tracks` 现在是 1-32：4 是默认建议而不是音乐规则。`voices` 字段、`key`/`scale`、voice leading 和 `studio` 模式仍不做。
 
 #### P0-4 发音法、门限、动态
 
@@ -227,7 +227,7 @@ renderScore
 
 **验收：** swing 后奇数 16 分偏移可测量；同一 seed 渲染完全一致；三连 pattern 的总步数正确。
 
-**现状：swing、seed 与 humanize 已实现。** `swing: 0–0.5` 延后奇数 step，渲染确定；`seed` 影响 noise 波形、鼓的噪声瞬态、humanize 与段落 riser，用来生成同谱变体。`humanize: {timingMs: 0-50, velocity: 0-1}` 由 `(seed, track, event, voice)` 的无状态哈希决定，偏移在 loop 接缝处回绕，所以同一 pass 内变化、每个 pass 之间逐样本一致；默认 0 时旧 score 不变。tuplet 与 probability/ratchet 仍不做：tuplet 需要分数 step 网格，会同时改 parser、swing、段落对齐和循环接缝，成本远高于收益。
+**现状：swing、seed 与 humanize 已实现。** `swing: -0.5..0.5` 偏移奇数 step（正数延后、负数提前），渲染确定；`seed` 影响 noise 波形、鼓的噪声瞬态、humanize 与段落 riser，用来生成同谱变体。`humanize: {timingMs: 0-150, velocity: 0-1}` 由 `(seed, track, event, voice)` 的无状态哈希决定，偏移在 loop 接缝处回绕，所以同一 pass 内变化、每个 pass 之间逐样本一致；默认 0 时旧 score 不变。tuplet 与 probability/ratchet 仍不做：tuplet 需要分数 step 网格，会同时改 parser、swing、段落对齐和循环接缝，成本远高于收益。
 
 #### P1-2 滤波、自动化、sidechain
 
@@ -244,7 +244,7 @@ renderScore
 
 **验收：** cutoff 扫描时谱质心单调变化；sidechain 在 kick 后产生可测的 gain dip；高 resonance 不产生 NaN/爆音。
 
-**现状：部分实现（M3）。** per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.5-20，`lfoHz` + `lfoDepth` 八度调制）、section `filter` 的 `{from,to}` 指数扫频、kick 触发的 `duck` 已实现；任意 sidechain 源（目前只有 kick）和通用 `automation` 尚未实现，见 7.3。
+**现状：部分实现（M3）。** per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.05-20，`lfoHz` + `lfoDepth` 八度调制）、section `filter` 的 `{from,to}` 指数扫频、kick 触发的 `duck` 已实现；任意 sidechain 源（目前只有 kick）和通用 `automation` 尚未实现，见 7.3。
 
 #### P1-3 分层、立体声、空间
 
@@ -471,7 +471,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 
 **M2 状态：已实现并在 M2.5 补齐高杠杆项。**
 
-- 已实现：`[C4,E4,G4]` 显式和弦（最多 4 声部）、命名和弦（`Cmaj7`、`Fm/E`、`{C7}`）、根音八度、slot/gate 分离（`4g2` / `4g6`）、score 级 `swing`。渲染按事件调度，每个音独立 phase/包络，和弦和 legato 自然重叠。
+- 已实现：`[C4,E4,G4]` 显式和弦（最多 8 声部）、命名和弦（`Cmaj7`、`Fm/E`、`{C7}`）、根音八度、slot/gate 分离（`4g2` / `4g6`）、score 级 `swing`。渲染按事件调度，每个音独立 phase/包络，和弦和 legato 自然重叠。
 - M2.5 追加：顶层 `envelopes` + `~pluck` 命名 per-note ADSR；参数化 `~vib(depth[,rate])` / `~slide(steps)`；`seed`。命名和弦在解析期展开成 midi，渲染与显式写法逐样本一致；包络和效果参数只改 `renderMelodicNote` 的取值，没有新增渲染路径。
 - 验收：三和弦基频峰、staccato/legato 尾部 RMS、swing onset 偏移、命名/显式和弦逐样本一致、命名包络尾部 RMS、slide 到达时间、seed 的确定性与差异性都有测试。
 - 示例：`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`。
@@ -488,7 +488,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 **M3 状态：混音/运动核心已实现。**
 
 - 重构：`renderScore()` 先给每条 track 一个独立 buffer，再做滤波、延迟、duck、pan、send，最后求和。per-track 处理不再是「接在总线上」的近似。
-- 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.5-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，loop 模式 3 遍预热）。
+- 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.05-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，loop 模式 3 遍预热）。
 - 验收：filter 静态开合的高频带能量比、LFO 的窗口能量起伏、段落扫频的首尾高频带比、pan 的左右 RMS、duck 的 kick 窗口 RMS、send 的尾音、delay 的偏移窗口 RMS 都有测试；示例 `examples/m3-space-motion.json`。
 - M6 已补 `unison`；仍不做 track group、任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
 
@@ -539,9 +539,9 @@ M5 把 P0-1 的鼓效果尾巴和 P0-2 的 `fill`/`energy` 作为一个包做，
 M8 处理的是「四条轨排满之后」的问题：纵向不够宽、节奏太死、段落之间没有上扬和收尾。
 
 - 轨数：`MAX_TRACKS` 从 4 放宽到 32。4 轨不再是 PICO-8 通道约束，而是默认建议；每条轨仍是一个独立混音总线，可以放和弦。32 是渲染预算上限（每轨一整段 buffer + 一次逐样本求和），不是音乐规则。
-- `humanize`：顶层 `{timingMs: 0-50, velocity: 0-1}`。时序偏移和力度起伏由 `(seed, trackIndex, eventIndex, voice)` 的无状态整数哈希决定，不依赖调度顺序；负偏移在 loop 内回绕，所以每个 loop pass 仍逐样本一致。默认 0 时旧 score 的 WAV 不变。
+- `humanize`：顶层 `{timingMs: 0-150, velocity: 0-1}`。时序偏移和力度起伏由 `(seed, trackIndex, eventIndex, voice)` 的无状态整数哈希决定，不依赖调度顺序；负偏移在 loop 内回绕，所以每个 loop pass 仍逐样本一致。默认 0 时旧 score 的 WAV 不变。
 - `riser`：section 级 1-64 小节，不能超过该 section 长度。合成方式是白噪声经过中心频率从 280 Hz 指数扫到 9 kHz 的带通，再叠一条低八度的正弦扫频；包络从静音淡入、在段落边界前 2% 淡出到 0，避免转场爆音。seed 决定噪声，所以同一分数可复现。
-- `tail`：顶层 0-15 秒，仅 song 模式。`renderScore` 在音乐内容后多分配 N 秒，send/post 混响和鼓 one-shot 可以继续响；最后 20 ms 线性淡出。section 能量统计会扣掉 tail，避免最后一段 RMS 被稀释。
+- `tail`：顶层 0-30 秒，仅 song 模式。`renderScore` 在音乐内容后多分配 N 秒，send/post 混响和鼓 one-shot 可以继续响；最后 20 ms 线性淡出。section 能量统计会扣掉 tail，避免最后一段 RMS 被稀释。
 - 验证：12 轨可解析、33 轨报预算错误；riser 末段高频带能量显著高于起始段；tail 使输出长度增加且在音乐结束后仍有衰减中的音频；humanize 同 seed 逐样本一致、换 seed 改变、深度 0 与省略逐样本一致、velocity 让重复 hit 的 RMS 离散。
 - 仍不做：独立 `impact`/`sub_drop` FX、概率/ratchet、tuplet、`key`/`scale` 与 voice leading。
 

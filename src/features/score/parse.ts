@@ -59,7 +59,18 @@ export const DEFAULT_ENVELOPE: Envelope = {
 
 const MAX_STEPS_PER_NOTE = 64;
 const MAX_GATE_STEPS = 256;
-const MAX_CHORD_NOTES = 4;
+/**
+ * Explicit voicings can fill a two-hand pad chord. Named chord qualities stay
+ * capped at four notes in chords.ts so their expansions, including the slash
+ * bass voicing rules, keep rendering exactly as they did before.
+ */
+const MAX_CHORD_NOTES = 8;
+/**
+ * The state-variable filter divides by Q, so Q=0 has no finite damping
+ * coefficient. 0.05 is heavily over-damped but still a real filter; 0.3, the
+ * value that used to be rejected, is now accepted.
+ */
+const MIN_RESONANCE = 0.05;
 /**
  * A render-budget cap, not a musical rule: every track gets its own full-length
  * buffer and one mix pass, so the LLM can decide the arrangement size but a
@@ -186,10 +197,10 @@ function parseEnvelope(value: unknown, path: string): Envelope {
   }
   rejectUnknownKeys(value, ['attack', 'decay', 'sustain', 'release'], path);
   return {
-    attack: readNumber(value.attack, `${path}.attack`, DEFAULT_ENVELOPE.attack, 0, 5),
-    decay: readNumber(value.decay, `${path}.decay`, DEFAULT_ENVELOPE.decay, 0, 5),
+    attack: readNumber(value.attack, `${path}.attack`, DEFAULT_ENVELOPE.attack, 0, 30),
+    decay: readNumber(value.decay, `${path}.decay`, DEFAULT_ENVELOPE.decay, 0, 30),
     sustain: readNumber(value.sustain, `${path}.sustain`, DEFAULT_ENVELOPE.sustain, 0, 1),
-    release: readNumber(value.release, `${path}.release`, DEFAULT_ENVELOPE.release, 0, 5),
+    release: readNumber(value.release, `${path}.release`, DEFAULT_ENVELOPE.release, 0, 30),
   };
 }
 
@@ -216,7 +227,7 @@ function parseInstrumentFilter(value: unknown, path: string): InstrumentFilter |
   );
   return {
     cutoffHz: readRequiredNumber(value.cutoffHz ?? value.cutoff, `${path}.cutoffHz`, 80, 18000),
-    resonance: readNumber(value.resonance ?? value.q, `${path}.resonance`, 0.707, 0.5, 20),
+    resonance: readNumber(value.resonance ?? value.q, `${path}.resonance`, 0.707, MIN_RESONANCE, 20),
     envAmount: readNumber(value.envAmount, `${path}.envAmount`, 0, 0, 6),
     attack: readNumber(value.attack, `${path}.attack`, 0.002, 0, 2),
     decay: readNumber(value.decay, `${path}.decay`, 0.15, 0, 4),
@@ -1395,7 +1406,7 @@ function parseTrackFilter(value: unknown, path: string): TrackFilter | undefined
   rejectUnknownKeys(value, ['cutoffHz', 'cutoff', 'resonance', 'q', 'lfoHz', 'lfoDepth'], path);
   return {
     cutoffHz: readRequiredNumber(value.cutoffHz ?? value.cutoff, `${path}.cutoffHz`, 100, 20000),
-    resonance: readNumber(value.resonance ?? value.q, `${path}.resonance`, 0.707, 0.5, 20),
+    resonance: readNumber(value.resonance ?? value.q, `${path}.resonance`, 0.707, MIN_RESONANCE, 20),
     lfoHz: readNumber(value.lfoHz, `${path}.lfoHz`, 0, 0, 20),
     lfoDepth: readNumber(value.lfoDepth, `${path}.lfoDepth`, 0, 0, 4),
   };
@@ -1882,7 +1893,7 @@ function parseHumanize(value: unknown): Humanize {
   }
   rejectUnknownKeys(value, ['timingMs', 'velocity'], 'humanize');
   return {
-    timingMs: readNumber(value.timingMs, 'humanize.timingMs', 0, 0, 50),
+    timingMs: readNumber(value.timingMs, 'humanize.timingMs', 0, 0, 150),
     velocity: readNumber(value.velocity, 'humanize.velocity', 0, 0, 1),
   };
 }
@@ -1939,10 +1950,10 @@ export function parseScore(input: string | unknown): Score {
   const stepsPerBeat = readNumber(raw.stepsPerBeat, 'stepsPerBeat', DEFAULTS.stepsPerBeat, 1, 8, true);
   const beatsPerBar = readNumber(raw.beatsPerBar, 'beatsPerBar', DEFAULTS.beatsPerBar, 1, 16, true);
   const stepsPerBar = stepsPerBeat * beatsPerBar;
-  const swing = readNumber(raw.swing, 'swing', 0, 0, 0.5);
+  const swing = readNumber(raw.swing, 'swing', 0, -0.5, 0.5);
   const seed = readNumber(raw.seed, 'seed', 0, 0, 2147483647, true);
   const humanize = parseHumanize(raw.humanize);
-  const tailSeconds = readNumber(raw.tail, 'tail', 0, 0, 15);
+  const tailSeconds = readNumber(raw.tail, 'tail', 0, 0, 30);
   const envelopes = parseEnvelopes(raw.envelopes);
   const samples = parseSamples(raw.samples);
   const instruments = parseInstruments(raw.instruments, samples);

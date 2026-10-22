@@ -21,23 +21,23 @@ Song mode adds patterns and an arrangement:
 
 ## Score fields
 - bpm 30-300 (default 90), stepsPerBeat 1-8 (default 4), beatsPerBar 1-16 (default 4; 3 for 3/4), loop bars 1-64 (default 4); song sections use bars 1-64 and the optional total bars 1-256
-- swing 0-0.5 delays odd steps; seed varies noise timbres, drum transients, humanize, and section risers
-- humanize {timingMs 0-50, velocity 0-1} adds deterministic timing and gain variation; 0 is neutral
-- tail 0-15 seconds renders extra song time after the last step so reverb and one-shots ring out; song mode only
+- swing -0.5..0.5 shifts odd steps (positive delays, negative pushes); seed varies noise timbres, drum transients, humanize, and section risers
+- humanize {timingMs 0-150, velocity 0-1} adds deterministic timing and gain variation; 0 is neutral
+- tail 0-30 seconds renders extra song time after the last step so reverb and one-shots ring out; song mode only
 - tracks: 1-32, one independent bus each; use as many as the arrangement needs (the cap is a render budget, not a musical rule)
 - a chord lives inside one track; use separate tracks for separate parts (drums, bass, pad, lead, FX), not for chord voices
 - motifs: {"A":"C4:1 E4:1"}, played as "@A.transpose(2).retrograde"; transforms are transpose(n), invert, retrograde, augment(n), diminish(n)
-- envelopes: {"pluck":{"attack":0.002,"decay":0.07,"sustain":0.08,"release":0.03}}, used as "C4:4~pluck"
+- envelopes: {"pluck":{"attack":0.002,"decay":0.07,"sustain":0.08,"release":0.03}}, used as "C4:4~pluck"; attack/decay/release are seconds 0-30, sustain is a 0-1 level
 - samples: persisted workspace WAV assets: {"hit":"assets/hit.wav"} or {"vox":{"file":"assets/vox.wav","root":"C4","loop":false,"gain":1}}. Only 16-bit PCM WAV; root defaults C4, gain 0-4, at most 16 samples, 30 s each
 - drumSamples: optional replacements by drum voice, e.g. {"kick":"hit","snare":"hit2"}; unmapped voices stay synthetic
-- instruments: named voice definitions, used as "instrument":"name" on a track. type chip keeps the eight PICO-8 waveforms; additive sums band-limited harmonic partials; fm is two-operator phase modulation; sample plays an entry from the score's samples table. chip/additive/fm accept unison 1-4, detune 0-50 cents, drive 0-1, and filter {cutoffHz,resonance,envAmount,attack,decay,sustain,release}. chip adds waveform; additive adds partials (1-16 harmonics, harmonic 1 first; a harmonic is an amplitude 0-1, a negative amplitude for the mirrored wave, [amplitude, phaseDegrees], or [amplitude, phaseDegrees, decaySeconds 0-8]): {"type":"additive","partials":[1,-0.5,[0.25,90,1.5]]} designs a shape, partials are band-limited and peak-normalised; fm adds ratio 0.25-8, index 0-12, indexDecay 0.01-4 s; sample adds sample: "name" and no other voice fields
+- instruments: named voice definitions, used as "instrument":"name" on a track. type chip keeps the eight PICO-8 waveforms; additive sums band-limited harmonic partials; fm is two-operator phase modulation; sample plays an entry from the score's samples table. chip/additive/fm accept unison 1-4, detune 0-50 cents, drive 0-1, and filter {cutoffHz, resonance 0.05-20, envAmount, attack, decay, sustain, release}. chip adds waveform; additive adds partials (1-16 harmonics, harmonic 1 first; a harmonic is an amplitude 0-1, a negative amplitude for the mirrored wave, [amplitude, phaseDegrees], or [amplitude, phaseDegrees, decaySeconds 0-8]): {"type":"additive","partials":[1,-0.5,[0.25,90,1.5]]} designs a shape, partials are band-limited and peak-normalised; fm adds ratio 0.25-8, index 0-12, indexDecay 0.01-4 s; sample adds sample: "name" and no other voice fields
 - additive extras: stretch 0-1 runs harmonic n at n*f0*sqrt(1+stretch*(n^2-1)) (fundamental stays in tune, highs sharpen for bells); tilt 0-4 scales harmonic n by n^-tilt (higher is darker); a third partial item is its decay time constant in seconds (0 keeps it static). Static partials still use the fast band-limited table; stretch or any nonzero decay renders each partial per sample, still band-limited and peak-normalised
 
 ## Track fields
 - pattern: inline tokens, or the name of a pattern in the track's patterns or in top-level patterns; without it the first track-local pattern is used
 - name (sections target it), role (drums, bass, lead, pad, ...), volume 0-7 (one decimal allowed), waveform: triangle, tilted_saw, saw, square, pulse, organ, noise, phaser
 - instrument: a name from the top-level instruments table, an inline definition, or chip/fm/additive/drums; sample voices are named instruments or inline {"type":"sample","sample":"name"}. An explicit instrument outranks a style's role default; without one the legacy waveform path renders
-- mix-stage fields are flat track fields, never nested under "mix": pan -1..1, send 0..1 (reverb send), duck 0..1 (kick sidechain), filter ({cutoffHz,resonance,lfoHz,lfoDepth} or a cutoff number), delay ({steps,feedback,mix}); a delay at least one loop long folds through the loop seam
+- mix-stage fields are flat track fields, never nested under "mix": pan -1..1, send 0..1 (reverb send), duck 0..1 (kick sidechain), filter ({cutoffHz, resonance 0.05-20, lfoHz, lfoDepth} or a cutoff number), delay ({steps,feedback,mix}); a delay at least one loop long folds through the loop seam
 
 ## Pattern tokens
 NOTE:STEPS[gGATE] or DRUM:STEPS; gate defaults to the slot, shorter is staccato, longer is legato.
@@ -45,7 +45,7 @@ NOTE:STEPS[gGATE] or DRUM:STEPS; gate defaults to the slot, shorter is staccato,
 - "~effect": slide, vibrato, drop, fadein, fadeout, arpfast, arpslow; slide(steps 0.05-8) and vib(depth 0-2 semitones[, rateHz 0.1-20]) take parameters
 - Drum tracks use drum articulations instead of pitched effects: ~ghost (quieter, shorter, darker), ~flam[(offsetMs 5-40)] (second hit 16 ms later by default), ~roll[(hits 2-8)] or ~roll4 (subdivide the slot; 4 hits by default)
 - Drum hits also take ~pitch(semitones -12..12), ~decay(scale 0.25..4), and ~tone(cutoffHz 200..16000), on their own or after an articulation: "K:1~ghost~pitch(-2)~decay(1.4)"
-- Chords: [C4,E4,G4]:4 (up to 4 voices) or names like Cmaj7, Fm, Fm/E, {C7}
+- Chords: [C4,E4,G4]:4 (explicit voicings up to 8 voices) or names like Cmaj7, Fm, Fm/E, {C7} (named qualities expand to at most 4 voices)
 - Each pattern should fill whole bars (stepsPerBeat * beatsPerBar steps per bar) so sections stay in phase; the parser warns when the section length is not a multiple of the pattern length
 
 ## Samples
