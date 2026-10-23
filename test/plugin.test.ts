@@ -40,6 +40,7 @@ interface Host {
 interface Skill {
   name?: string;
   description?: string;
+  source?: string;
   content?: string;
   path?: string;
   resourceBase?: { kind?: string; path?: string };
@@ -146,6 +147,7 @@ test('registers the composer skill so an installed plugin carries the guidance',
 
   const skill = captured.skills.get('pico8-songwriter');
   assert.ok(skill, 'the songwriter skill reaches the skill registry');
+  assert.equal(skill.source, 'runtime', 'the registry rejects a definition without a source');
   assert.match(skill.description ?? '', /composing or editing a score/);
   assert.match(skill.content ?? '', /^# PICO-8 songwriting/);
   assert.doesNotMatch(skill.content ?? '', /^---$/m, 'frontmatter is fields, not body');

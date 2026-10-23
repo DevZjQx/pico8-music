@@ -35,6 +35,8 @@ interface SkillRuntime {
   register(skill: {
     name: string;
     description: string;
+    /** Discovery source; the registry requires it when the skill is loaded. */
+    source: string;
     content: string;
     path?: string;
     resourceBase?: { readonly kind: 'directory'; readonly path: string };
@@ -166,6 +168,9 @@ function registerSkill(skills: SkillRuntime | undefined, logger?: PluginContext[
   skills.register({
     name: skill.name,
     description: skill.description,
+    // The registry defaults provider and invocation, but not source; without it
+    // `skills.get()` rejects the definition as soon as the model loads the skill.
+    source: 'runtime',
     content: skill.content,
     path: skill.path,
     resourceBase: { kind: 'directory', path: skill.directory },
