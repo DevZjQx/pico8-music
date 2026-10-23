@@ -10,6 +10,7 @@ import {
 } from './notes.ts';
 import { DEFAULT_TUNING, TEMPERAMENT_NAMES, frequencyOf } from './tuning.ts';
 import type {
+  DelayFollow,
   DrumEffect,
   DrumName,
   DrumParams,
@@ -1474,16 +1475,23 @@ function parseTrackShelf(value: unknown, path: string, defaultHz: number): Track
   };
 }
 
+function parseDelayFollow(value: unknown, path: string): DelayFollow {
+  if (value === undefined) return 'base';
+  if (value === 'base' || value === 'section') return value;
+  throw new ScoreError(`${path} must be "base" or "section", got ${JSON.stringify(value)}`);
+}
+
 function parseTrackDelay(value: unknown, path: string): TrackDelay | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
-    throw new ScoreError(`${path} must be an object with steps, feedback, and mix`);
+    throw new ScoreError(`${path} must be an object with steps, feedback, mix, and follow`);
   }
-  rejectUnknownKeys(value, ['steps', 'feedback', 'mix'], path);
+  rejectUnknownKeys(value, ['steps', 'feedback', 'mix', 'follow'], path);
   return {
     steps: readRequiredNumber(value.steps, `${path}.steps`, 1, 64, true),
     feedback: readNumber(value.feedback, `${path}.feedback`, 0.35, 0, 0.95),
     mix: readNumber(value.mix, `${path}.mix`, 0.4, 0, 1),
+    follow: parseDelayFollow(value.follow, `${path}.follow`),
   };
 }
 
@@ -2230,6 +2238,19 @@ export function parseScore(input: string | unknown): Score {
         );
       }
     });
+  }
+
+  if (mode === 'song' && sections.some((section) => section.bpm !== bpm)) {
+    for (const track of tracks) {
+      const delay = track.delay;
+      if (delay === undefined || delay.mix <= 0 || delay.follow === 'section') continue;
+      // A muted track still has an entry; its timeline is empty, so do not warn
+      // about an echo that cannot be heard.
+      if (track.timeline !== undefined && track.timeline.length === 0) continue;
+      warnings.push(
+        `delay-base-tempo: track ${track.name} measures echoes at the base bpm; use delay.follow: "section" to lock them to each section's grid`,
+      );
+    }
   }
 
   if (durationSeconds + tailSeconds > MAX_SONG_SECONDS) {

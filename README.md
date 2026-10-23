@@ -78,7 +78,7 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - DSH 的命令结果按宿主约定只走 UI、不进模型历史（`@deepseek-ai/dsh-commands`："命令结果永不成为模型消息"），所以 DSH 侧模型读帮助只能靠 `p8_help` 工具；Pi 侧 `/p8m` 会额外写进上下文，因为 Pi 的 custom message 会参与下一轮请求。
 - DSH 的 `commands` 是可选服务（headless 宿主没有命令面），插件用 `ctx.inject(['commands'], …)` 注册命令，不把它写进 `inject` 数组，否则没有命令面的宿主会连工具都不启动。
 
-代价对比：改之前常驻约 4.4 KB（当时约 2.4 KB 的说明 + 1.6 KB 参数 schema + snippet/guidelines）；现在三个工具的参数 schema 合计 Pi 6700 B、DSH 5726 B（JSON 字节，不含描述与会话格式开销），21590 B 的 `SCORE_HELP` 只在真正查看帮助时才进上下文。instrument 说明只进帮助文本，没有进工具描述。两个宿主的工具参数来自同一份 `src/app/tool-schemas.ts`，不再各写一遍。
+代价对比：改之前常驻约 4.4 KB（当时约 2.4 KB 的说明 + 1.6 KB 参数 schema + snippet/guidelines）；现在三个工具的参数 schema 合计 Pi 6700 B、DSH 5726 B（JSON 字节，不含描述与会话格式开销），22555 B 的 `SCORE_HELP` 只在真正查看帮助时才进上下文。instrument 说明只进帮助文本，没有进工具描述。两个宿主的工具参数来自同一份 `src/app/tool-schemas.ts`，不再各写一遍。
 
 ## 调用
 
@@ -141,7 +141,7 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 | `highpassHz` | 20-4000 Hz，12 dB/oct 高通；只作用于这条轨，用来单独挖掉某条轨的浑浊，默认无 |
 | `lowShelf` | `-24..24` dB（写在 250 Hz）或 `{hz, gainDb}`；低架 EQ，默认无 |
 | `highShelf` | `-24..24` dB（写在 4000 Hz）或 `{hz, gainDb}`；高架 EQ，默认无 |
-| `delay` | `{steps, feedback, mix}`，按 step 计时的轨道延迟；loop 中延迟不短于一圈时按循环折叠，song 中超过歌曲长度则为静音；默认无 |
+| `delay` | `{steps, feedback, mix, follow}`，按 step 计时的轨道延迟；`follow` 默认 `"base"`（按顶层 bpm），设为 `"section"` 时回声落在哪个段落就按哪个段落的 bpm 计时；loop 中延迟不短于一圈时按循环折叠，song 中超过歌曲长度则为静音；默认无 |
 
 - 音符：`C4`、`F#3`、`Bb2`；范围 C1-C8。
 - 力度：`C4:4@6`，0-7，可带一位小数（`@4.5`）；写 `@6~slide` 或 `~slide@6` 都可以。力度先乘振幅；如果乐器写了 `velocity` 映射，它还会驱动滤波 cutoff 和 drive（见“乐器”）。
@@ -365,7 +365,7 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - 一次渲染的 arrangement 总量上限是 15 分钟和 256 个 section；最终输出（包括降速后）也以 15 分钟为硬上限，超出会直接报错，而不是分配一个不可控的缓冲区。
 - `patterns` 可以放在顶层，也可以放在 track 内；section 的 `patterns` 用 track 的 `name` 或 `role` 指向 pattern 名。也可以直接写内联 pattern（如 `C4:4 C4:4`，或单 token `C4`）；已定义的 pattern 名优先。
 - section 字段：`bars`（必填）、`bpm`、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`fill`、`riser`。
-- `bpm`：可选，30-300，默认继承顶层 `bpm`。变速只发生在 section 边界，小节和 step 网格不变；该段实际时长是 `bars * beatsPerBar * 60 / bpm`。loop 模式仍只有一个速度，不支持段内渐快/渐慢或任意 BPM 自动化。track 的 `delay.steps` 始终按顶层 `bpm` 计时，因此在变速段之间保持不变。
+- `bpm`：可选，30-300，默认继承顶层 `bpm`。变速只发生在 section 边界，小节和 step 网格不变；该段实际时长是 `bars * beatsPerBar * 60 / bpm`。loop 模式仍只有一个速度，不支持段内渐快/渐慢或任意 BPM 自动化。track 的 `delay.steps` 默认按顶层 `bpm` 计时，因此在变速段之间保持不变；要让它跟随段落网格，写 `delay.follow: "section"`。
 - `riser`：1-64 小节，不能超过所在 section 的长度；在这一段末尾合成一条噪声 + 正弦上行扫频，正好结束在段落边界，用作 build/转场的上扬。它不占 track，声音由 `seed` 决定。
 - `energy`：0-1 的段落宏。0 时该段增益 ×0.5，若有 `filter` 则截止频率 ×0.35；1（默认）不改变任何东西，所以旧 score 不受影响。适合写 intro/break 的“收”。
 - `fill`：`{"bars":1,"patterns":{"drums":"drums.fill"}}`，用指定 pattern 替换该 section 最后 1-2 小节的普通 pattern；`patterns` 的键可以是 track 的 `name` 或 `role`。fill pattern 长度不整除 fill 窗口时会在报告里给出 `fill-misaligned` 警告。
@@ -379,7 +379,7 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - `filter`：`cutoffHz` 100-20000；`resonance`（别名 `q`）0.05-20；`lfoHz` 0-20，`lfoDepth` 0-4 个八度。LFO 调制截止频率，适合 acid bass 和缓慢移动的 pad。
 - `highpassHz` / `lowShelf` / `highShelf`：track 级 EQ，在乐器滤波之后、delay/duck 之前执行。想只把 bass 或 pad 的 150-500 Hz 挖掉、而不把整个 mix 压暗时用它；0 dB shelf 和省略字段都是逐样本无操作。
 - `width` / `monoBelowHz` 是 `p8_music` 的 master 参数，在整条 `post` 链之后执行：`width` 0-2 缩放 side 信号（0 mono、1 不变、2 更宽），`monoBelowHz` 20-500 只把低频折成 mono，高频声像保留。两者默认都不执行。
-- `delay`：`steps` 1-64，`feedback` 0-0.95，`mix` 0-1。loop 模式会先跑 3 遍再取最后一遍，延迟尾巴在循环接缝处连续；延迟不短于一圈时按循环长度折叠，不会变成静音。song 模式中超过歌曲长度的延迟还没到达，因此是静音。
+- `delay`：`steps` 1-64，`feedback` 0-0.95，`mix` 0-1，`follow` 为 `"base"`（默认，按顶层 bpm）或 `"section"`（回声落在哪个段落就按哪个段落的 step 计时）。`follow: "section"` 时跨段读头连续、单调，边界处会有约 `steps` 步长的轻微变速/变调（类似磁带延迟），不会 click；loop 模式只有一个速度，两种取值等价。loop 模式会先跑 3 遍再取最后一遍，延迟尾巴在循环接缝处连续；延迟不短于一圈时按循环长度折叠，不会变成静音。song 模式中超过歌曲长度的延迟还没到达，因此是静音。
 - `duck`：所有鼓轨的 kick 都会触发；每轨独立深度，启动约 5 ms、释放约 110 ms。
 - `send`：所有开 send 的轨道汇入一条 mono send 总线，经过一个独立混响后加回干声；它发生在 `post` 链之前，因此会跟随 `tape`/`lowpass` 一起被处理。
 - `post` 里的 `reverb` 仍是总线混响；`send` 和它不是互斥的，可以叠加。
@@ -475,7 +475,7 @@ bun run check      # 边界检查 + 类型检查 + 测试
 - 调律已做：顶层 `tuning` 的 `a4` 400-480 Hz、七种内置律制和逐音 `cents`；律制以 A 为锚点，所以换律制不会移动 A4，逐音 `cents` 还能在此基础上微调任意键。采样音源靠变速跟随目标频率，所以逐键微调也生效；但没有 per-zone 多采样映射，`samples.root` 仍按素材自身的 440 Hz 十二平均律解释。
 - 轨数上限是 32，不是音乐规则：每条轨都要一整段 buffer 和一次逐样本混音，所以长歌 + 很多轨会明显变慢。需要更多层次时优先增加 track，而不是把和弦塞到 8 个声部以上。
 - `humanize` 只改时序和力度，不做 probability/ratchet；`tuplet` 仍不做：三连音需要分数 step 网格，会同时影响 parser、swing、段落对齐和循环接缝，收益低于成本。
-- 段落变速已做：`arrangement[].bpm` 在 section 边界切换速度，默认继承顶层 `bpm`；loop 模式仍是单一 BPM。暂不做段内渐快/渐慢、任意 BPM 自动化，也不让 `delay.steps` 跟随段落速度。
+- 段落变速已做：`arrangement[].bpm` 在 section 边界切换速度，默认继承顶层 `bpm`；loop 模式仍是单一 BPM。暂不做段内渐快/渐慢、任意 BPM 自动化。`delay.steps` 默认仍按顶层 bpm 计时；写 `delay.follow: "section"` 可以按段落网格重算回声时间，代价是边界处会有最多约 `steps` 步长的变速/变调窗口。
 - song 模式的 `send` 混响和 `post` 混响尾音默认会在歌曲结束时截断；设置顶层 `tail` 可以留出收尾时间，或用 `send: 0` + `post: []` 做紧结尾。
 - `limiter` 按样本峰值工作，不做 4× 过采样，所以它是 sample-peak 而不是严格的 true-peak limiter；44.1 kHz 的 WAV 上两者差距通常小于 0.5 dB。
 - 循环长为整数采样；`speed` 不是整数比时会有一点点有效速度偏差（< 0.01%）。

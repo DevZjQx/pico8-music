@@ -222,11 +222,19 @@ export interface TrackShelf {
   readonly gainDb: number;
 }
 
+/** Tempo reference for a step-timed delay. */
+export type DelayFollow = 'base' | 'section';
+
 /** Per-track feedback delay, timed in score steps. */
 export interface TrackDelay {
   readonly steps: number;
   readonly feedback: number;
   readonly mix: number;
+  /**
+   * `base` keeps one echo time for the whole stem, measured at the top-level
+   * bpm; `section` measures each echo on the grid of the section it lands in.
+   */
+  readonly follow: DelayFollow;
 }
 
 export interface NoteEvent {

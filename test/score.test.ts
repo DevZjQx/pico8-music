@@ -992,7 +992,22 @@ test('parses the score seed and mix-stage track fields', () => {
     lfoHz: 1.5,
     lfoDepth: 2,
   });
-  assert.deepEqual(track?.delay, { steps: 3, feedback: 0.4, mix: 0.3 });
+  assert.deepEqual(track?.delay, { steps: 3, feedback: 0.4, mix: 0.3, follow: 'base' });
+
+  const sectionFollow = parseScore({
+    tracks: [{ pattern: 'C2:4', delay: { steps: 2, follow: 'section' } }],
+  });
+  assert.deepEqual(sectionFollow.tracks[0]?.delay, {
+    steps: 2,
+    feedback: 0.35,
+    mix: 0.4,
+    follow: 'section',
+  });
+
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C2:4', delay: { steps: 2, follow: 'tempo' } }] }),
+    /tracks\[0\]\.delay\.follow must be "base" or "section"/,
+  );
 
   const defaults = parseScore({ tracks: [{ pattern: 'C2:4' }] });
   assert.equal(defaults.seed, 0);
@@ -1273,6 +1288,44 @@ test('song sections can override bpm and resolve a contiguous tempo map', () => 
   assert.equal(secondsAtStep(parsed, 16), 4);
   assert.ok(Math.abs(secondsAtStep(parsed, 32) - (4 + 4 / 3)) < 1e-12);
   assert.ok(Math.abs(secondsAtStep(parsed, 64) - parsed.durationSeconds) < 1e-12);
+});
+
+test('warns when a base-tempo delay meets section tempo changes', () => {
+  const raw = {
+    mode: 'song',
+    bpm: 120,
+    tracks: [{ name: 'lead', pattern: 'C4:16', delay: { steps: 2 } }],
+    arrangement: [
+      { name: 'a', bars: 1, bpm: 90 },
+      { name: 'b', bars: 1, bpm: 120 },
+    ],
+  } as const;
+  const warned = parseScore(raw);
+  assert.ok(
+    warned.warnings.some((warning) => warning.startsWith('delay-base-tempo: track lead')),
+  );
+
+  const followed = parseScore({
+    ...raw,
+    tracks: [{ name: 'lead', pattern: 'C4:16', delay: { steps: 2, follow: 'section' } }],
+  });
+  assert.ok(!followed.warnings.some((warning) => warning.startsWith('delay-base-tempo')));
+
+  const noDelay = parseScore({ ...raw, tracks: [{ name: 'lead', pattern: 'C4:16' }] });
+  assert.ok(!noDelay.warnings.some((warning) => warning.startsWith('delay-base-tempo')));
+
+  const silentDelay = parseScore({
+    ...raw,
+    tracks: [{ name: 'lead', pattern: 'C4:16', delay: { steps: 2, mix: 0 } }],
+  });
+  assert.ok(!silentDelay.warnings.some((warning) => warning.startsWith('delay-base-tempo')));
+
+  // A muted track has no timeline, so its delay cannot be heard.
+  const muted = parseScore({
+    ...raw,
+    arrangement: raw.arrangement.map((section) => ({ ...section, mute: ['lead'] })),
+  });
+  assert.ok(!muted.warnings.some((warning) => warning.startsWith('delay-base-tempo')));
 });
 
 test('rejects section bpm outside the score range', () => {

@@ -115,7 +115,7 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 | highpassHz | 20-4000 Hz, 12 dB/oct high-pass on this track only | none |
 | lowShelf | a gain in dB (-24..24) at 250 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
 | highShelf | a gain in dB (-24..24) at 4000 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
-| delay | {steps 1-64, feedback 0-0.95, mix 0-1}; timed against the top-level bpm even when sections change tempo; a delay at least one loop long folds through the loop seam; in song mode a delay longer than the song is silent | none |
+| delay | {steps 1-64, feedback 0-0.95, mix 0-1, follow "base" or "section"}; follow defaults to "base" (top-level bpm); "section" times each echo on the grid of the section it lands in; a delay at least one loop long folds through the loop seam; in song mode a delay longer than the song is silent | none |
 
 - mix-stage fields are flat track fields, never nested under "mix".
 - drum tracks ignore waveform, envelope and instrument; each hit is its own transient.
@@ -236,6 +236,7 @@ Single-letter tokens are case-insensitive except r, which is a rest; R is the ri
 
 - with an arrangement, mode defaults to song; an arrangement without song mode is an error.
 - per-section bpm changes tempo only at section boundaries: the arrangement still writes bars and steps, but the section's duration is bars * beatsPerBar * 60 / bpm. Loop mode keeps one bpm, and there are no gradual ramps or arbitrary tempo automation.
+- a delay stays on the top-level bpm by default; set delay.follow to "section" to time echoes on each section's grid (a short tape-like pitch shift is possible at the boundary).
 - sections should be a whole multiple of every pattern they use; otherwise the parser warns (pattern-misaligned) and truncates the last repetition.
 - filter and energy stack: the sweep runs first, then energy multiplies the cutoff; gain and gains apply after energy.
 - a fill whose pattern does not divide the fill window warns (fill-misaligned).
@@ -303,4 +304,5 @@ Both tools accept detail: "raw". p8_music writes the full render report (includi
 | a chord on a drum track | error; use one hit per step |
 | an envelope name that collides with an effect, a drum articulation or a drum parameter | error |
 | an absolute or escaping sample path, or a non-.wav sample | error before rendering |
-| a pattern that does not divide the loop or section length | warning (pattern-misaligned) and a truncated last repetition |`;
+| a pattern that does not divide the loop or section length | warning (pattern-misaligned) and a truncated last repetition |
+| a step delay left on the base bpm while sections change tempo | warning (delay-base-tempo); set delay.follow to "section" or accept a constant echo time |`;

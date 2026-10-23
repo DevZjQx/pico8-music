@@ -510,6 +510,109 @@ test('renders the section-tempo example with different bpm per section', async (
   assert.ok(peak(output.wav) > 1000, 'tempo-section example must be audible');
 });
 
+test('an opt-in delay can follow each section tempo', () => {
+  const render = (follow: 'base' | 'section') =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          mode: 'song',
+          bpm: 120,
+          stepsPerBeat: 4,
+          tracks: [
+            {
+              name: 'lead',
+              waveform: 'triangle',
+              pattern: 'C4:1 -:15',
+              delay: { steps: 4, feedback: 0, mix: 1, follow },
+            },
+          ],
+          arrangement: [
+            { name: 'fast', bars: 1, bpm: 120 },
+            { name: 'slow', bars: 1, bpm: 60 },
+          ],
+        }),
+        { post: [] },
+      ).wav,
+    );
+
+  const base = render('base');
+  const section = render('section');
+  // The second section starts at 2 s. A 4-step echo of its first note lands at
+  // 2.5 s when the delay uses the base 120 bpm, and at 3.0 s when it uses the
+  // section's 60 bpm.
+  assert.ok(rmsAll(base, 2.48, 2.7) > 0.02, 'base echo should land at 2.5 s');
+  assert.ok(rmsAll(base, 2.98, 3.2) < 0.005, 'base echo must not follow section tempo');
+  assert.ok(rmsAll(section, 2.98, 3.2) > 0.02, 'section echo should land at 3.0 s');
+  assert.ok(rmsAll(section, 2.48, 2.7) < 0.005, 'section echo must not use the base tempo');
+});
+
+test('a section-following delay re-times an echo that crosses a boundary', () => {
+  const render = (follow: 'base' | 'section') =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          mode: 'song',
+          bpm: 120,
+          stepsPerBeat: 4,
+          tracks: [
+            {
+              waveform: 'triangle',
+              pattern: '-:14 C4:1 -:1',
+              delay: { steps: 4, feedback: 0, mix: 1, follow },
+            },
+          ],
+          arrangement: [
+            { name: 'fast', bars: 1, bpm: 120 },
+            { name: 'slow', bars: 1, bpm: 60 },
+          ],
+        }),
+        { post: [] },
+      ).wav,
+    );
+
+  const base = render('base');
+  const section = render('section');
+  // The note is at step 14 (1.75 s). At the base 120 bpm its echo is 4 steps
+  // later, at 2.25 s; on the tempo map it lands at step 18, which is 2.5 s,
+  // because steps 16-17 already belong to the 60 bpm section.
+  assert.ok(rmsAll(base, 2.23, 2.45) > 0.02, 'base echo should land at 2.25 s');
+  assert.ok(rmsAll(section, 2.48, 2.7) > 0.02, 'cross-boundary echo should land at 2.5 s');
+  assert.ok(
+    rmsAll(section, 2.23, 2.45) < 0.005,
+    'cross-boundary echo must not stay on the base grid',
+  );
+});
+
+test('a section-following delay uses a uniform section tempo, not the base bpm', () => {
+  const output = monoOf(
+    renderLoop(
+      parseScore({
+        mode: 'song',
+        bpm: 120,
+        stepsPerBeat: 4,
+        tracks: [
+          {
+            name: 'lead',
+            waveform: 'triangle',
+            pattern: 'C4:1 -:15',
+            delay: { steps: 4, feedback: 0, mix: 1, follow: 'section' },
+          },
+        ],
+        arrangement: [
+          { name: 'a', bars: 1, bpm: 60 },
+          { name: 'b', bars: 1, bpm: 60 },
+        ],
+      }),
+      { post: [] },
+    ).wav,
+  );
+
+  // Both sections run at 60 bpm even though the base tempo is 120, so the
+  // four-step echo of the note at 0 s lands at 1.0 s, not 0.5 s.
+  assert.ok(rmsAll(output, 0.98, 1.2) > 0.02, 'echo should use the section tempo');
+  assert.ok(rmsAll(output, 0.48, 0.7) < 0.005, 'echo must not use the base tempo');
+});
+
 test('renders the motif example with nested phrases and transforms', async () => {
   const raw = await readFile(new URL('../examples/motifs.json', import.meta.url), 'utf8');
   const example = parseScore(raw);
@@ -1156,6 +1259,27 @@ test('per-harmonic decay lets highs die before the fundamental', () => {
 
   assert.ok(lateHigh < earlyHigh * 0.2, `high early ${earlyHigh} late ${lateHigh}`);
   assert.ok(lateLow > earlyLow * 0.3, `low early ${earlyLow} late ${lateLow}`);
+});
+
+test('section-following delay is a no-op in loop mode', () => {
+  const render = (follow: 'base' | 'section') =>
+    renderLoop(
+      parseScore({
+        bpm: 120,
+        stepsPerBeat: 4,
+        bars: 1,
+        tracks: [
+          {
+            waveform: 'triangle',
+            pattern: 'C4:2 -:2 -:2 -:2 -:2 -:2 -:2 -:2',
+            delay: { steps: 3, feedback: 0.4, mix: 0.5, follow },
+          },
+        ],
+      }),
+      { post: [], minutes: 0.05 },
+    ).wav;
+
+  assert.ok(Buffer.from(render('base')).equals(Buffer.from(render('section'))));
 });
 
 test('send and delay keep the loop seam seamless', () => {

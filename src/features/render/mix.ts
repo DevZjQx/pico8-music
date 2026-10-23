@@ -1,4 +1,4 @@
-import type { TrackDelay } from '../score/feature.ts';
+import type { Score, TrackDelay } from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
 
 const DUCK_ATTACK_SECONDS = 0.005;
@@ -60,10 +60,40 @@ export function applyDuck(
 }
 
 /**
- * Feedback delay timed in steps. Loop mode runs three passes so the line is
- * already primed with the loop's tail; only the last pass is written back.
+ * Feedback delay timed in steps. `follow: "base"` (the default) keeps one
+ * echo time for the whole stem. `follow: "section"` measures the delay on the
+ * step grid at the point the echo lands, so a section tempo change re-times
+ * the echoes that cross it; loop mode has one tempo, where both modes agree.
+ * Loop mode runs three passes so the line is already primed with the loop's
+ * tail; only the last pass is written back.
  */
 export function applyDelay(
+  samples: Float32Array,
+  delay: TrackDelay,
+  score: Score,
+  rate: number,
+  loopSamples: number,
+  wrap: boolean,
+  signal?: AbortSignal,
+): void {
+  const firstSection = score.sections[0];
+  if (delay.follow === 'section' && !wrap && firstSection !== undefined) {
+    const uniform = score.sections.every(
+      (section) => section.stepSeconds === firstSection.stepSeconds,
+    );
+    if (!uniform) {
+      applySectionDelay(samples, delay, score, rate, signal);
+      return;
+    }
+    // A uniform tempo map needs no interpolation; keep the integer read path
+    // so `follow: "section"` is exactly a constant delay at that tempo.
+    applyConstantDelay(samples, delay, firstSection.stepSeconds, rate, loopSamples, wrap, signal);
+    return;
+  }
+  applyConstantDelay(samples, delay, score.stepSeconds, rate, loopSamples, wrap, signal);
+}
+
+function applyConstantDelay(
   samples: Float32Array,
   delay: TrackDelay,
   stepSeconds: number,
@@ -101,4 +131,66 @@ export function applyDelay(
   }
 
   samples.set(output);
+}
+
+/**
+ * Section-following delay: at output time `t`, read the signal from `steps`
+ * grid steps earlier, i.e. `secondsAtStep(stepAtTime(t) - steps)`. Both the
+ * write step and the read step advance with the arrangement's tempo map, so
+ * the read position is continuous and monotonic; only its rate changes at a
+ * boundary, which gives a short tape-like pitch shift instead of a click.
+ * Song mode only: loop mode has no sections.
+ */
+function applySectionDelay(
+  samples: Float32Array,
+  delay: TrackDelay,
+  score: Score,
+  rate: number,
+  signal?: AbortSignal,
+): void {
+  const sections = score.sections;
+  const starts = sections.map((section) => Math.round(section.startSeconds * rate));
+  const line = new Float32Array(samples.length);
+  let writeIndex = 0;
+  let readIndex = 0;
+
+  for (let i = 0; i < samples.length; i += 1) {
+    if ((i & 16383) === 0) throwIfAborted(signal);
+    while (writeIndex + 1 < sections.length) {
+      const next = starts[writeIndex + 1];
+      if (next === undefined || i < next) break;
+      writeIndex += 1;
+    }
+    const write = sections[writeIndex];
+    if (write === undefined) break;
+
+    const seconds = i / rate;
+    const writeStep = write.startStep + (seconds - write.startSeconds) / write.stepSeconds;
+    const readStep = writeStep - delay.steps;
+
+    let delayed = 0;
+    if (readStep >= 0) {
+      while (readIndex + 1 < sections.length) {
+        const next = sections[readIndex + 1];
+        if (next === undefined || readStep < next.startStep) break;
+        readIndex += 1;
+      }
+      const read = sections[readIndex];
+      if (read !== undefined) {
+        const readSeconds = read.startSeconds + (readStep - read.startStep) * read.stepSeconds;
+        // The read point is always earlier than `i`, so clamping the upper
+        // neighbour to `i - 1` never reads a sample the loop has not written.
+        const position = Math.max(0, Math.min(readSeconds * rate, i - 1));
+        const whole = Math.floor(position);
+        const fraction = position - whole;
+        const a = line[whole] ?? 0;
+        const b = whole + 1 < i ? line[whole + 1] ?? 0 : a;
+        delayed = a + (b - a) * fraction;
+      }
+    }
+
+    const input = samples[i] ?? 0;
+    line[i] = input + delay.feedback * delayed;
+    samples[i] = input + delay.mix * delayed;
+  }
 }

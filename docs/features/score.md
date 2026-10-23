@@ -76,8 +76,11 @@ musical rule; `score` validates that cap together with the 256-section and
 changes the tempo only at a section boundary; the step grid stays integral, so
 patterns, fills, and swing keep their existing semantics. Loop mode remains a
 single tempo. Gradual ramps and arbitrary tempo automation are deliberately
-deferred, and `delay.steps` keeps the top-level `bpm` as its reference so a
-track's echo time does not silently change between sections. `humanize` is
+deferred. `delay.steps` keeps the top-level `bpm` as its default reference so a
+track's echo time does not silently change between sections; `delay.follow:
+"section"` opts into measuring each echo on the grid of the section it lands
+in, at the cost of a short tape-like varispeed window when the read head
+crosses a tempo boundary. `humanize` is
 carried as two depths and resolved by the renderer against the score seed, so
 `score` never has to know the timing grid's sample rate. Drum articulations are
 parsed into a `DrumEffect`

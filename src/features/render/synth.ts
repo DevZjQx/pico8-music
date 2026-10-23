@@ -607,7 +607,7 @@ export function renderScore(
       );
     }
     if (track.delay) {
-      applyDelay(buffer, track.delay, score.stepSeconds, rate, loopSamples, wrap, signal);
+      applyDelay(buffer, track.delay, score, rate, loopSamples, wrap, signal);
     }
     if (track.duck > 0) applyDuck(buffer, kicks, track.duck, rate, loopSamples, wrap, signal);
 

@@ -8,6 +8,7 @@ export { SCORE_BRIEF, SCORE_HELP } from './help.ts';
 export { EFFECT_NAMES, WAVEFORM_NAMES } from './notes.ts';
 export { DEFAULT_TUNING, TEMPERAMENT_NAMES, frequencyOf, tuningCentsOf } from './tuning.ts';
 export type {
+  DelayFollow,
   DrumName,
   DrumParams,
   Effect,

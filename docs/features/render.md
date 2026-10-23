@@ -90,11 +90,15 @@ before filters, delay, ducking, pan, and send, so those parameters never leak
 across tracks. Humanize is a stateless hash of `(seed, track, event, voice)`:
 the offset wraps on the loop seam and the depth-zero case skips the multiply
 altogether, which keeps old scores sample-identical. A track's step delay is
-timed against the top-level `bpm`, not the section tempo, so its read offset is
-constant for the whole stem; tempo-following delay would need a modulated read
-head and is deliberately not part of section tempo. A section riser is a
-noise-driven band-pass sweep plus a quiet sine sweep, deterministic from the
-seed and faded to zero at the boundary. The synth renders one sample-exact loop;
+timed against the top-level `bpm` by default, so its read offset is constant
+for the whole stem. With `delay.follow: "section"` the read point is
+`secondsAtStep(stepAtTime(t) - steps)`: it stays continuous and monotonic, so
+there is no click, but its rate changes at a tempo boundary and gives a short
+tape-like pitch shift. A uniform tempo map takes the integer constant-delay path
+even with the option on, so the option only changes the reference when the
+sections themselves differ. A section riser is a noise-driven band-pass sweep
+plus a quiet sine sweep, deterministic from the seed and faded to zero at the
+boundary. The synth renders one sample-exact loop;
 the post stage may repeat it for reverb steady state, the delay runs three
 passes in loop mode so its line is primed with the loop's tail, and the send bus
 takes the same three-pass steady state before it is added to the dry mix. A
