@@ -35,17 +35,17 @@ export function addSectionRisers(
   signal?: AbortSignal,
 ): void {
   if (score.sections.length === 0) return;
-  const barSamples = score.beatsPerBar * score.stepSeconds * rate;
   const maxCutoff = rate * 0.45;
 
   score.sections.forEach((section, sectionIndex) => {
     if (section.riserBars === undefined) return;
     throwIfAborted(signal);
 
+    const barSamples = score.beatsPerBar * section.stepSeconds * rate;
     const end = Math.min(
       left.length,
       right.length,
-      Math.round((section.startStep + section.steps) * score.stepSeconds * rate),
+      Math.round((section.startSeconds + section.durationSeconds) * rate),
     );
     const length = Math.min(end, Math.round(section.riserBars * barSamples));
     const start = Math.max(0, end - length);

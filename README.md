@@ -84,14 +84,14 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 }
 ```
 
-`score` 是 JSON 字符串，不是嵌套对象：这样在 DSH 和 Pi 两种宿主的参数校验下行为一致。`scoreFile` 是相对工作区的路径，省略 `.json` 后缀时自动补上，每次渲染都会重新读取文件；`score` 和 `scoreFile` 只能给一个。`post`、`preset`、`style`、`quality`、`width`、`monoBelowHz`、`target`、`speed`、`wet`、`toneHz`、`minutes`、`out` 都是 `p8_music` 工具参数，和 `score` / `scoreFile` 平级；不要写进 score JSON，否则会报 `unknown field` 并提示它们属于工具参数。更多示例见 `examples/m1-16bar.json`、`examples/motifs.json`、`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`、`examples/m3-space-motion.json`、`examples/m5-drums-fill.json`、`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`、`examples/m8-samples.json`、`examples/m9-additive-textures.json`、`examples/m12-soft.json`。
+`score` 是 JSON 字符串，不是嵌套对象：这样在 DSH 和 Pi 两种宿主的参数校验下行为一致。`scoreFile` 是相对工作区的路径，省略 `.json` 后缀时自动补上，每次渲染都会重新读取文件；`score` 和 `scoreFile` 只能给一个。`post`、`preset`、`style`、`quality`、`width`、`monoBelowHz`、`target`、`speed`、`wet`、`toneHz`、`minutes`、`out` 都是 `p8_music` 工具参数，和 `score` / `scoreFile` 平级；不要写进 score JSON，否则会报 `unknown field` 并提示它们属于工具参数。更多示例见 `examples/m1-16bar.json`、`examples/motifs.json`、`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`、`examples/m3-space-motion.json`、`examples/m5-drums-fill.json`、`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`、`examples/m8-samples.json`、`examples/m9-additive-textures.json`、`examples/m12-soft.json`、`examples/m13-tempo-sections.json`。
 
 ### Loop 模式
 
 | 字段 | 范围 | 默认 |
 | --- | --- | --- |
 | `mode` | `loop` / `song` | 没有 `arrangement` 时为 `loop` |
-| `bpm` | 30-300 | 90 |
+| `bpm` | 30-300；loop 模式的唯一速度，也是 song 模式每个 section 的默认速度 | 90 |
 | `stepsPerBeat` | 1-8 整数 | 4 |
 | `beatsPerBar` | 1-16 整数；3 表示 3/4，6 配 `stepsPerBeat:2` 表示 6/8 | 4 |
 | `bars` | 1-64 整数（song 模式的 section 也是 1-64，可选总 `bars` 为 1-256） | 4 |
@@ -337,10 +337,10 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
     { "name": "bass", "role": "bass", "waveform": "tilted_saw", "pattern": "F1:1 F1:1 C2:1 F1:1" }
   ],
   "arrangement": [
-    { "name": "intro", "bars": 4, "mute": ["drums", "bass"], "filter": 1200 },
-    { "name": "build", "bars": 4, "patterns": { "drums": "drums.B" } },
-    { "name": "drop", "bars": 8, "gain": 1.05, "patterns": { "bass": "bass.B" } },
-    { "name": "break", "bars": 4, "mute": ["drums"], "filter": 600 }
+    { "name": "intro", "bars": 4, "bpm": 140, "mute": ["drums", "bass"], "filter": 1200 },
+    { "name": "build", "bars": 4, "bpm": 155, "patterns": { "drums": "drums.B" } },
+    { "name": "drop", "bars": 8, "bpm": 175, "gain": 1.05, "patterns": { "bass": "bass.B" } },
+    { "name": "break", "bars": 4, "bpm": 140, "mute": ["drums"], "filter": 600 }
   ]
 }
 ```
@@ -349,7 +349,8 @@ PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个�
 - 每个 section 的长度应当是所用 pattern 长度的整数倍；否则解析器仍按旧行为截断最后一遍，并在报告里写 `pattern-misaligned` 警告。loop 模式也会对不整除 loop 的 pattern 给出同样警告。
 - 一次渲染的 arrangement 总量上限是 15 分钟和 256 个 section；最终输出（包括降速后）也以 15 分钟为硬上限，超出会直接报错，而不是分配一个不可控的缓冲区。
 - `patterns` 可以放在顶层，也可以放在 track 内；section 的 `patterns` 用 track 的 `name` 或 `role` 指向 pattern 名。也可以直接写内联 pattern（如 `C4:4 C4:4`，或单 token `C4`）；已定义的 pattern 名优先。
-- section 字段：`bars`（必填）、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`fill`、`riser`。
+- section 字段：`bars`（必填）、`bpm`、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`fill`、`riser`。
+- `bpm`：可选，30-300，默认继承顶层 `bpm`。变速只发生在 section 边界，小节和 step 网格不变；该段实际时长是 `bars * beatsPerBar * 60 / bpm`。loop 模式仍只有一个速度，不支持段内渐快/渐慢或任意 BPM 自动化。track 的 `delay.steps` 始终按顶层 `bpm` 计时，因此在变速段之间保持不变。
 - `riser`：1-64 小节，不能超过所在 section 的长度；在这一段末尾合成一条噪声 + 正弦上行扫频，正好结束在段落边界，用作 build/转场的上扬。它不占 track，声音由 `seed` 决定。
 - `energy`：0-1 的段落宏。0 时该段增益 ×0.5，若有 `filter` 则截止频率 ×0.35；1（默认）不改变任何东西，所以旧 score 不受影响。适合写 intro/break 的“收”。
 - `fill`：`{"bars":1,"patterns":{"drums":"drums.fill"}}`，用指定 pattern 替换该 section 最后 1-2 小节的普通 pattern；`patterns` 的键可以是 track 的 `name` 或 `role`。fill pattern 长度不整除 fill 窗口时会在报告里给出 `fill-misaligned` 警告。
@@ -459,6 +460,7 @@ bun run check      # 边界检查 + 类型检查 + 测试
 - 调律已做：顶层 `tuning` 的 `a4` 400-480 Hz、七种内置律制和逐音 `cents`；律制以 A 为锚点，所以换律制不会移动 A4，逐音 `cents` 还能在此基础上微调任意键。采样音源靠变速跟随目标频率，所以逐键微调也生效；但没有 per-zone 多采样映射，`samples.root` 仍按素材自身的 440 Hz 十二平均律解释。
 - 轨数上限是 32，不是音乐规则：每条轨都要一整段 buffer 和一次逐样本混音，所以长歌 + 很多轨会明显变慢。需要更多层次时优先增加 track，而不是把和弦塞到 8 个声部以上。
 - `humanize` 只改时序和力度，不做 probability/ratchet；`tuplet` 仍不做：三连音需要分数 step 网格，会同时影响 parser、swing、段落对齐和循环接缝，收益低于成本。
+- 段落变速已做：`arrangement[].bpm` 在 section 边界切换速度，默认继承顶层 `bpm`；loop 模式仍是单一 BPM。暂不做段内渐快/渐慢、任意 BPM 自动化，也不让 `delay.steps` 跟随段落速度。
 - song 模式的 `send` 混响和 `post` 混响尾音默认会在歌曲结束时截断；设置顶层 `tail` 可以留出收尾时间，或用 `send: 0` + `post: []` 做紧结尾。
 - `limiter` 按样本峰值工作，不做 4× 过采样，所以它是 sample-peak 而不是严格的 true-peak limiter；44.1 kHz 的 WAV 上两者差距通常小于 0.5 dB。
 - 循环长为整数采样；`speed` 不是整数比时会有一点点有效速度偏差（< 0.01%）。

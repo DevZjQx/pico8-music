@@ -11,7 +11,9 @@ unison detune, drive, per-note filter envelopes, opt-in velocity-to-timbre
 (filter opening and drive), sample pitch/loop/gain, and
 drum sample replacement), polyphonic event scheduling (chords and legato
 gates overlap without voice stealing), swing offsets, deterministic
-`humanize` timing/velocity, an opt-in `quality: "clean"` band-limited chip/FM
+`humanize` timing/velocity, the score's per-section tempo map (events, gates,
+swing, slides, arps, section filters, and risers resolve through absolute
+seconds), an opt-in `quality: "clean"` band-limited chip/FM
 path, synthetic drum voices and their articulations
 (`ghost`, `flam`, `roll`) and per-hit `pitch` / `decay` / `tone`, arrangement
 `riser` sweeps, song-end `tail` extension, song timelines, section `energy`
@@ -42,7 +44,7 @@ the report as tool text belong to `app/render-service.ts` /
 normalisation is, as an explicit `loudness` post step.
 
 **Depends on.** `score` through its single public entry, for the `Score` type
-only.
+and the tempo-map helpers that resolve a step to seconds.
 
 **Public surface.** `feature.ts` only; the export list is not repeated here.
 
@@ -87,7 +89,10 @@ sample-exact rule as a normal one-shot. Each track renders into its own buffer
 before filters, delay, ducking, pan, and send, so those parameters never leak
 across tracks. Humanize is a stateless hash of `(seed, track, event, voice)`:
 the offset wraps on the loop seam and the depth-zero case skips the multiply
-altogether, which keeps old scores sample-identical. A section riser is a
+altogether, which keeps old scores sample-identical. A track's step delay is
+timed against the top-level `bpm`, not the section tempo, so its read offset is
+constant for the whole stem; tempo-following delay would need a modulated read
+head and is deliberately not part of section tempo. A section riser is a
 noise-driven band-pass sweep plus a quiet sine sweep, deterministic from the
 seed and faded to zero at the boundary. The synth renders one sample-exact loop;
 the post stage may repeat it for reverb steady state, the delay runs three

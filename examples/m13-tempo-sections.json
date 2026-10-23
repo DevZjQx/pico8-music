@@ -1,0 +1,48 @@
+{
+  "mode": "song",
+  "bpm": 120,
+  "stepsPerBeat": 4,
+  "seed": 1301,
+  "patterns": {
+    "drums.main": "K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1",
+    "drums.drop": "K:1 H:1 S:1 H:1 K:1 K:1 S:1 H:1",
+    "bass.main": "C2:2 C2:2 G1:2 C2:2",
+    "lead.main": "C4:2 Eb4:2 G4:2 Bb4:2"
+  },
+  "tracks": [
+    { "name": "drums", "role": "drums", "pattern": "drums.main" },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "pattern": "bass.main",
+      "filter": { "cutoffHz": 1100, "resonance": 1.8 }
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "waveform": "pulse",
+      "pattern": "lead.main",
+      "envelope": { "attack": 0.005, "decay": 0.09, "sustain": 0.35, "release": 0.04 }
+    }
+  ],
+  "arrangement": [
+    { "name": "intro", "bars": 4, "bpm": 90, "mute": ["drums"], "filter": 1000 },
+    {
+      "name": "build",
+      "bars": 4,
+      "bpm": 120,
+      "patterns": { "drums": "drums.main" },
+      "filter": { "from": 900, "to": 9000 },
+      "riser": 2
+    },
+    {
+      "name": "drop",
+      "bars": 4,
+      "bpm": 150,
+      "patterns": { "drums": "drums.drop" },
+      "gain": 1.05
+    },
+    { "name": "outro", "bars": 2, "bpm": 100, "mute": ["drums"], "energy": 0.35 }
+  ]
+}

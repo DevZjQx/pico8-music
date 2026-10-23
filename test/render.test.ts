@@ -436,6 +436,31 @@ test('song mode follows the arrangement and ignores minutes', () => {
   assert.ok(dropEnergy > introEnergy * 2, `drop ${dropEnergy.toFixed(0)} vs intro ${introEnergy.toFixed(0)}`);
 });
 
+test('section bpm changes event timing and the rendered song length', () => {
+  const song = parseScore({
+    mode: 'song',
+    bpm: 120,
+    stepsPerBeat: 4,
+    tracks: [{ name: 'lead', waveform: 'triangle', pattern: 'C4:1 -:15' }],
+    arrangement: [
+      { name: 'slow', bars: 1, bpm: 60 },
+      { name: 'fast', bars: 1, bpm: 240 },
+    ],
+  });
+
+  assert.equal(song.durationSeconds, 5);
+  const output = renderLoop(song, { post: [], withWav: false });
+  assert.equal(output.loopSamples, Math.round(5 * 44100));
+  assert.equal(output.durationSeconds, output.loopSamples / 44100);
+
+  // The only notes sit on each section's downbeat: 0 s at 60 bpm and 4 s at
+  // 240 bpm. A global step duration would place the second note somewhere else.
+  assert.ok(rmsBetween(output.left, 0.02, 0.2) > 0.01, 'slow downbeat should sound');
+  assert.ok(rmsBetween(output.left, 1, 3.9) < 1e-6, 'slow bar should leave the rest silent');
+  assert.ok(rmsBetween(output.left, 4.0, 4.05) > 0.01, 'fast downbeat should land at 4 s');
+  assert.ok(rmsBetween(output.left, 4.2, 4.9) < 1e-6, 'fast bar should leave the rest silent');
+});
+
 test('post: [] renders dry and the post chain is validated', () => {
   const dry = renderLoop(score, { post: [], minutes: 0.05 });
   const preset = renderLoop(score, { preset: 'classic', speed: 1, minutes: 0.05 });
@@ -462,6 +487,27 @@ test('renders the 16-bar M1 example with drums, bass, and lead', async () => {
   const output = renderLoop(example, { post: [] });
   assert.ok(output.durationSeconds > 20, `duration ${output.durationSeconds}`);
   assert.ok(peak(output.wav) > 1000, 'example must be audible');
+});
+
+test('renders the section-tempo example with different bpm per section', async () => {
+  const raw = await readFile(
+    new URL('../examples/m13-tempo-sections.json', import.meta.url),
+    'utf8',
+  );
+  const example = parseScore(raw);
+  assert.deepEqual(
+    example.sections.map((section) => [section.name, section.bpm]),
+    [
+      ['intro', 90],
+      ['build', 120],
+      ['drop', 150],
+      ['outro', 100],
+    ],
+  );
+
+  const output = renderLoop(example, { post: [] });
+  assert.equal(output.loopSamples, Math.round(example.durationSeconds * 44100));
+  assert.ok(peak(output.wav) > 1000, 'tempo-section example must be audible');
 });
 
 test('renders the motif example with nested phrases and transforms', async () => {

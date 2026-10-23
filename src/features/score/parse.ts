@@ -1670,6 +1670,7 @@ interface ArrangementResult {
   readonly sections: readonly ScoreSection[];
   readonly timelines: readonly (readonly NoteEvent[])[];
   readonly totalSteps: number;
+  readonly durationSeconds: number;
 }
 
 interface SectionFilter {
@@ -1771,6 +1772,8 @@ function parseArrangement(
   tracks: readonly ScoreTrack[],
   motifMaps: readonly ReadonlyMap<string, string>[],
   stepsPerBar: number,
+  stepsPerBeat: number,
+  defaultBpm: number,
   globalPatterns: ReadonlyMap<string, string>,
   expectedBars: number | undefined,
   envelopes: ReadonlyMap<string, Envelope>,
@@ -1790,23 +1793,27 @@ function parseArrangement(
   const patternCaches: Map<string, TrackPattern>[] = tracks.map(() => new Map());
   const sections: ScoreSection[] = [];
   let cursor = 0;
+  let secondsCursor = 0;
 
   value.forEach((raw, index) => {
     const path = `arrangement[${index}]`;
     if (!isRecord(raw)) {
       throw new ScoreError(
-        `${path} must be an object with bars, patterns, mute, gain, filter, energy, fill, or riser`,
+        `${path} must be an object with bars, bpm, patterns, mute, gain, filter, energy, fill, or riser`,
       );
     }
     rejectUnknownKeys(
       raw,
-      ['name', 'bars', 'mute', 'gain', 'gains', 'filter', 'patterns', 'fill', 'energy', 'riser'],
+      ['name', 'bars', 'bpm', 'mute', 'gain', 'gains', 'filter', 'patterns', 'fill', 'energy', 'riser'],
       path,
     );
 
     const name = readString(raw.name, `${path}.name`, `section${index}`);
     const bars = readRequiredNumber(raw.bars, `${path}.bars`, 1, 64, true);
+    const sectionBpm = readNumber(raw.bpm, `${path}.bpm`, defaultBpm, 30, 300);
+    const sectionStepSeconds = 60 / sectionBpm / stepsPerBeat;
     const sectionSteps = bars * stepsPerBar;
+    const sectionSeconds = sectionSteps * sectionStepSeconds;
     const sectionEnd = cursor + sectionSteps;
 
     const mute = parseStringArray(raw.mute, `${path}.mute`);
@@ -1934,12 +1941,17 @@ function parseArrangement(
       name,
       startStep: cursor,
       steps: sectionSteps,
+      bpm: sectionBpm,
+      stepSeconds: sectionStepSeconds,
+      startSeconds: secondsCursor,
+      durationSeconds: sectionSeconds,
       energy,
       ...(filter === undefined ? {} : { filterHz: filter.fromHz }),
       ...(filter?.toHz === undefined ? {} : { filterEndHz: filter.toHz }),
       ...(riserBars === undefined ? {} : { riserBars }),
     });
     cursor = sectionEnd;
+    secondsCursor += sectionSeconds;
   });
 
   if (expectedBars !== undefined && cursor !== expectedBars * stepsPerBar) {
@@ -1948,7 +1960,7 @@ function parseArrangement(
     );
   }
 
-  return { sections, timelines, totalSteps: cursor };
+  return { sections, timelines, totalSteps: cursor, durationSeconds: secondsCursor };
 }
 
 function parseGlobalPatterns(value: unknown): ReadonlyMap<string, string> {
@@ -2179,6 +2191,8 @@ export function parseScore(input: string | unknown): Score {
   let sections: readonly ScoreSection[] = [];
   let totalSteps: number;
   let bars: number;
+  let durationSeconds: number;
+  const stepSeconds = 60 / bpm / stepsPerBeat;
   const warnings: string[] = [];
 
   if (mode === 'song') {
@@ -2189,6 +2203,8 @@ export function parseScore(input: string | unknown): Score {
       baseTracks,
       motifMaps,
       stepsPerBar,
+      stepsPerBeat,
+      bpm,
       globalPatterns,
       expectedBars,
       envelopes,
@@ -2198,6 +2214,7 @@ export function parseScore(input: string | unknown): Score {
     totalSteps = arrangement.totalSteps;
     bars = totalSteps / stepsPerBar;
     sections = arrangement.sections;
+    durationSeconds = arrangement.durationSeconds;
     tracks = baseTracks.map((track, index) => ({
       ...track,
       timeline: arrangement.timelines[index] ?? [],
@@ -2205,6 +2222,7 @@ export function parseScore(input: string | unknown): Score {
   } else {
     bars = readNumber(raw.bars, 'bars', DEFAULTS.bars, 1, 64, true);
     totalSteps = bars * stepsPerBar;
+    durationSeconds = totalSteps * stepSeconds;
     baseTracks.forEach((track) => {
       if (track.patternSteps > 0 && totalSteps % track.patternSteps !== 0) {
         warnings.push(
@@ -2214,8 +2232,6 @@ export function parseScore(input: string | unknown): Score {
     });
   }
 
-  const stepSeconds = 60 / bpm / stepsPerBeat;
-  const durationSeconds = totalSteps * stepSeconds;
   if (durationSeconds + tailSeconds > MAX_SONG_SECONDS) {
     throw new ScoreError(
       `score is ${(durationSeconds + tailSeconds).toFixed(0)} s long including tail; the render budget is ${MAX_SONG_SECONDS} s (15 minutes)`,

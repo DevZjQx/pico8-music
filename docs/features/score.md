@@ -18,7 +18,8 @@ mapping) and per-track `instrument` references, the
 top-level `samples` table (workspace WAV paths with root/loop/gain) and
 `drumSamples` replacements, loop vs song mode, named patterns, arrangement
 resolution (sections, mute, gain, filter and filter sweeps, `energy`, `fill`
-pattern replacement, and `riser` bars), the song-end `tail`, the mix-stage
+pattern replacement, `riser` bars, and per-section `bpm` with a resolved
+step-to-seconds tempo map), the song-end `tail`, the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `highpassHz`,
 `lowShelf`, `highShelf`, `delay`), the
 model-facing DSL reference (`help.ts`), and the normalised `Score` the renderer
@@ -67,9 +68,15 @@ arrangement, and loop seams. Non-4/4 meters are expressible with
 `beatsPerBar` (for example 3 for 3/4, or 6 with `stepsPerBeat: 2` for 6/8);
 fractional meters and tuplets are not. Track count is a render-budget cap (1-32), not a
 musical rule; `score` validates that cap together with the 256-section and
-15-minute budgets, and leaves the musical shape to the model. `humanize` is carried as two depths and resolved by the renderer
-against the score seed, so `score` never has to know the timing grid's sample
-rate. Drum articulations are parsed into a `DrumEffect`
+15-minute budgets, and leaves the musical shape to the model. A section `bpm`
+changes the tempo only at a section boundary; the step grid stays integral, so
+patterns, fills, and swing keep their existing semantics. Loop mode remains a
+single tempo. Gradual ramps and arbitrary tempo automation are deliberately
+deferred, and `delay.steps` keeps the top-level `bpm` as its reference so a
+track's echo time does not silently change between sections. `humanize` is
+carried as two depths and resolved by the renderer against the score seed, so
+`score` never has to know the timing grid's sample rate. Drum articulations are
+parsed into a `DrumEffect`
 on the event instead of DSP parameters, so a motif transform can carry them
 without knowing how they sound; per-hit pitch/decay/tone travel separately as
 `DrumParams`, so they compose with `~ghost`/`~flam`/`~roll` instead of competing

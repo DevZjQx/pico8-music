@@ -33,7 +33,7 @@ The score JSON holds composition only. post, preset, style, speed, wet, toneHz, 
 Loop mode:
 {"bpm":90,"stepsPerBeat":4,"bars":4,"tracks":[{"role":"bass","waveform":"pulse","volume":5,"pattern":"C3:4 E3:4 G3:4 A3:4"}]}
 Song mode adds patterns and an arrangement:
-{"mode":"song","tracks":[{"name":"drums","role":"drums","pattern":"K:1 -:1 H:1 -:1"}],"patterns":{"drums.B":"K:1 H:1 S:1 H:1"},"arrangement":[{"name":"intro","bars":4,"mute":["drums"]},{"name":"drop","bars":8,"patterns":{"drums":"drums.B"}}]}
+{"mode":"song","bpm":150,"tracks":[{"name":"drums","role":"drums","pattern":"K:1 -:1 H:1 -:1"}],"patterns":{"drums.B":"K:1 H:1 S:1 H:1"},"arrangement":[{"name":"intro","bars":4,"bpm":120,"mute":["drums"]},{"name":"drop","bars":8,"bpm":165,"patterns":{"drums":"drums.B"}}]}
 
 ## Render budgets
 | Limit | Value |
@@ -52,7 +52,7 @@ Song mode adds patterns and an arrangement:
 | Field | Values | Default |
 | --- | --- | --- |
 | mode | loop or song; song requires an arrangement, and an arrangement requires song (or omit mode) | song when arrangement is present, else loop |
-| bpm | 30-300 | 90 |
+| bpm | 30-300; the default tempo for loop mode and for every arrangement section | 90 |
 | stepsPerBeat | integer 1-8 | 4 |
 | beatsPerBar | integer 1-16; 3 is 3/4, 6 with stepsPerBeat 2 is 6/8 | 4 |
 | bars | loop 1-64; song sections are 1-64 each, and the optional total is 1-256 and must equal the sum | 4 in loop mode |
@@ -113,7 +113,7 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 | highpassHz | 20-4000 Hz, 12 dB/oct; cuts this stem only, so one part can lose its mud without darkening the mix | none |
 | lowShelf | a gain in dB (-24..24) at 250 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
 | highShelf | a gain in dB (-24..24) at 4000 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
-| delay | {steps 1-64, feedback 0-0.95, mix 0-1}; a delay at least one loop long folds through the loop seam; in song mode a delay longer than the song is silent | none |
+| delay | {steps 1-64, feedback 0-0.95, mix 0-1}; timed against the top-level bpm even when sections change tempo; a delay at least one loop long folds through the loop seam; in song mode a delay longer than the song is silent | none |
 
 - mix-stage fields are flat track fields, never nested under "mix".
 - drum tracks ignore waveform, envelope and instrument; each hit is its own transient.
@@ -222,6 +222,7 @@ Single-letter tokens are case-insensitive except r, which is a rest; R is the ri
 | --- | --- | --- |
 | name | section label | section0, section1, ... |
 | bars | integer 1-64; the total must match the optional top-level bars | required |
+| bpm | 30-300; changes tempo at this section boundary and keeps the step grid | top-level bpm |
 | patterns | track name or role -> pattern name or inline tokens; a defined name wins | none |
 | mute | track names or roles | none |
 | gain | 0-4 | 1 |
@@ -232,6 +233,7 @@ Single-letter tokens are case-insensitive except r, which is a rest; R is the ri
 | fill | {"bars":1,"patterns":{"drums":"fill.pattern"}}: replaces the last 1-2 bars for those tracks | none |
 
 - with an arrangement, mode defaults to song; an arrangement without song mode is an error.
+- per-section bpm changes tempo only at section boundaries: the arrangement still writes bars and steps, but the section's duration is bars * beatsPerBar * 60 / bpm. Loop mode keeps one bpm, and there are no gradual ramps or arbitrary tempo automation.
 - sections should be a whole multiple of every pattern they use; otherwise the parser warns (pattern-misaligned) and truncates the last repetition.
 - filter and energy stack: the sweep runs first, then energy multiplies the cutoff; gain and gains apply after energy.
 - a fill whose pattern does not divide the fill window warns (fill-misaligned).

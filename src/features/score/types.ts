@@ -304,11 +304,19 @@ export interface ScoreTrack {
   readonly delay?: TrackDelay;
 }
 
-/** A resolved arrangement section with absolute step bounds. */
+/** A resolved arrangement section with absolute step and time bounds. */
 export interface ScoreSection {
   readonly name: string;
   readonly startStep: number;
   readonly steps: number;
+  /** Tempo for this section; the top-level `bpm` is the default. */
+  readonly bpm: number;
+  /** Seconds per grid step at this section's tempo. */
+  readonly stepSeconds: number;
+  /** Absolute start time from the beginning of the song. */
+  readonly startSeconds: number;
+  /** Musical duration of the section in seconds. */
+  readonly durationSeconds: number;
   /** Section-wide low-pass cutoff in Hz; absent means no section filter. */
   readonly filterHz?: number;
   /** Sweep target in Hz; when present the cutoff glides from `filterHz` to this. */
@@ -339,7 +347,9 @@ export interface Score {
   readonly beatsPerBar: number;
   readonly bars: number;
   readonly totalSteps: number;
+  /** Seconds per step at the top-level `bpm`; also the timing of every loop-mode score. */
   readonly stepSeconds: number;
+  /** Sum of the section durations in song mode, or `totalSteps * stepSeconds` in loop mode. */
   readonly durationSeconds: number;
   /** 0..0.5; odd steps are delayed by this fraction of a step. */
   readonly swing: number;

@@ -502,7 +502,7 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
             song.left,
             song.right,
             score.sections,
-            score.totalSteps,
+            score.durationSeconds,
             dryContentSamples,
           )
         : [];
@@ -558,7 +558,13 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
       : undefined;
   const sections =
     score.mode === 'song'
-      ? sectionEnergies(finalLeft, finalRight, score.sections, score.totalSteps, contentSamples)
+      ? sectionEnergies(
+          finalLeft,
+          finalRight,
+          score.sections,
+          score.durationSeconds,
+          contentSamples,
+        )
       : [];
   const trimmed =
     safetyGain < 0.7

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseScore, ScoreError } from '../src/features/score/feature.ts';
+import { parseScore, ScoreError, secondsAtStep } from '../src/features/score/feature.ts';
 
 const score = {
   bpm: 120,
@@ -1235,6 +1235,59 @@ test('beatsPerBar changes the bar length without changing the step grid', () => 
 
   assert.throws(() => parseScore({ beatsPerBar: 17, tracks: [{ pattern: 'C4:4' }] }), /beatsPerBar/);
   assert.throws(() => parseScore({ beatsPerBar: 3.5, tracks: [{ pattern: 'C4:4' }] }), /beatsPerBar/);
+});
+
+test('song sections can override bpm and resolve a contiguous tempo map', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    bpm: 120,
+    stepsPerBeat: 4,
+    tracks: [{ name: 'lead', pattern: 'C4:16' }],
+    arrangement: [
+      { name: 'intro', bars: 1, bpm: 60 },
+      { name: 'drop', bars: 1, bpm: 180 },
+      { name: 'outro', bars: 2 },
+    ],
+  });
+
+  assert.deepEqual(
+    parsed.sections.map((section) => [section.name, section.bpm, section.startStep, section.steps]),
+    [
+      ['intro', 60, 0, 16],
+      ['drop', 180, 16, 16],
+      ['outro', 120, 32, 32],
+    ],
+  );
+  assert.deepEqual(
+    parsed.sections.map((section) => [section.startSeconds, section.durationSeconds]),
+    [
+      [0, 4],
+      [4, 4 / 3],
+      [4 + 4 / 3, 4],
+    ],
+  );
+  assert.ok(Math.abs(parsed.durationSeconds - (8 + 4 / 3)) < 1e-12);
+
+  // A section boundary belongs to the tempo that starts there.
+  assert.equal(secondsAtStep(parsed, 0), 0);
+  assert.equal(secondsAtStep(parsed, 16), 4);
+  assert.ok(Math.abs(secondsAtStep(parsed, 32) - (4 + 4 / 3)) < 1e-12);
+  assert.ok(Math.abs(secondsAtStep(parsed, 64) - parsed.durationSeconds) < 1e-12);
+});
+
+test('rejects section bpm outside the score range', () => {
+  const base = {
+    mode: 'song',
+    tracks: [{ pattern: 'C4:4' }],
+  };
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, bpm: 29 }] }),
+    /arrangement\[0\]\.bpm must be between 30 and 300/,
+  );
+  assert.throws(
+    () => parseScore({ ...base, arrangement: [{ bars: 1, bpm: 301 }] }),
+    /arrangement\[0\]\.bpm must be between 30 and 300/,
+  );
 });
 
 test('song sections and fills use beatsPerBar', () => {

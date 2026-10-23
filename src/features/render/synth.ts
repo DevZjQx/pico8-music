@@ -1,3 +1,4 @@
+import { secondsAtStep, stepSecondsAt } from '../score/feature.ts';
 import type {
   DrumName,
   Envelope,
@@ -89,7 +90,7 @@ function buildTimeline(score: Score, track: ScoreTrack, signal?: AbortSignal): r
  * the even step before it.
  */
 function swingSeconds(score: Score, step: number): number {
-  return score.swing !== 0 && step % 2 === 1 ? score.swing * score.stepSeconds : 0;
+  return score.swing !== 0 && step % 2 === 1 ? score.swing * stepSecondsAt(score, step) : 0;
 }
 
 /** Folds the score seed into a per-event seed without losing integer precision. */
@@ -154,6 +155,8 @@ interface MelodicNote {
   readonly trackIndex: number;
   readonly startSample: number;
   readonly gateSamples: number;
+  /** Seconds per step at the event's position; drives slide and arp timing. */
+  readonly stepSeconds: number;
   readonly slideFrom: number;
   readonly seed: number;
   /** Deterministic velocity variation; 1 leaves the authored volume alone. */
@@ -181,7 +184,8 @@ function buildMelodicNotes(
 
   events.forEach((event, eventIndex) => {
     const voice = event.voice ?? 0;
-    const startSeconds = event.step * score.stepSeconds + swingSeconds(score, event.step);
+    const eventStepSeconds = stepSecondsAt(score, event.step);
+    const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, event.step);
     const gateSteps = Math.max(1, event.gateSteps ?? event.steps);
     notes.push({
       track,
@@ -191,7 +195,11 @@ function buildMelodicNotes(
       startSample:
         Math.round(startSeconds * rate) +
         humanizeTimingSamples(score, trackIndex, eventIndex, voice, rate),
-      gateSamples: Math.min(maxGateSamples, Math.max(1, Math.round(gateSteps * score.stepSeconds * rate))),
+      gateSamples: Math.min(
+        maxGateSamples,
+        Math.max(1, Math.round(gateSteps * eventStepSeconds * rate)),
+      ),
+      stepSeconds: eventStepSeconds,
       slideFrom: lastFrequency.get(voice) ?? event.frequency,
       seed: seedFor(score, (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + 1),
       humanizeGain: humanizeGain(score, trackIndex, eventIndex, voice),
@@ -265,7 +273,7 @@ function renderMelodicNote(
     switch (event.effect) {
       case 1: {
         const from = note.slideFrom > 0 ? note.slideFrom : frequency;
-        const slideSeconds = (event.effectParams?.slideSteps ?? 1) * score.stepSeconds;
+        const slideSeconds = (event.effectParams?.slideSteps ?? 1) * note.stepSeconds;
         const amount = slideSeconds > 0 ? Math.min(1, noteSeconds / slideSeconds) : 1;
         frequency = from + (frequency - from) * amount;
         break;
@@ -288,7 +296,7 @@ function renderMelodicNote(
         break;
       case 6:
       case 7: {
-        const period = event.effect === 6 ? score.stepSeconds / 2 : score.stepSeconds;
+        const period = event.effect === 6 ? note.stepSeconds / 2 : note.stepSeconds;
         const arpIndex = Math.floor(noteSeconds / period) % ARP_SEMITONES.length;
         frequency = event.frequency * 2 ** ((ARP_SEMITONES[arpIndex] ?? 0) / 12);
         break;
@@ -347,8 +355,8 @@ function buildDrumHits(
     if (mappedSample !== undefined && sample === undefined) {
       throw new Error(`sample ${JSON.stringify(mappedSample)} for drum ${drum} is missing from the render bank`);
     }
-    const startSeconds = event.step * score.stepSeconds + swingSeconds(score, event.step);
-    const slotSeconds = Math.max(0, event.steps * score.stepSeconds);
+    const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, event.step);
+    const slotSeconds = Math.max(0, event.steps * stepSecondsAt(score, event.step));
     const effect = event.drumEffect;
     const params = event.drumParams;
     const seedBase = (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + event.midi;
@@ -463,20 +471,19 @@ function applySectionFilter(samples: Float32Array, score: Score, rate: number): 
     score.mode === 'song'
       ? Math.max(1, samples.length)
       : Math.max(1, Math.round(score.durationSeconds * rate));
-  const samplesPerStep = score.stepSeconds * rate;
   const sections = score.sections;
   let sectionIndex = 0;
   const cutoffAt = (index: number): number => {
     const local = index % loopSamples;
     while (sectionIndex < sections.length - 1) {
       const current = sections[sectionIndex];
-      if (!current || local < (current.startStep + current.steps) * samplesPerStep) break;
+      if (!current || local < (current.startSeconds + current.durationSeconds) * rate) break;
       sectionIndex += 1;
     }
     const section = sections[sectionIndex];
     if (!section || section.filterHz === undefined) return OPEN_CUTOFF_HZ;
-    const start = section.startStep * samplesPerStep;
-    const length = Math.max(1, section.steps * samplesPerStep);
+    const start = section.startSeconds * rate;
+    const length = Math.max(1, section.durationSeconds * rate);
     const progress = Math.min(1, Math.max(0, (local - start) / length));
     const end = section.filterEndHz ?? section.filterHz;
     const energyFactor = 0.35 + 0.65 * (section.energy ?? 1);

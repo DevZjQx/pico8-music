@@ -362,10 +362,15 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
 
   const repeats = output.repeats;
   const chain = chainLabel(args, style, preset);
+  const sectionBpms = [...new Set(score.sections.map((section) => section.bpm))];
+  const tempo =
+    sectionBpms.length === 0 || (sectionBpms.length === 1 && sectionBpms[0] === score.bpm)
+      ? `${score.bpm} bpm`
+      : `${score.bpm} bpm base, sections ${sectionBpms.join('/')}`;
   const lines = [
     `Rendered ${outputPath}`,
     `duration ${output.durationSeconds.toFixed(1)} s · loop ${output.loopSeconds.toFixed(2)} s × ${repeats} · ${output.rate} Hz stereo`,
-    `mode ${score.mode} · ${chain.mode} · speed ${output.speed.toFixed(2)} · score ${score.bpm} bpm, ${score.bars} bars, ${score.tracks.length} tracks`,
+    `mode ${score.mode} · ${chain.mode} · speed ${output.speed.toFixed(2)} · score ${tempo}, ${score.bars} bars, ${score.tracks.length} tracks`,
     ...(score.samples.size === 0
       ? []
       : [`samples ${score.samples.size} · ${[...score.samples.keys()].join(', ')}`]),

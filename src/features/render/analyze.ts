@@ -396,30 +396,35 @@ function widthOf(left: Float32Array, right: Float32Array): number {
 }
 
 /**
- * Per-section RMS from absolute step bounds. Section boundaries are fractions
- * of the score timeline, so they survive tape/slow resampling unchanged.
+ * Per-section RMS from absolute time bounds. Sections are fractions of the
+ * musical timeline, so they survive tape/slow resampling unchanged even when
+ * earlier sections run at a different tempo.
  */
 export function sectionEnergies(
   left: Float32Array,
   right: Float32Array,
-  sections: readonly { readonly name: string; readonly startStep: number; readonly steps: number }[],
-  totalSteps: number,
+  sections: readonly {
+    readonly name: string;
+    readonly startSeconds: number;
+    readonly durationSeconds: number;
+  }[],
+  totalSeconds: number,
   /** Musical content length; excludes a song tail when it is shorter than the buffer. */
   contentSamples?: number,
 ): SectionReading[] {
   const available = Math.min(left.length, right.length);
-  if (sections.length === 0 || totalSteps <= 0 || available === 0) return [];
+  if (sections.length === 0 || totalSeconds <= 0 || available === 0) return [];
   const length =
     contentSamples === undefined
       ? available
       : Math.max(1, Math.min(available, Math.round(contentSamples)));
 
   return sections.map((section, index) => {
-    const startFraction = section.startStep / totalSteps;
+    const startFraction = section.startSeconds / totalSeconds;
     const endFraction =
       index === sections.length - 1
         ? 1
-        : Math.min(1, (section.startStep + section.steps) / totalSteps);
+        : Math.min(1, (section.startSeconds + section.durationSeconds) / totalSeconds);
     const start = clamp(Math.round(startFraction * length), 0, length);
     const end = clamp(Math.round(endFraction * length), start, length);
     const slice = Math.max(1, end - start);
