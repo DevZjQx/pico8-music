@@ -10,11 +10,13 @@ DSH / Pi 插件：模型用 JSON 作曲，插件默认合成 PICO-8 风格的声
 ## 目录
 
 ```
+.agents/skills/pico8-songwriter/SKILL.md  # 作曲指南（随包分发；DSH 运行时注册，Pi 读 pi.skills）
 src/
-  app/dsh-plugin.ts          # 组合层：注册 p8_music 工具、写文件
+  app/dsh-plugin.ts          # 组合层：注册 p8_music 工具与技能、写文件
   app/pi-extension.ts        # Pi 适配层：p8_music / p8_help 工具 + /p8m 命令
+  app/skill.ts               # 读取 SKILL.md、拆 frontmatter，供 DSH 注册 runtime skill
   features/
-    score/                   # 作曲格式、段落、鼓 token、音符/和弦解析、校验、DSL 说明
+    score/                   # 作曲格式、段落、鼓 token、音符/和弦解析、校验、DSL 线格式
     render/                  # 合成、乐器、鼓、轨道混音、滤波、后处理、稳态循环、WAV
 docs/expressiveness-review.md      # 表现力审查：从慢速混响循环到可编曲的引擎
 docs/evaluation.md           # 曲目评分维度：频谱/瞬态/空间/和声/结构/响度
@@ -48,9 +50,22 @@ dsh plugin --profile web add /path/to/pico8-music
 
 重启对应 profile，模型就会看到 `p8_music` 工具。插件 id 是 `pico8-music`；如果装过旧 id，先移除再重新 add。DSH 从 `package.json.dsh`（`manifestVersion: 1` 与 `bundle.patch`）读取 bundle，入口是 `dist/app/dsh-plugin.js`；Pi 入口是 `dist/app/pi-extension.js`。
 
+## 技能：`pico8-songwriter`
+
+作曲指南只存在一份：`.agents/skills/pico8-songwriter/SKILL.md`，随包分发（`files` 里包含 `.agents/skills`），装好插件两个宿主都能看到：
+
+| | Pi | DSH |
+| --- | --- | --- |
+| 来源 | `package.json.pi.skills` 指向 `./.agents/skills` | `dist/app/dsh-plugin.js` 启动时读取同一个文件，用 `ctx.skills.register(...)` 注册成 runtime skill |
+| 为什么不能只靠扫描 | 包内 `.agents/skills` 目录不在 cwd 祖先链上 | `dsh-skill-filesystem` 只扫 project/custom/user 根，明确忽略包清单和嵌套目录 |
+
+在本仓库里开发时不需要装插件：Pi 和 DSH 都会把 `<repo>/.agents/skills` 当作项目技能根。`ctx.skills` 与 `ctx.commands` 一样是可选服务，用 `ctx.inject(['skills'], …)` 注册；没有技能注册表的 headless 宿主照常只拿到工具。SKILL.md 缺失或 frontmatter 不合法时只打一条 warning，不影响工具注册。
+
+**职责划分：** `SKILL.md` 负责「怎么写曲」——选型（loop / song）、小节与网格、轨道布局、鼓与和声的选择、段落设计、混音决策、读报告改曲的循环；`p8_help`（`src/features/score/help.ts`）只负责「线格式」——字段名、token 语法、范围、默认值、会报错/警告的情况。技能里不再复制字段表，遇到没写到的字段就让模型去调 `p8_help`；两边交叉引用，不重复正文。
+
 ## 帮助文本：`/p8m` 与 `p8_help`
 
-PICO-8 乐谱 DSL 的完整说明不再塞进工具描述里（那会让每个会话、每次请求都带上约 3.4 KB 的乐器说明）。它只存在一处：`src/features/score/help.ts` 的 `SCORE_HELP`，两种宿主都按需读取：
+PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每个会话、每次请求都带上约 3.4 KB 的乐器说明）。它只存在一处：`src/features/score/help.ts` 的 `SCORE_HELP`，两种宿主都按需读取（作曲部分在上面的 `pico8-songwriter` 技能里，两边不重复）：
 
 | | Pi | DSH |
 | --- | --- | --- |

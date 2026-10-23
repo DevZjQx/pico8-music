@@ -16,6 +16,7 @@
 - `score` 只负责解析和归一化，不碰 DSP（详见 [`features/score.md`](./features/score.md)）。
 - `render` 负责合成、混音、后处理，以及后处理链的显式契约（详见 [`features/render.md`](./features/render.md)）。
 - `app` 只负责工具注册、文件写入、报告。
+- **文档分层**：`.agents/skills/pico8-songwriter/SKILL.md` 是作曲指南（选型、小节网格、轨道布局、段落、混音决策、跟报告改曲）；`src/features/score/help.ts` 是线格式（字段、token 语法、范围、默认值、报错）。两者交叉引用，不复制正文；新增字段时先改 `parse.ts`，再改 `help.ts`，只有在“怎么用这个参数写出好听的曲子”发生变化时才动技能文档。
 
 ## 兼容边界
 

@@ -34,7 +34,7 @@ export default function pico8Music(pi: PiApi): void {
     label: 'PICO-8 score reference',
     // No promptSnippet on purpose: the tools section of the system prompt stays short,
     // and the p8_music description plus rules are what point the model here.
-    description: `Show the PICO-8 score DSL reference (the text behind /p8m). ${SCORE_BRIEF}`,
+    description: `Show the PICO-8 score wire-format reference (the text behind /p8m). ${SCORE_BRIEF}`,
     parameters: helpParameters,
     execute(): Promise<PiToolResult> {
       return Promise.resolve(helpResult());
@@ -45,10 +45,10 @@ export default function pico8Music(pi: PiApi): void {
     name: 'p8_music',
     label: 'PICO-8 music renderer',
     description:
-      'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. Call p8_help first for the score DSL.',
+      'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. The pico8-songwriter skill covers composing; p8_help covers every field and range.',
     promptSnippet: 'Render a PICO-8-style loop or song to a WAV file',
     promptGuidelines: [
-      'Call p8_help before composing; it holds the DSL, drum tokens, chords, and post chain.',
+      'Follow the pico8-songwriter skill before composing; p8_help has the field ranges.',
       'Use post: [] for dry output.',
       'Read findings and post-delta to attribute mud/harshness; target adds deviations, not a score.',
       'Revise dark, narrow, sparse, or low-mid-heavy mixes.',
@@ -68,7 +68,7 @@ export default function pico8Music(pi: PiApi): void {
         return { content: [{ type: 'text', text }], details: { text } };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`${message} (call p8_help for the score DSL)`);
+        throw new Error(`${message} (call p8_help for the wire format)`);
       }
     },
   });
@@ -96,7 +96,7 @@ export default function pico8Music(pi: PiApi): void {
   // Same text as p8_help, for the human. A custom message joins the session
   // transcript, so the model also sees the reference on the next turn.
   pi.registerCommand('p8m', {
-    description: 'Show the PICO-8 score DSL reference',
+    description: 'Show the PICO-8 score wire-format reference',
     handler: async () => {
       await pi.sendMessage?.({ customType: 'p8m-help', content: SCORE_HELP, display: true });
     },

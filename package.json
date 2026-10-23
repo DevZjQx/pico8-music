@@ -32,6 +32,9 @@
   "pi": {
     "extensions": [
       "./dist/app/pi-extension.js"
+    ],
+    "skills": [
+      "./.agents/skills"
     ]
   },
   "devDependencies": {
@@ -42,6 +45,7 @@
   },
   "files": [
     "dist",
+    ".agents/skills",
     "README.md",
     "LICENSE",
     "cordis.patch.yml"

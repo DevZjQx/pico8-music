@@ -1,5 +1,6 @@
 import type { ToolDefinition as DshToolDefinition } from '@deepseek-ai/dsh-tools';
 import { SCORE_HELP } from '../features/score/feature.ts';
+import { readSongwriterSkill } from './skill.ts';
 import { analyzeParameters, dshParameters, helpParameters, musicParameters } from './tool-schemas.ts';
 import {
   executeAnalyze,
@@ -29,10 +30,23 @@ type CommandOutcome =
   | { readonly kind: 'success'; readonly text?: string }
   | { readonly kind: 'error'; readonly text: string };
 
+/** Mirrors @deepseek-ai/dsh-skill: an in-memory skill contribution. */
+interface SkillRuntime {
+  register(skill: {
+    name: string;
+    description: string;
+    content: string;
+    path?: string;
+    resourceBase?: { readonly kind: 'directory'; readonly path: string };
+  }): unknown;
+}
+
 interface PluginContext {
   readonly tools?: ToolRuntime;
   /** Human slash commands; absent in UI-less hosts, so registration is optional. */
   readonly commands?: CommandRuntime;
+  /** Skill registry; absent when a composition mounts no skill provider. */
+  readonly skills?: SkillRuntime;
   /** Cordis optional dependency: the child fiber waits for the named services. */
   inject?(deps: readonly string[], callback: (child: PluginContext) => void): unknown;
   readonly logger?: {
@@ -62,7 +76,7 @@ function registerTools(tools: ToolRuntime): void {
   register({
     name: 'p8_help',
     description:
-      'Show the PICO-8 score DSL reference: modes, pattern tokens, drums, chords, effects, mix, post chain, targets. The same text as /p8m.',
+      'Show the PICO-8 score wire-format reference: fields, tokens, drums, chords, mix, post chain, targets and errors. The same text as /p8m; compose with the pico8-songwriter skill.',
     parameters: helpParameters,
     output,
     async execute(): Promise<string> {
@@ -73,7 +87,7 @@ function registerTools(tools: ToolRuntime): void {
   register({
     name: 'p8_music',
     description:
-      'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. Call p8_help first for the score DSL.',
+      'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. The pico8-songwriter skill covers composing; p8_help covers every field and range.',
     parameters: musicParameters,
     output,
     // Two renders writing the same `out` path must not overlap.
@@ -83,7 +97,7 @@ function registerTools(tools: ToolRuntime): void {
         return await executeRender(args, exec);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`${message} (call p8_help for the score DSL)`);
+        throw new Error(`${message} (call p8_help for the wire format)`);
       }
     },
   });
@@ -105,7 +119,7 @@ function registerCommand(commands: CommandRuntime): void {
   // history by design; the model reads the same text through the p8_help tool.
   commands.register({
     name: 'p8m',
-    description: 'Show the PICO-8 score DSL reference',
+    description: 'Show the PICO-8 score wire-format reference',
     handler: () => ({ kind: 'success', text: SCORE_HELP }),
   });
 }
@@ -118,13 +132,42 @@ export function apply(ctx: PluginContext): void {
 
   registerTools(ctx.tools);
 
-  // `commands` is optional: headless hosts compose no command surface. Declaring it
-  // with inject would keep the whole plugin (tools included) from starting there.
+  // `commands` and `skills` are optional: headless hosts compose neither, and
+  // declaring them with inject would keep the whole plugin (tools included) from
+  // starting there.
   if (ctx.inject) {
     ctx.inject(['commands'], (child) => {
       if (child.commands) registerCommand(child.commands);
     });
-  } else if (ctx.commands) {
-    registerCommand(ctx.commands);
+    ctx.inject(['skills'], (child) => registerSkill(child.skills, ctx.logger));
+  } else {
+    if (ctx.commands) registerCommand(ctx.commands);
+    registerSkill(ctx.skills, ctx.logger);
   }
+}
+
+/**
+ * Share the authoring guide with the model. DSH discovers skills from the
+ * project, custom and user roots only, so an installed package's SKILL.md would
+ * never surface; registering it here is what makes `install the plugin` and
+ * `the skill is available` the same statement.
+ */
+function registerSkill(skills: SkillRuntime | undefined, logger?: PluginContext['logger']): void {
+  if (!skills) return;
+
+  const skill = readSongwriterSkill();
+  if (!skill) {
+    logger?.warn?.(
+      'pico8-music: .agents/skills/pico8-songwriter/SKILL.md is missing or unreadable; skill not registered',
+    );
+    return;
+  }
+
+  skills.register({
+    name: skill.name,
+    description: skill.description,
+    content: skill.content,
+    path: skill.path,
+    resourceBase: { kind: 'directory', path: skill.directory },
+  });
 }

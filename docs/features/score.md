@@ -22,7 +22,7 @@ pattern replacement, `riser` bars, and per-section `bpm` with a resolved
 step-to-seconds tempo map), the song-end `tail`, the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `highpassHz`,
 `lowShelf`, `highShelf`, `delay`), the
-model-facing DSL reference (`help.ts`), and the normalised `Score` the renderer
+model-facing wire-format reference (`help.ts`), and the normalised `Score` the renderer
 consumes.
 
 **Does not own.** Reading sample WAV files: `score` validates the reference,
@@ -32,7 +32,11 @@ waveform, instrument, and drum generators, envelope *interpretation*, section
 filtering, and effect curves belong to `render`; this feature only decides that an envelope
 or filter exists, its fields, and their legal ranges. The DSL reference is text,
 not enforcement: `parse.ts` stays the only authority, and `help.ts` must be kept
-in sync with it. Reading `.p8` cartridges is out of scope: the composition is
+in sync with it. Authoring guidance — form, track layout, arrangement, mix
+decisions, the revise loop — belongs to the packaged `pico8-songwriter` skill
+(`.agents/skills/pico8-songwriter/SKILL.md`), which sends every field and range
+back to `help.ts`; neither document restates the other. How that skill reaches
+Pi and DSH is an `app` concern. Reading `.p8` cartridges is out of scope: the composition is
 authored by the model, not extracted from an existing cart.
 
 **Depends on.** Nothing — this is the bottom of the import graph.

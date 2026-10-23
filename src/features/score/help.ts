@@ -1,8 +1,10 @@
-// Model-facing reference for the score DSL. It lives here, next to the parser that
+// Wire-format reference for the score DSL. It lives here, next to the parser that
 // owns these rules, and is kept out of every tool declaration so it only costs
 // context when someone asks for it (/p8m in Pi, the p8_help tool, or the DSH
-// description). Keep it in sync with parse.ts and the field tables in README.md;
-// docs/features/score.md records the ownership boundary, not the field ranges.
+// description). It owns field names, token grammar, ranges, defaults and the
+// error table. How to compose, mix and revise is the pico8-songwriter skill, so
+// no authoring guidance belongs here; docs/features/score.md records that split,
+// and this text stays in sync with parse.ts.
 
 export const SCORE_BRIEF =
   'PICO-8 score JSON: bpm, stepsPerBeat, bars and tracks of NOTE:STEPS tokens, ' +
@@ -13,6 +15,8 @@ export const SCORE_HELP = `PICO-8 score reference
 
 Pass \`score\` as a JSON string, not a nested object, or pass \`scoreFile\` with a workspace-relative path to a JSON score file (.json is appended when omitted). Provide exactly one of them; a scoreFile is read on every render, so editing the file changes the next output.
 The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes and out are p8_music arguments passed next to score/scoreFile; putting any of them inside the score JSON is an error.
+
+Scope: this is the wire format — fields, tokens, ranges, defaults and what fails. The pico8-songwriter skill owns how to compose: form, track layout, arrangement, mix decisions, the revise loop. Read this reference before writing a field the skill does not name; it is authoritative on every range.
 
 ## Contents
 1. Minimal scores
@@ -70,8 +74,6 @@ Song mode adds patterns and an arrangement:
 | drumSamples | drum voice -> sample name, e.g. {"kick":"hit"}; unmapped voices stay synthetic | empty |
 | arrangement | array of sections; see Arrangement | none |
 
-A chord lives inside one track; use separate tracks for separate parts (drums, bass, pad, lead, FX), not for chord voices.
-
 ### Tuning
 \`{"tuning":{"a4":442,"temperament":"equal","cents":{"C4":2.5,"A3":-3}}}\` retunes the whole score.
 - a4 is the absolute A4 reference, 400-480 Hz (default 440).
@@ -110,7 +112,7 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 | send | 0..1 reverb send | 0 |
 | duck | 0..1 kick sidechain depth | 0 |
 | filter | a cutoff number (100-20000 Hz) or {cutoffHz (alias cutoff), resonance (alias q) 0.05-20, lfoHz 0-20, lfoDepth 0-4 octaves} | none |
-| highpassHz | 20-4000 Hz, 12 dB/oct; cuts this stem only, so one part can lose its mud without darkening the mix | none |
+| highpassHz | 20-4000 Hz, 12 dB/oct high-pass on this track only | none |
 | lowShelf | a gain in dB (-24..24) at 250 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
 | highShelf | a gain in dB (-24..24) at 4000 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
 | delay | {steps 1-64, feedback 0-0.95, mix 0-1}; timed against the top-level bpm even when sections change tempo; a delay at least one loop long folds through the loop seam; in song mode a delay longer than the song is silent | none |
@@ -124,7 +126,7 @@ Space-separated tokens: NOTE:STEPS[gGATE] on melodic tracks, DRUM:STEPS on drum 
 - notes are C4, F#3, Bb2 within C1-C8.
 - STEPS is 1-64 for a sounding token and 1-256 for a rest; GATE is 1-256 and defaults to the slot.
 - a gate shorter than the slot is staccato; longer is legato and sounds into the next slot.
-- each pattern should fill whole bars (stepsPerBeat * beatsPerBar steps per bar) so sections stay in phase; when a section length is not a multiple of the pattern length the parser warns and truncates the last repetition.
+- when a section length is not a multiple of the pattern length the parser warns (pattern-misaligned) and truncates the last repetition; the bar length in steps is stepsPerBeat * beatsPerBar.
 
 | Suffix | Meaning |
 | --- | --- |
@@ -240,7 +242,7 @@ Single-letter tokens are case-insensitive except r, which is a rest; R is the ri
 - the song renders once and ignores minutes; use post: [] plus send: 0 for a tight ending, or tail for ring-out.
 
 ## Post chain, styles, presets (p8_music arguments, outside the score JSON)
-post: [] skips the post chain (track send still applies; also set send: 0 for a fully dry mix). Otherwise steps run in array order, usually tape/slow -> lowpass -> reverb -> tilt -> saturate -> compress -> loudness -> limiter.
+post: [] skips the post chain (track send still applies; also set send: 0 for a fully dry mix). Otherwise the steps run in array order, and that order is exactly what runs.
 
 | Step | Parameters | Notes |
 | --- | --- | --- |

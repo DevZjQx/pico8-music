@@ -32,10 +32,21 @@ interface Command {
 interface Host {
   tools: Map<string, Definition>;
   commands: Map<string, Command>;
+  skills: Map<string, Skill>;
+  /** Services the plugin asked for through `ctx.inject`, in order. */
+  injected: string[];
+}
+
+interface Skill {
+  name?: string;
+  description?: string;
+  content?: string;
+  path?: string;
+  resourceBase?: { kind?: string; path?: string };
 }
 
 function host(): { ctx: Record<string, unknown>; captured: Host } {
-  const captured: Host = { tools: new Map(), commands: new Map() };
+  const captured: Host = { tools: new Map(), commands: new Map(), skills: new Map(), injected: [] };
   const tools = {
     register: (definition: Definition) => {
       if (definition.name) captured.tools.set(definition.name, definition);
@@ -46,12 +57,21 @@ function host(): { ctx: Record<string, unknown>; captured: Host } {
       if (command.name) captured.commands.set(command.name, command);
     },
   };
+  const skills = {
+    register: (skill: Skill) => {
+      if (skill.name) captured.skills.set(skill.name, skill);
+    },
+  };
   const ctx = {
     tools,
     commands,
+    skills,
     inject: (deps: string[], callback: (child: unknown) => void) => {
-      assert.deepEqual(deps, ['commands']);
-      callback({ commands });
+      captured.injected.push(...deps);
+      const child: Record<string, unknown> = {};
+      if (deps.includes('commands')) child.commands = commands;
+      if (deps.includes('skills')) child.skills = skills;
+      callback(child);
     },
   };
   return { ctx, captured };
@@ -119,8 +139,25 @@ test('/p8m is registered and returns the reference as a command result', () => {
   assert.match(result.text ?? '', /PICO-8 score reference/);
 });
 
+test('registers the composer skill so an installed plugin carries the guidance', () => {
+  const { ctx, captured } = host();
+  apply(ctx);
+  assert.deepEqual(captured.injected, ['commands', 'skills']);
+
+  const skill = captured.skills.get('pico8-songwriter');
+  assert.ok(skill, 'the songwriter skill reaches the skill registry');
+  assert.match(skill.description ?? '', /composing or editing a score/);
+  assert.match(skill.content ?? '', /^# PICO-8 songwriting/);
+  assert.doesNotMatch(skill.content ?? '', /^---$/m, 'frontmatter is fields, not body');
+  assert.match(skill.content ?? '', /p8_help/);
+  assert.doesNotMatch(skill.content ?? '', /\.\.\//, 'no repo-relative paths in a packaged skill');
+  assert.match(skill.path ?? '', /\.agents[\\/]skills[\\/]pico8-songwriter[\\/]SKILL\.md$/);
+  assert.equal(skill.resourceBase?.kind, 'directory');
+  assert.match(skill.resourceBase?.path ?? '', /pico8-songwriter$/);
+});
+
 test('a host without a command surface still gets the tools', () => {
-  const captured: Host = { tools: new Map(), commands: new Map() };
+  const captured: Host = { tools: new Map(), commands: new Map(), skills: new Map(), injected: [] };
   apply({
     tools: {
       register: (definition: Definition) => {

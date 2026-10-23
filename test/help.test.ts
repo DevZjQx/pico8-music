@@ -49,3 +49,13 @@ test('the help stays navigable and free of oversized paragraphs', () => {
   const tables = lines.filter((line) => line.startsWith('|'));
   assert.ok(tables.length > 60, 'parallel fields are presented as tables');
 });
+
+test('the reference defers authoring to the skill and stays format-only', () => {
+  // One hand-off, one owner per question; the two documents never restate
+  // each other's body.
+  assert.match(SCORE_HELP, /pico8-songwriter skill/);
+  assert.match(SCORE_HELP, /wire format/);
+  const body = SCORE_HELP.split('\n').slice(1).join('\n');
+  assert.doesNotMatch(body, /## Workflow/);
+  assert.doesNotMatch(body, /A chord lives inside one track/);
+});
