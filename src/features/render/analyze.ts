@@ -9,7 +9,7 @@
  * See docs/evaluation.md and docs/analysis-roadmap.md for the dimensions.
  */
 
-import { integratedLufs } from './loudness.ts';
+import { MAX_SAFE_LUFS, loudnessSummary } from './loudness.ts';
 import { resolveTarget, type ResolvedTarget, type TargetInput, type TargetProfile } from './target.ts';
 
 export interface BandEnergy {
@@ -28,6 +28,12 @@ export interface BandEnergy {
 export interface SectionReading {
   readonly name: string;
   readonly rmsDb: number;
+  /** Side/mid RMS ratio inside the section; 0 is mono, matching the mix width. */
+  readonly width: number;
+  /** Spectral centroid inside the section; the brightness proxy for distance. */
+  readonly centroidHz: number;
+  /** Transient density inside the section; the density proxy for energy. */
+  readonly onsetPerSecond: number;
 }
 
 /** Measurements shared by the final mix and the pre-post snapshot. */
@@ -37,6 +43,12 @@ export interface AnalysisFacts {
   readonly rmsDb: number;
   /** Integrated loudness in LUFS; -Infinity for silence. */
   readonly lufs: number;
+  /**
+   * Loudness range in LU (EBU Tech 3342): how far the short-term loudness
+   * travels between the quiet 10% and the loud 95% of the song. 0 for a steady
+   * loop, silence, or a buffer too short to measure.
+   */
+  readonly lra: number;
   readonly centroidHz: number;
   readonly bands: BandEnergy;
   /** 150-500 Hz share of the same spectrum; overlaps `low` and `mid`. */
@@ -68,10 +80,12 @@ export interface StemReading {
 
 export type FindingKind =
   | 'alias-risk'
+  | 'sub-heavy'
   | 'mud'
   | 'masking'
   | 'harsh'
   | 'dynamics'
+  | 'loudness-flat'
   | 'post-mud'
   | 'post-harsh'
   | 'post-dynamics'
@@ -129,6 +143,8 @@ export interface AnalysisOptions {
 const SILENCE_DB = -120;
 const SPECTRUM_FRAME = 2048;
 const MAX_SPECTRUM_FRAMES = 48;
+/** Sections are short; eight frames keep a 256-section report cheap. */
+const SECTION_SPECTRUM_FRAMES = 8;
 const ONSET_HOP = 512;
 /** A frame must rise by this much (linear RMS) to count as an onset. */
 const ONSET_RISE = 0.015;
@@ -201,7 +217,11 @@ interface SpectrumReading {
  * the frame count is capped so a long song does not turn the report into a
  * second render.
  */
-function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
+function readSpectrum(
+  mono: Float32Array,
+  rate: number,
+  maxFrames = MAX_SPECTRUM_FRAMES,
+): SpectrumReading {
   const length = mono.length;
   if (length < 64) {
     return {
@@ -215,7 +235,7 @@ function readSpectrum(mono: Float32Array, rate: number): SpectrumReading {
   const size = Math.min(SPECTRUM_FRAME, 2 ** Math.floor(Math.log2(length)));
   const hop = Math.max(1, size >> 1);
   const frames = Math.max(1, Math.floor((length - size) / hop) + 1);
-  const stride = Math.max(1, Math.ceil(frames / MAX_SPECTRUM_FRAMES));
+  const stride = Math.max(1, Math.ceil(frames / maxFrames));
   const window = new Float64Array(size);
   for (let i = 0; i < size; i += 1) window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size);
 
@@ -381,6 +401,11 @@ function peakOf(left: Float32Array, right: Float32Array): number {
   return peak;
 }
 
+function widthFromSquares(midSquares: number, sideSquares: number): number {
+  if (midSquares <= 1e-12) return 0;
+  return Math.sqrt(sideSquares / midSquares);
+}
+
 function widthOf(left: Float32Array, right: Float32Array): number {
   const length = Math.min(left.length, right.length);
   let midSquares = 0;
@@ -391,16 +416,17 @@ function widthOf(left: Float32Array, right: Float32Array): number {
     midSquares += mid * mid;
     sideSquares += side * side;
   }
-  if (midSquares <= 1e-12) return 0;
-  return Math.sqrt(sideSquares / midSquares);
+  return widthFromSquares(midSquares, sideSquares);
 }
 
 /**
- * Per-section RMS from absolute time bounds. Sections are fractions of the
- * musical timeline, so they survive tape/slow resampling unchanged even when
- * earlier sections run at a different tempo.
+ * Per-section readings from absolute time bounds. Sections are fractions of
+ * the musical timeline, so they survive tape/slow resampling unchanged even
+ * when earlier sections run at a different tempo. Level, width, brightness,
+ * and onset density are measured separately: an energy arc can move any one of
+ * them without moving the others, so a single RMS number cannot describe it.
  */
-export function sectionEnergies(
+export function sectionReadings(
   left: Float32Array,
   right: Float32Array,
   sections: readonly {
@@ -409,6 +435,7 @@ export function sectionEnergies(
     readonly durationSeconds: number;
   }[],
   totalSeconds: number,
+  rate: number,
   /** Musical content length; excludes a song tail when it is shorter than the buffer. */
   contentSamples?: number,
 ): SectionReading[] {
@@ -428,13 +455,28 @@ export function sectionEnergies(
     const start = clamp(Math.round(startFraction * length), 0, length);
     const end = clamp(Math.round(endFraction * length), start, length);
     const slice = Math.max(1, end - start);
+    const mono = new Float32Array(slice);
     let squares = 0;
+    let midSquares = 0;
+    let sideSquares = 0;
     for (let i = start; i < end; i += 1) {
-      squares += (left[i] ?? 0) ** 2 + (right[i] ?? 0) ** 2;
+      const leftValue = left[i] ?? 0;
+      const rightValue = right[i] ?? 0;
+      const mid = (leftValue + rightValue) * 0.5;
+      const side = (leftValue - rightValue) * 0.5;
+      squares += leftValue * leftValue + rightValue * rightValue;
+      midSquares += mid * mid;
+      sideSquares += side * side;
+      mono[i - start] = mid;
     }
+    const spectrum = readSpectrum(mono, rate, SECTION_SPECTRUM_FRAMES);
+    const seconds = slice / rate;
     return {
       name: section.name,
       rmsDb: dbOf(Math.sqrt(squares / (slice * 2))),
+      width: widthFromSquares(midSquares, sideSquares),
+      centroidHz: spectrum.centroidHz,
+      onsetPerSecond: seconds > 0 ? countOnsets(mono) / seconds : 0,
     };
   });
 }
@@ -452,11 +494,13 @@ export function measureAudio(
   const seconds = Math.min(left.length, right.length) / rate;
   const mono = mixed(left, right);
   const spectrum = readSpectrum(mono, rate);
+  const loudness = loudnessSummary([left, right], rate);
   return {
     seconds,
     peakDb: dbOf(peakOf(left, right)),
     rmsDb: dbOf(rmsOf(left, right)),
-    lufs: integratedLufs([left, right], rate),
+    lufs: loudness.integrated,
+    lra: loudness.range,
     centroidHz: spectrum.centroidHz,
     bands: spectrum.bands,
     lowMid: spectrum.lowMid,
@@ -468,13 +512,27 @@ export function measureAudio(
 }
 
 /** Thresholds are observations, not pass/fail gates; calibrate with A/B renders. */
+const SUB_HEAVY = 0.06;
 const MUD_LOW_MID = 0.25;
 const HARSH_PRESENCE = 0.22;
 const MASK_LOW_MID = 0.2;
 const MASK_MID = 0.45;
 const LOW_CREST = 9;
+/** Below this, a song holds one level and has no breathing room. */
+const FLAT_LRA_LU = 4;
+/** Section levels closer than this count as "no arrangement contrast" for LRA. */
+const FLAT_LRA_SPREAD_DB = 6;
+/** A song louder than this is loud enough that a flat level becomes tiring. */
+const FLAT_LOUD_LUFS = -16;
+/** Short windows make the LRA percentile meaningless, so short renders skip it. */
+const MIN_LRA_SECONDS = 10;
+/** Above the streaming reference (~-14 LUFS); the platform will turn it down anyway. */
+const HOT_LUFS = -12;
 const POST_DELTA = 0.05;
 const POST_CREST_DELTA = 3;
+const FLAT_SECTION_LEVEL_DB = 2;
+const FLAT_SECTION_WIDTH = 0.08;
+const FLAT_SECTION_CENTROID_HZ = 400;
 
 function stemLabel(stem: StemReading): string {
   return stem.name === stem.role ? stem.name : `${stem.name}(${stem.role})`;
@@ -482,6 +540,12 @@ function stemLabel(stem: StemReading): string {
 
 function linearRms(rmsDb: number): number {
   return 10 ** (rmsDb / 20);
+}
+
+/** Peak-to-peak RMS of the section readings; infinities when a section is silent. */
+function levelSpreadDb(sections: readonly SectionReading[]): number {
+  const levels = sections.map((section) => section.rmsDb);
+  return Math.max(...levels) - Math.min(...levels);
 }
 
 interface RankedStem {
@@ -601,6 +665,14 @@ function findingsFor(
     });
   }
 
+  if (analysis.bands.sub >= SUB_HEAVY) {
+    findings.push({
+      kind: 'sub-heavy',
+      message: `20-60 Hz is ${formatPercent(analysis.bands.sub)} of the spectrum`,
+      next: 'high-pass the bass/pad or add a post highpass around 30-40 Hz; monoBelowHz 100-140 also keeps the lowest band centred on small speakers',
+    });
+  }
+
   if (analysis.lowMid >= MUD_LOW_MID) {
     const top = rankStems(stems ?? [], (stem) => stem.lowMid)
       .slice(0, 2)
@@ -658,6 +730,27 @@ function findingsFor(
       kind: 'dynamics',
       message: `crest is ${crest.toFixed(1)} dB`,
       next: 'lower the loudness target, reduce saturation/compression, or leave more rests',
+    });
+  }
+
+  // Listening comfort, not correctness: a song that never leaves one loudness
+  // tires the ear and has nowhere to lift into, no matter how good the mix is.
+  // Loops are excluded (they have no sections and are meant to sit still), as
+  // are very short renders (the 3 s LRA window needs a few blocks to mean much).
+  // The spread check keeps a song with a silent intro from counting as "flat":
+  // the absolute gate drops silence, so LRA alone would not see the rest.
+  if (
+    analysis.sections.length >= 2 &&
+    analysis.seconds >= MIN_LRA_SECONDS &&
+    Number.isFinite(analysis.lufs) &&
+    analysis.lufs > FLAT_LOUD_LUFS &&
+    analysis.lra < FLAT_LRA_LU &&
+    levelSpreadDb(analysis.sections) < FLAT_LRA_SPREAD_DB
+  ) {
+    findings.push({
+      kind: 'loudness-flat',
+      message: `loudness range is ${analysis.lra.toFixed(1)} LU (the song holds ${analysis.lufs.toFixed(1)} LUFS)`,
+      next: 'leave one section quieter or drop a part for a bar; a constant level is what makes a long listen feel loud, and the drop has nowhere left to go',
     });
   }
 
@@ -738,13 +831,27 @@ function warningsFor(
   if (Number.isFinite(analysis.lufs) && analysis.lufs < -20) {
     warnings.push(`quiet: ${analysis.lufs.toFixed(1)} LUFS`);
   }
-  if (Number.isFinite(analysis.lufs) && analysis.lufs > -8) {
+  if (Number.isFinite(analysis.lufs) && analysis.lufs > MAX_SAFE_LUFS) {
+    warnings.push(`unsafe: ${analysis.lufs.toFixed(1)} LUFS is above the ${MAX_SAFE_LUFS} LUFS hearing-safety ceiling`);
+  } else if (Number.isFinite(analysis.lufs) && analysis.lufs > HOT_LUFS) {
     warnings.push(`loud: ${analysis.lufs.toFixed(1)} LUFS`);
   }
   if (analysis.sections.length >= 2) {
-    const levels = analysis.sections.map((section) => section.rmsDb);
-    const spread = Math.max(...levels) - Math.min(...levels);
-    if (spread < 2) warnings.push(`flat-sections: energy range ${spread.toFixed(1)} dB`);
+    const levelSpread = levelSpreadDb(analysis.sections);
+    if (levelSpread < FLAT_SECTION_LEVEL_DB) {
+      warnings.push(`flat-sections: energy range ${levelSpread.toFixed(1)} dB`);
+    }
+    // Width and brightness are separate axes: either one moving is an arc.
+    // Only when both are flat does the arrangement lack spatial contrast.
+    const widths = analysis.sections.map((section) => section.width);
+    const centroids = analysis.sections.map((section) => section.centroidHz);
+    const widthSpread = Math.max(...widths) - Math.min(...widths);
+    const centroidSpread = Math.max(...centroids) - Math.min(...centroids);
+    if (widthSpread < FLAT_SECTION_WIDTH && centroidSpread < FLAT_SECTION_CENTROID_HZ) {
+      warnings.push(
+        `flat-space: width range ${widthSpread.toFixed(2)}, centroid range ${Math.round(centroidSpread)} Hz`,
+      );
+    }
   }
   warnings.push(...extraWarnings);
   return warnings;
@@ -788,13 +895,16 @@ export function formatReport(analysis: Analysis): string {
   const lufs = Number.isFinite(analysis.lufs) ? analysis.lufs.toFixed(1) : 'silent';
   const { bands } = analysis;
   const lines = [
-    `report peak ${formatDb(analysis.peakDb)} · RMS ${formatDb(analysis.rmsDb)} · LUFS ${lufs}`,
+    `report peak ${formatDb(analysis.peakDb)} · RMS ${formatDb(analysis.rmsDb)} · LUFS ${lufs} · LRA ${analysis.lra.toFixed(1)} LU`,
     `report spectrum centroid ${Math.round(analysis.centroidHz)} Hz · sub ${formatPercent(bands.sub)} low ${formatPercent(bands.low)} mid ${formatPercent(bands.mid)} high ${formatPercent(bands.high)} air ${formatPercent(bands.air)} · low-mid ${formatPercent(analysis.lowMid)} · 2-5k ${formatPercent(analysis.harsh)}`,
     `report space width ${analysis.width.toFixed(2)} · onsets ${analysis.onsetPerSecond.toFixed(1)}/s`,
   ];
   if (analysis.sections.length > 0) {
     const sections = analysis.sections
-      .map((section) => `${section.name} ${formatDb(section.rmsDb)}`)
+      .map(
+        (section) =>
+          `${section.name} ${formatDb(section.rmsDb)} w${section.width.toFixed(2)} ${Math.round(section.centroidHz)}Hz ${section.onsetPerSecond.toFixed(1)}/s`,
+      )
       .join(' · ');
     lines.push(`report sections ${sections}`);
   }

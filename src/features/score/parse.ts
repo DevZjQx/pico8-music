@@ -10,6 +10,7 @@ import {
 } from './notes.ts';
 import { DEFAULT_TUNING, TEMPERAMENT_NAMES, frequencyOf } from './tuning.ts';
 import type {
+  Articulation,
   DelayFollow,
   DrumEffect,
   DrumName,
@@ -25,9 +26,14 @@ import type {
   Partial,
   SampleSpec,
   Score,
+  ScoreGroup,
   ScoreMode,
   ScoreSection,
+  SendReverb,
   ScoreTrack,
+  SectionFilter,
+  SectionTrackState,
+  SoundPreset,
   TemperamentName,
   TrackDelay,
   TrackFilter,
@@ -82,7 +88,10 @@ const MIN_RESONANCE = 0.05;
  * pathological score cannot exhaust memory.
  */
 const MAX_TRACKS = 32;
+const MAX_GROUPS = 32;
 const MAX_INSTRUMENTS = 32;
+const MAX_PRESETS = 32;
+const MAX_ARTICULATIONS = 64;
 const MAX_PARTIALS = 16;
 const MAX_PARTIAL_DECAY = 8;
 const INSTRUMENT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
@@ -186,6 +195,14 @@ function readString(value: unknown, path: string, fallback: string): string {
     throw new ScoreError(`${path} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function readBoolean(value: unknown, path: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'boolean') {
+    throw new ScoreError(`${path} must be a boolean, got ${JSON.stringify(value)}`);
+  }
+  return value;
 }
 
 /** Track volume matches the `@volume` grammar: 0-7 with at most one decimal. */
@@ -648,14 +665,15 @@ interface PatternToken {
   readonly effectParams?: EffectParams;
   readonly drumEffect?: DrumEffect;
   readonly drumParams?: DrumParams;
-  readonly envelopeName?: string;
+  /** Resolved later against the envelopes and articulations tables. */
+  readonly namedSuffix?: string;
 }
 
 type EffectSuffix =
   | { readonly kind: 'effect'; readonly effect: Effect; readonly params?: EffectParams }
   | { readonly kind: 'drum'; readonly drum: DrumEffect }
   | { readonly kind: 'drumParam'; readonly drumParams: DrumParams }
-  | { readonly kind: 'envelope'; readonly name: string };
+  | { readonly kind: 'name'; readonly name: string };
 
 const SUFFIX_RE = /^([A-Za-z_][A-Za-z0-9_-]*)(?:\(([^)]*)\))?$/;
 
@@ -816,9 +834,11 @@ function parseEffectSuffix(text: string, where: string): EffectSuffix {
     const drumParams = parseDrumParamSuffix(name, argsText, where);
     if (drumParams !== undefined) return { kind: 'drumParam', drumParams };
     if (argsText !== undefined) {
-      throw new ScoreError(`${where}: envelope ${JSON.stringify(name)} takes no parameters`);
+      throw new ScoreError(
+        `${where}: named envelope or articulation ${JSON.stringify(name)} takes no parameters`,
+      );
     }
-    return { kind: 'envelope', name };
+    return { kind: 'name', name };
   }
   return { kind: 'effect', effect, params: parseEffectParams(effect, argsText, where) };
 }
@@ -846,7 +866,7 @@ function parsePatternToken(token: string, where: string): PatternToken {
   let effectParams: EffectParams | undefined;
   let drumEffect: DrumEffect | undefined;
   let drumParams: DrumParams | undefined;
-  let envelopeName: string | undefined;
+  let namedSuffix: string | undefined;
   let sawEffect = false;
   for (const part of suffixParts.slice(1)) {
     const suffix = parseEffectSuffix(part, where);
@@ -878,10 +898,10 @@ function parsePatternToken(token: string, where: string): PatternToken {
       drumParams = { ...drumParams, ...suffix.drumParams };
       continue;
     }
-    if (envelopeName !== undefined) {
-      throw new ScoreError(`${where}: use at most one named envelope suffix`);
+    if (namedSuffix !== undefined) {
+      throw new ScoreError(`${where}: use at most one named suffix (~name)`);
     }
-    envelopeName = suffix.name;
+    namedSuffix = suffix.name;
   }
 
   const bodyParts = (suffixParts[0] ?? '').split(':');
@@ -927,7 +947,7 @@ function parsePatternToken(token: string, where: string): PatternToken {
     ...(effectParams === undefined ? {} : { effectParams }),
     ...(drumEffect === undefined ? {} : { drumEffect }),
     ...(drumParams === undefined ? {} : { drumParams }),
-    ...(envelopeName === undefined ? {} : { envelopeName }),
+    ...(namedSuffix === undefined ? {} : { namedSuffix }),
   };
 }
 
@@ -963,8 +983,8 @@ function formatPatternToken(token: PatternToken): string {
   const effect = token.effect === 0 ? '' : `~${EFFECT_NAMES[token.effect]}${params}`;
   const drumEffect = formatDrumEffect(token.drumEffect);
   const drumParams = formatDrumParams(token.drumParams);
-  const envelope = token.envelopeName === undefined ? '' : `~${token.envelopeName}`;
-  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${drumParams}${envelope}`;
+  const named = token.namedSuffix === undefined ? '' : `~${token.namedSuffix}`;
+  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${drumParams}${named}`;
 }
 
 type MotifTransformName = 'transpose' | 'invert' | 'retrograde' | 'augment' | 'diminish';
@@ -1258,6 +1278,8 @@ function parsePattern(
   tuning: Tuning,
   motifs: ReadonlyMap<string, string> = new Map(),
   envelopes: ReadonlyMap<string, Envelope> = new Map(),
+  articulations: ReadonlyMap<string, Articulation> = new Map(),
+  defaultArticulation?: string,
 ): ParsedPattern {
   const expanded = expandMotifs(pattern, path, motifs, isDrums);
   const tokens = expanded.trim().split(/\s+/).filter(Boolean);
@@ -1277,8 +1299,10 @@ function parsePattern(
       if (parsed.volume !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry "@volume"`);
       }
-      if (parsed.effect !== 0 || parsed.envelopeName !== undefined) {
-        throw new ScoreError(`${where}: a rest cannot carry an effect or a named envelope`);
+      if (parsed.effect !== 0 || parsed.namedSuffix !== undefined) {
+        throw new ScoreError(
+          `${where}: a rest cannot carry an effect, articulation, or named envelope`,
+        );
       }
       if (parsed.drumEffect !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry a drum effect`);
@@ -1296,16 +1320,23 @@ function parsePattern(
       throw new ScoreError(`${where}: duration must be between 1 and ${MAX_STEPS_PER_NOTE} steps`);
     }
 
-    const volume = parsed.volume ?? defaultVolume;
-    const gateSteps = parsed.gateSteps ?? steps;
-    let envelope: Envelope | undefined;
-    if (parsed.envelopeName !== undefined) {
-      envelope = envelopes.get(parsed.envelopeName);
-      if (envelope === undefined) {
-        throw new ScoreError(
-          `${where}: unknown envelope ${JSON.stringify(parsed.envelopeName)}; define it in the top-level envelopes table`,
-        );
-      }
+    const named = parsed.namedSuffix;
+    const articulation =
+      named === undefined
+        ? defaultArticulation === undefined
+          ? undefined
+          : articulations.get(defaultArticulation)
+        : articulations.get(named);
+    const namedEnvelope = named === undefined ? undefined : envelopes.get(named);
+    if (named !== undefined && articulation === undefined && namedEnvelope === undefined) {
+      throw new ScoreError(
+        `${where}: unknown envelope or articulation ${JSON.stringify(named)}; define it in the top-level envelopes or articulations table`,
+      );
+    }
+    if (isDrums && articulation !== undefined) {
+      throw new ScoreError(
+        `${where}: named articulations are only for melodic tracks; use ~ghost, ~flam, or ~roll for drums`,
+      );
     }
     if (isDrums && parsed.effect !== 0) {
       throw new ScoreError(
@@ -1318,9 +1349,19 @@ function parsePattern(
     if (!isDrums && parsed.drumParams !== undefined) {
       throw new ScoreError(`${where}: ~pitch, ~decay, and ~tone are only for drum tracks`);
     }
+    const volume = parsed.volume ?? articulation?.volume ?? defaultVolume;
+    const articulatedGate =
+      articulation?.gateScale === undefined
+        ? undefined
+        : Math.min(MAX_GATE_STEPS, Math.max(1, Math.round(steps * articulation.gateScale)));
+    const gateSteps = parsed.gateSteps ?? articulatedGate ?? steps;
+    const envelope = articulation?.envelope ?? namedEnvelope;
+    const effect = parsed.effect !== 0 ? parsed.effect : (articulation?.effect ?? 0);
+    const effectParams =
+      parsed.effect !== 0 ? parsed.effectParams : articulation?.effectParams;
     const effectFields = {
-      effect: parsed.effect,
-      ...(parsed.effectParams === undefined ? {} : { effectParams: parsed.effectParams }),
+      effect,
+      ...(effectParams === undefined ? {} : { effectParams }),
       ...(parsed.drumEffect === undefined ? {} : { drumEffect: parsed.drumEffect }),
       ...(parsed.drumParams === undefined ? {} : { drumParams: parsed.drumParams }),
       ...(envelope === undefined ? {} : { envelope }),
@@ -1495,6 +1536,60 @@ function parseTrackDelay(value: unknown, path: string): TrackDelay | undefined {
   };
 }
 
+interface ParsedTrackSend {
+  readonly amount: number;
+  readonly bus?: string;
+  readonly stereo?: boolean;
+}
+
+/**
+ * A send is either the legacy numeric amount or `{amount, bus}` when a track
+ * should reach a return other than its own group. `stereo: false` keeps the old
+ * pre-pan mono feed for callers that need the previous image.
+ */
+function parseTrackSend(
+  value: unknown,
+  path: string,
+  groups: ReadonlyMap<string, ScoreGroup>,
+): ParsedTrackSend {
+  if (typeof value === 'number') {
+    return { amount: readNumber(value, path, 0, 0, 1) };
+  }
+  if (!isRecord(value)) {
+    throw new ScoreError(
+      `${path} must be a number 0-1 or an object with amount, bus, or stereo`,
+    );
+  }
+  rejectUnknownKeys(value, ['amount', 'level', 'bus', 'group', 'to', 'stereo'], path);
+  const rawAmount = value.amount ?? value.level;
+  if (rawAmount === undefined) {
+    throw new ScoreError(`${path}.amount must be a number 0-1`);
+  }
+  const amount = readNumber(rawAmount, `${path}.amount`, 0, 0, 1);
+  const rawBus = value.bus ?? value.group ?? value.to;
+  let bus: string | undefined;
+  if (rawBus !== undefined) {
+    if (typeof rawBus !== 'string' || rawBus.trim() === '') {
+      throw new ScoreError(`${path}.bus must name an entry in the top-level groups table`);
+    }
+    bus = rawBus.trim();
+    if (!groups.has(bus)) {
+      const available = [...groups.keys()];
+      throw new ScoreError(
+        `${path}.bus: unknown return ${JSON.stringify(bus)}; define it in the top-level groups table` +
+          `${available.length > 0 ? ` (${available.join(', ')})` : ''}`,
+      );
+    }
+  }
+  return {
+    amount,
+    ...(bus === undefined ? {} : { bus }),
+    ...(value.stereo === undefined
+      ? {}
+      : { stereo: readBoolean(value.stereo, `${path}.stereo`, true) }),
+  };
+}
+
 function parseTrack(
   value: unknown,
   index: number,
@@ -1503,6 +1598,9 @@ function parseTrack(
   envelopes: ReadonlyMap<string, Envelope>,
   instruments: ReadonlyMap<string, Instrument>,
   samples: ReadonlyMap<string, SampleSpec>,
+  presets: ReadonlyMap<string, SoundPreset>,
+  groups: ReadonlyMap<string, ScoreGroup>,
+  articulations: ReadonlyMap<string, Articulation>,
   tuning: Tuning,
 ): ParsedTrack {
   const path = `tracks[${index}]`;
@@ -1515,10 +1613,14 @@ function parseTrack(
     [
       'name',
       'role',
+      'preset',
+      'group',
+      'bus',
       'instrument',
       'waveform',
       'volume',
       'envelope',
+      'articulation',
       'pan',
       'send',
       'duck',
@@ -1534,41 +1636,130 @@ function parseTrack(
     path,
   );
   const role = readString(value.role, `${path}.role`, 'melodic');
-  const resolved = resolveTrackInstrument(value.instrument, `${path}.instrument`, instruments, samples);
+
+  let preset: SoundPreset | undefined;
+  if (value.preset !== undefined) {
+    if (typeof value.preset !== 'string' || value.preset.trim() === '') {
+      throw new ScoreError(`${path}.preset must name an entry in the top-level presets table`);
+    }
+    const presetName = value.preset.trim();
+    preset = presets.get(presetName);
+    if (preset === undefined) {
+      const available = [...presets.keys()];
+      throw new ScoreError(
+        `${path}.preset: unknown preset ${JSON.stringify(presetName)}; define it in the top-level presets table` +
+          `${available.length > 0 ? ` (${available.join(', ')})` : ''}`,
+      );
+    }
+  }
+
+  const resolved =
+    value.instrument !== undefined
+      ? resolveTrackInstrument(value.instrument, `${path}.instrument`, instruments, samples)
+      : preset?.instrument !== undefined
+        ? { isDrums: false, instrument: preset.instrument }
+        : { isDrums: false };
   const isDrums = role.toLowerCase() === 'drums' || resolved.isDrums;
+  if (preset !== undefined && isDrums) {
+    throw new ScoreError(
+      `${path}.preset: sound presets are for melodic tracks; use role "drums" and drumSamples for drum voices`,
+    );
+  }
   const name = readString(value.name, `${path}.name`, `track${index}`);
+
+  if (value.group !== undefined && value.bus !== undefined && value.group !== value.bus) {
+    throw new ScoreError(`${path}: group and bus are synonyms; use only one value`);
+  }
+  const groupValue = value.group ?? value.bus;
+  let group: string | undefined;
+  if (groupValue !== undefined) {
+    if (typeof groupValue !== 'string' || groupValue.trim() === '') {
+      throw new ScoreError(`${path}.group must name an entry in the top-level groups table`);
+    }
+    group = groupValue.trim();
+    if (!groups.has(group)) {
+      const available = [...groups.keys()];
+      throw new ScoreError(
+        `${path}.group: unknown group ${JSON.stringify(group)}; define it in the top-level groups table` +
+          `${available.length > 0 ? ` (${available.join(', ')})` : ''}`,
+      );
+    }
+  }
 
   // The legacy `waveform` field stays meaningful for chip instruments and is
   // mirrored from an inline `instrument.waveform`, which is what old scores
   // and sections rely on. Non-chip instruments ignore it.
+  // An explicit track.instrument owns its chip waveform; the preset's
+  // waveform only fills in when the track names no instrument of its own.
+  const presetWaveform = value.waveform ?? (value.instrument === undefined ? preset?.waveform : undefined);
   const waveformValue =
-    value.waveform ?? (resolved.instrument?.type === 'chip' ? resolved.instrument.waveform : undefined);
+    presetWaveform ?? (resolved.instrument?.type === 'chip' ? resolved.instrument.waveform : undefined);
   const waveform = waveformValue === undefined ? DEFAULTS.waveform : parseWaveform(waveformValue);
   if (waveform === undefined) {
     throw new ScoreError(
       `${path}.waveform: use 0-7 or one of triangle, tilted_saw, saw, square, pulse, organ, noise, phaser`,
     );
   }
-  // An explicit track.waveform wins over a chip instrument's own waveform, so
-  // the legacy field keeps its documented meaning when both are present.
+  // An explicit track.waveform (or a preset's waveform default) wins over a
+  // chip instrument's own waveform, so the legacy field keeps its meaning.
   const instrument =
-    resolved.instrument?.type === 'chip' && value.waveform !== undefined
+    resolved.instrument?.type === 'chip' && presetWaveform !== undefined
       ? { ...resolved.instrument, waveform }
       : resolved.instrument;
 
-  const volume = readVolume(value.volume, `${path}.volume`, DEFAULTS.volume);
-  const envelope = parseEnvelope(value.envelope, `${path}.envelope`);
-  const pan = readNumber(value.pan, `${path}.pan`, 0, -1, 1);
-  const send = readNumber(value.send, `${path}.send`, 0, 0, 1);
-  const duck = readNumber(value.duck, `${path}.duck`, 0, 0, 1);
-  const filter = parseTrackFilter(value.filter, `${path}.filter`);
+  const volume =
+    value.volume === undefined
+      ? (preset?.volume ?? DEFAULTS.volume)
+      : readVolume(value.volume, `${path}.volume`, DEFAULTS.volume);
+  const envelope =
+    value.envelope === undefined
+      ? (preset?.envelope ?? DEFAULT_ENVELOPE)
+      : parseEnvelope(value.envelope, `${path}.envelope`);
+  const pan =
+    value.pan === undefined ? (preset?.pan ?? 0) : readNumber(value.pan, `${path}.pan`, 0, -1, 1);
+  const parsedSend =
+    value.send === undefined
+      ? { amount: preset?.send ?? 0 }
+      : parseTrackSend(value.send, `${path}.send`, groups);
+  const send = parsedSend.amount;
+  const duck =
+    value.duck === undefined ? (preset?.duck ?? 0) : readNumber(value.duck, `${path}.duck`, 0, 0, 1);
+  const filter =
+    value.filter === undefined ? preset?.filter : parseTrackFilter(value.filter, `${path}.filter`);
   const highpassHz =
     value.highpassHz === undefined
-      ? undefined
+      ? preset?.highpassHz
       : readNumber(value.highpassHz, `${path}.highpassHz`, 20, 20, 4000);
-  const lowShelf = parseTrackShelf(value.lowShelf, `${path}.lowShelf`, 250);
-  const highShelf = parseTrackShelf(value.highShelf, `${path}.highShelf`, 4000);
-  const delay = parseTrackDelay(value.delay, `${path}.delay`);
+  const lowShelf =
+    value.lowShelf === undefined
+      ? preset?.lowShelf
+      : parseTrackShelf(value.lowShelf, `${path}.lowShelf`, 250);
+  const highShelf =
+    value.highShelf === undefined
+      ? preset?.highShelf
+      : parseTrackShelf(value.highShelf, `${path}.highShelf`, 4000);
+  const delay =
+    value.delay === undefined ? preset?.delay : parseTrackDelay(value.delay, `${path}.delay`);
+
+  let articulationName: string | undefined;
+  if (value.articulation !== undefined) {
+    if (typeof value.articulation !== 'string' || value.articulation.trim() === '') {
+      throw new ScoreError(
+        `${path}.articulation must name an entry in the top-level articulations table`,
+      );
+    }
+    articulationName = value.articulation.trim();
+  } else {
+    articulationName = preset?.articulation;
+  }
+  if (articulationName !== undefined && !articulations.has(articulationName)) {
+    throw new ScoreError(
+      `${path}.articulation: unknown articulation ${JSON.stringify(articulationName)}; define it in the top-level articulations table`,
+    );
+  }
+  if (isDrums && articulationName !== undefined) {
+    throw new ScoreError(`${path}.articulation: only melodic tracks can use named articulations`);
+  }
 
   const localMotifs = parseStringRecord(value.motifs, `${path}.motifs`);
   const motifs = new Map(globalMotifs);
@@ -1587,6 +1778,8 @@ function parseTrack(
       tuning,
       motifs,
       envelopes,
+      articulations,
+      articulationName,
     );
   }
 
@@ -1605,6 +1798,8 @@ function parseTrack(
       tuning,
       motifs,
       envelopes,
+      articulations,
+      articulationName,
     );
   } else {
     const first = Object.values(patterns)[0];
@@ -1622,14 +1817,18 @@ function parseTrack(
       role,
       isDrums,
       waveform,
+      ...(group === undefined ? {} : { group }),
       ...(instrument === undefined ? {} : { instrument }),
       volume,
       envelope,
+      ...(articulationName === undefined ? {} : { articulation: articulationName }),
       patternSteps: defaultPattern.patternSteps,
       events: defaultPattern.events,
       patterns,
       pan,
       send,
+      ...(parsedSend.bus === undefined ? {} : { sendBus: parsedSend.bus }),
+      ...(parsedSend.stereo === undefined ? {} : { sendStereo: parsedSend.stereo }),
       duck,
       ...(filter === undefined ? {} : { filter }),
       ...(highpassHz === undefined ? {} : { highpassHz }),
@@ -1651,17 +1850,39 @@ function resolveTrackPattern(
   tuning: Tuning,
   motifs: ReadonlyMap<string, string>,
   envelopes: ReadonlyMap<string, Envelope>,
+  articulations: ReadonlyMap<string, Articulation>,
+  defaultArticulation?: string,
 ): TrackPattern {
   const local = localPatterns[reference];
   if (local !== undefined) return local;
 
   const globalSource = globalPatterns.get(reference);
   if (globalSource !== undefined) {
-    return parsePattern(globalSource, `patterns.${reference}`, volume, isDrums, tuning, motifs, envelopes);
+    return parsePattern(
+      globalSource,
+      `patterns.${reference}`,
+      volume,
+      isDrums,
+      tuning,
+      motifs,
+      envelopes,
+      articulations,
+      defaultArticulation,
+    );
   }
 
   try {
-    return parsePattern(reference, where, volume, isDrums, tuning, motifs, envelopes);
+    return parsePattern(
+      reference,
+      where,
+      volume,
+      isDrums,
+      tuning,
+      motifs,
+      envelopes,
+      articulations,
+      defaultArticulation,
+    );
   } catch (error) {
     // A bare identifier that is not note-shaped is far more likely a mistyped
     // pattern name than an inline pattern, so report it as a lookup miss.
@@ -1681,11 +1902,6 @@ interface ArrangementResult {
   readonly durationSeconds: number;
 }
 
-interface SectionFilter {
-  readonly fromHz: number;
-  readonly toHz?: number;
-}
-
 function parseSectionFilter(value: unknown, path: string): SectionFilter | undefined {
   if (value === undefined) return undefined;
   if (typeof value === 'number') {
@@ -1701,6 +1917,75 @@ function parseSectionFilter(value: unknown, path: string): SectionFilter | undef
     fromHz: readRequiredNumber(from, `${path}.from`, 100, 20000),
     ...(to === undefined ? {} : { toHz: readRequiredNumber(to, `${path}.to`, 100, 20000) }),
   };
+}
+
+const SECTION_TRACK_STATE_KEYS = ['gain', 'pan', 'send', 'mute', 'filter'] as const;
+
+/**
+ * Resolves a section's `tracks` table into one state per track name. A key
+ * that matches a track name applies only to that track; otherwise it is a role
+ * and applies to every track with that role. Track-name entries are applied
+ * last, so an explicit name wins over a role entry for the same field.
+ */
+function parseSectionTrackStates(
+  value: unknown,
+  path: string,
+  tracks: readonly ScoreTrack[],
+): Readonly<Record<string, SectionTrackState>> {
+  if (value === undefined) return {};
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object of track overrides`);
+  }
+
+  const entries = Object.entries(value);
+  for (const [target] of entries) {
+    if (!tracks.some((track) => track.name === target || track.role === target)) {
+      throw new ScoreError(`${path}: unknown track or role ${JSON.stringify(target)}`);
+    }
+  }
+
+  const resolved: Record<string, SectionTrackState> = {};
+  const apply = (target: string, rawState: unknown): void => {
+    const statePath = `${path}.${target}`;
+    if (!isRecord(rawState)) {
+      throw new ScoreError(`${statePath} must be an object with gain, pan, send, mute, or filter`);
+    }
+    rejectUnknownKeys(rawState, [...SECTION_TRACK_STATE_KEYS], statePath);
+    const state: SectionTrackState = {
+      ...(rawState.gain === undefined
+        ? {}
+        : { gain: readNumber(rawState.gain, `${statePath}.gain`, 1, 0, 4) }),
+      ...(rawState.pan === undefined
+        ? {}
+        : { pan: readNumber(rawState.pan, `${statePath}.pan`, 0, -1, 1) }),
+      ...(rawState.send === undefined
+        ? {}
+        : { send: readNumber(rawState.send, `${statePath}.send`, 0, 0, 1) }),
+      ...(rawState.mute === undefined
+        ? {}
+        : { mute: readBoolean(rawState.mute, `${statePath}.mute`, false) }),
+      ...(rawState.filter === undefined
+        ? {}
+        : { filter: parseSectionFilter(rawState.filter, `${statePath}.filter`) }),
+    };
+    const named = tracks.find((track) => track.name === target);
+    const matches = named === undefined
+      ? tracks.filter((track) => track.role === target)
+      : [named];
+    for (const track of matches) {
+      const existing = resolved[track.name];
+      resolved[track.name] = existing === undefined ? state : { ...existing, ...state };
+    }
+  };
+
+  // Role entries first; explicit track names overwrite them for that track.
+  for (const [target, rawState] of entries) {
+    if (!tracks.some((track) => track.name === target)) apply(target, rawState);
+  }
+  for (const [target, rawState] of entries) {
+    if (tracks.some((track) => track.name === target)) apply(target, rawState);
+  }
+  return resolved;
 }
 
 interface SectionFill {
@@ -1731,6 +2016,7 @@ function resolvePatternForTrack(
   globalPatterns: ReadonlyMap<string, string>,
   motifs: ReadonlyMap<string, string>,
   envelopes: ReadonlyMap<string, Envelope>,
+  articulations: ReadonlyMap<string, Articulation>,
   tuning: Tuning,
 ): TrackPattern {
   const local = track.patterns[reference];
@@ -1749,6 +2035,8 @@ function resolvePatternForTrack(
       tuning,
       motifs,
       envelopes,
+      articulations,
+      track.articulation,
     );
     cache.set(reference, pattern);
     return pattern;
@@ -1764,6 +2052,8 @@ function resolvePatternForTrack(
       tuning,
       motifs,
       envelopes,
+      articulations,
+      track.articulation,
     );
     cache.set(reference, pattern);
     return pattern;
@@ -1775,6 +2065,19 @@ function resolvePatternForTrack(
   }
 }
 
+interface ResolvedSectionDefaults {
+  readonly bpm: number;
+  readonly mute: readonly string[];
+  readonly gain: number;
+  readonly gains: Readonly<Record<string, number>>;
+  readonly filter?: SectionFilter;
+  readonly energy: number;
+  readonly space: number;
+  readonly width: number;
+  readonly patterns: Readonly<Record<string, string>>;
+  readonly trackStates: Readonly<Record<string, SectionTrackState>>;
+}
+
 function parseArrangement(
   value: unknown,
   tracks: readonly ScoreTrack[],
@@ -1782,9 +2085,11 @@ function parseArrangement(
   stepsPerBar: number,
   stepsPerBeat: number,
   defaultBpm: number,
+  inheritSections: boolean,
   globalPatterns: ReadonlyMap<string, string>,
   expectedBars: number | undefined,
   envelopes: ReadonlyMap<string, Envelope>,
+  articulations: ReadonlyMap<string, Articulation>,
   warnings: string[],
   tuning: Tuning,
 ): ArrangementResult {
@@ -1802,33 +2107,83 @@ function parseArrangement(
   const sections: ScoreSection[] = [];
   let cursor = 0;
   let secondsCursor = 0;
+  let previous: ResolvedSectionDefaults | undefined;
 
   value.forEach((raw, index) => {
     const path = `arrangement[${index}]`;
     if (!isRecord(raw)) {
       throw new ScoreError(
-        `${path} must be an object with bars, bpm, patterns, mute, gain, filter, energy, fill, or riser`,
+        `${path} must be an object with bars, bpm, patterns, mute, gain, gains, filter, energy, space, width, fill, riser, tracks, or inherit`,
       );
     }
     rejectUnknownKeys(
       raw,
-      ['name', 'bars', 'bpm', 'mute', 'gain', 'gains', 'filter', 'patterns', 'fill', 'energy', 'riser'],
+      [
+        'name',
+        'bars',
+        'bpm',
+        'mute',
+        'gain',
+        'gains',
+        'filter',
+        'patterns',
+        'fill',
+        'energy',
+        'space',
+        'width',
+        'riser',
+        'tracks',
+        'inherit',
+      ],
       path,
     );
 
     const name = readString(raw.name, `${path}.name`, `section${index}`);
     const bars = readRequiredNumber(raw.bars, `${path}.bars`, 1, 64, true);
-    const sectionBpm = readNumber(raw.bpm, `${path}.bpm`, defaultBpm, 30, 300);
+    // Inheritance is opt-in so old scores keep their global defaults. It copies
+    // mix and pattern state from the previous section; `fill`, `riser`, `bars`
+    // and `name` stay local to the section that declares them.
+    const inherit = readBoolean(raw.inherit, `${path}.inherit`, inheritSections);
+    const inherited = inherit ? previous : undefined;
+    const sectionBpm =
+      raw.bpm === undefined && inherited !== undefined
+        ? inherited.bpm
+        : readNumber(raw.bpm, `${path}.bpm`, defaultBpm, 30, 300);
     const sectionStepSeconds = 60 / sectionBpm / stepsPerBeat;
     const sectionSteps = bars * stepsPerBar;
     const sectionSeconds = sectionSteps * sectionStepSeconds;
     const sectionEnd = cursor + sectionSteps;
 
-    const mute = parseStringArray(raw.mute, `${path}.mute`);
-    const gain = readNumber(raw.gain, `${path}.gain`, 1, 0, 4);
-    const gains = parseNumberRecord(raw.gains, `${path}.gains`, 0, 4);
-    const filter = parseSectionFilter(raw.filter, `${path}.filter`);
-    const energy = readNumber(raw.energy, `${path}.energy`, 1, 0, 1);
+    const mute =
+      raw.mute === undefined && inherited !== undefined
+        ? inherited.mute
+        : parseStringArray(raw.mute, `${path}.mute`);
+    const gain =
+      raw.gain === undefined && inherited !== undefined
+        ? inherited.gain
+        : readNumber(raw.gain, `${path}.gain`, 1, 0, 4);
+    const gains =
+      raw.gains === undefined && inherited !== undefined
+        ? inherited.gains
+        : parseNumberRecord(raw.gains, `${path}.gains`, 0, 4);
+    const filter =
+      raw.filter === undefined && inherited !== undefined
+        ? inherited.filter
+        : parseSectionFilter(raw.filter, `${path}.filter`);
+    const energy =
+      raw.energy === undefined && inherited !== undefined
+        ? inherited.energy
+        : readNumber(raw.energy, `${path}.energy`, 1, 0, 1);
+    // space and width are neutral at 1, so a score without them renders and
+    // measures exactly as before. space scales the send bus, not the dry mix.
+    const space =
+      raw.space === undefined && inherited !== undefined
+        ? inherited.space
+        : readNumber(raw.space, `${path}.space`, 1, 0, 2);
+    const width =
+      raw.width === undefined && inherited !== undefined
+        ? inherited.width
+        : readNumber(raw.width, `${path}.width`, 1, 0, 2);
     const riserBars =
       raw.riser === undefined
         ? undefined
@@ -1838,7 +2193,14 @@ function parseArrangement(
         `${path}.riser covers ${riserBars} bar(s), but the section is only ${bars} bar(s) long`,
       );
     }
-    const patternOverrides = parseStringRecord(raw.patterns, `${path}.patterns`);
+    const patternOverrides =
+      raw.patterns === undefined && inherited !== undefined
+        ? inherited.patterns
+        : parseStringRecord(raw.patterns, `${path}.patterns`);
+    const trackStates =
+      raw.tracks === undefined && inherited !== undefined
+        ? inherited.trackStates
+        : parseSectionTrackStates(raw.tracks, `${path}.tracks`, tracks);
     validateTrackTargets(Object.keys(patternOverrides), `${path}.patterns`, tracks);
     validateTrackTargets(mute, `${path}.mute`, tracks);
     validateTrackTargets(Object.keys(gains), `${path}.gains`, tracks);
@@ -1862,7 +2224,11 @@ function parseArrangement(
     const energyGain = 0.5 + 0.5 * energy;
 
     tracks.forEach((track, trackIndex) => {
-      const muted = mute.some((entry) => entry === track.name || entry === track.role);
+      const state = trackStates[track.name];
+      const mutedByList = mute.some((entry) => entry === track.name || entry === track.role);
+      // An explicit state wins: `mute: false` can bring one track back while a
+      // role or name list mutes the rest of the section.
+      const muted = state?.mute === undefined ? mutedByList : state.mute;
       if (muted) return;
 
       const reference = patternOverrides[track.name] ?? patternOverrides[track.role];
@@ -1880,6 +2246,7 @@ function parseArrangement(
               globalPatterns,
               motifMaps[trackIndex] ?? new Map(),
               envelopes,
+              articulations,
               tuning,
             );
 
@@ -1895,6 +2262,7 @@ function parseArrangement(
               globalPatterns,
               motifMaps[trackIndex] ?? new Map(),
               envelopes,
+              articulations,
               tuning,
             );
 
@@ -1909,7 +2277,10 @@ function parseArrangement(
         );
       }
 
-      const trackGain = gain * (gains[track.name] ?? gains[track.role] ?? 1) * energyGain;
+      // `tracks.<name>.gain` is the modern fader and overrides the legacy
+      // `gains` entry for the same track without changing old scores.
+      const trackGain =
+        gain * (state?.gain ?? gains[track.name] ?? gains[track.role] ?? 1) * energyGain;
       const pushEvent = (event: NoteEvent, localStep: number): void => {
         const slot = Math.min(event.steps, sectionSteps - localStep);
         const gateSteps = Math.min(event.gateSteps ?? event.steps, sectionSteps - localStep);
@@ -1954,10 +2325,25 @@ function parseArrangement(
       startSeconds: secondsCursor,
       durationSeconds: sectionSeconds,
       energy,
+      ...(space === 1 ? {} : { space }),
+      ...(width === 1 ? {} : { width }),
       ...(filter === undefined ? {} : { filterHz: filter.fromHz }),
       ...(filter?.toHz === undefined ? {} : { filterEndHz: filter.toHz }),
       ...(riserBars === undefined ? {} : { riserBars }),
+      ...(Object.keys(trackStates).length === 0 ? {} : { trackStates }),
     });
+    previous = {
+      bpm: sectionBpm,
+      mute,
+      gain,
+      gains,
+      filter,
+      energy,
+      space,
+      width,
+      patterns: patternOverrides,
+      trackStates,
+    };
     cursor = sectionEnd;
     secondsCursor += sectionSeconds;
   });
@@ -1993,6 +2379,423 @@ function parseEnvelopes(value: unknown): ReadonlyMap<string, Envelope> {
       );
     }
     output.set(name, parseEnvelope(entry, `envelopes.${name}`));
+  }
+  return output;
+}
+
+/** A named reference is resolved eagerly, so a typo fails before rendering. */
+function parseNamedEnvelope(
+  value: unknown,
+  path: string,
+  envelopes: ReadonlyMap<string, Envelope>,
+): Envelope | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    const name = value.trim();
+    const envelope = envelopes.get(name);
+    if (envelope === undefined) {
+      throw new ScoreError(
+        `${path}: unknown envelope ${JSON.stringify(name)}; define it in the top-level envelopes table`,
+      );
+    }
+    return envelope;
+  }
+  return parseEnvelope(value, path);
+}
+
+function parseArticulationEffectParams(
+  effect: Effect,
+  value: unknown,
+  path: string,
+): EffectParams | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with the effect's numeric parameters`);
+  }
+  if (effect === 2) {
+    rejectUnknownKeys(value, ['vibratoDepth', 'vibratoRate'], path);
+    const depth =
+      value.vibratoDepth === undefined
+        ? undefined
+        : readNumber(value.vibratoDepth, `${path}.vibratoDepth`, 0.5, 0, 2);
+    const rate =
+      value.vibratoRate === undefined
+        ? undefined
+        : readNumber(value.vibratoRate, `${path}.vibratoRate`, 7.5, 0.1, 20);
+    if (depth === undefined && rate === undefined) return undefined;
+    return {
+      ...(depth === undefined ? {} : { vibratoDepth: depth }),
+      ...(rate === undefined ? {} : { vibratoRate: rate }),
+    };
+  }
+  if (effect === 1) {
+    rejectUnknownKeys(value, ['slideSteps'], path);
+    if (value.slideSteps === undefined) return undefined;
+    return { slideSteps: readNumber(value.slideSteps, `${path}.slideSteps`, 1, 0.05, 8) };
+  }
+  throw new ScoreError(`${path}: ~${EFFECT_NAMES[effect]} takes no parameters`);
+}
+
+/**
+ * Named performance shapes. Each one resolves into existing NoteEvent fields,
+ * so a score can define spiccato/legato/accent once and reuse it per token.
+ */
+function parseArticulation(
+  value: unknown,
+  path: string,
+  envelopes: ReadonlyMap<string, Envelope>,
+): Articulation {
+  if (!isRecord(value)) {
+    throw new ScoreError(
+      `${path} must be an object with gateScale, volume, envelope, effect, or effectParams`,
+    );
+  }
+  rejectUnknownKeys(value, ['gateScale', 'volume', 'envelope', 'effect', 'effectParams'], path);
+  const gateScale =
+    value.gateScale === undefined
+      ? undefined
+      : readNumber(value.gateScale, `${path}.gateScale`, 1, 0.05, 8);
+  const volume =
+    value.volume === undefined ? undefined : readVolume(value.volume, `${path}.volume`, 5);
+  const envelope = parseNamedEnvelope(value.envelope, `${path}.envelope`, envelopes);
+
+  let effect: Effect | undefined;
+  let effectParams: EffectParams | undefined;
+  if (value.effect !== undefined) {
+    if (typeof value.effect !== 'string') {
+      throw new ScoreError(`${path}.effect must be one of ${EFFECT_NAMES.slice(1).join(', ')}`);
+    }
+    effect = parseEffect(value.effect);
+    if (effect === undefined || effect === 0) {
+      throw new ScoreError(`${path}.effect must be one of ${EFFECT_NAMES.slice(1).join(', ')}`);
+    }
+    effectParams = parseArticulationEffectParams(effect, value.effectParams, `${path}.effectParams`);
+  } else if (value.effectParams !== undefined) {
+    throw new ScoreError(`${path}.effectParams requires ${path}.effect`);
+  }
+
+  if (
+    gateScale === undefined &&
+    volume === undefined &&
+    envelope === undefined &&
+    effect === undefined
+  ) {
+    throw new ScoreError(
+      `${path}: define at least one of gateScale, volume, envelope, or effect`,
+    );
+  }
+  return {
+    ...(gateScale === undefined ? {} : { gateScale }),
+    ...(volume === undefined ? {} : { volume }),
+    ...(envelope === undefined ? {} : { envelope }),
+    ...(effect === undefined ? {} : { effect }),
+    ...(effectParams === undefined ? {} : { effectParams }),
+  };
+}
+
+function parseArticulations(
+  value: unknown,
+  envelopes: ReadonlyMap<string, Envelope>,
+): ReadonlyMap<string, Articulation> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new ScoreError('articulations must be an object mapping names to performance shapes');
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_ARTICULATIONS) {
+    throw new ScoreError(
+      `articulations has ${entries.length} entries; use at most ${MAX_ARTICULATIONS}`,
+    );
+  }
+  const output = new Map<string, Articulation>();
+  for (const [name, entry] of entries) {
+    if (!ENVELOPE_NAME_RE.test(name)) {
+      throw new ScoreError(`articulations.${name}: names use letters, digits, "_" or "-"`);
+    }
+    if (parseEffect(name) !== undefined || isDrumEffectName(name) || DRUM_PARAM_RE.test(name)) {
+      throw new ScoreError(
+        `articulations.${name}: name collides with the ${name} effect; choose another articulation name`,
+      );
+    }
+    if (envelopes.has(name)) {
+      throw new ScoreError(
+        `articulations.${name}: name collides with an envelope; a ~name can only mean one thing`,
+      );
+    }
+    output.set(name, parseArticulation(entry, `articulations.${name}`, envelopes));
+  }
+  return output;
+}
+
+/**
+ * Reusable sound presets: instrument, envelope, default articulation, and the
+ * track-level sound fields. Patterns, roles, and post stay outside the preset.
+ */
+function parseSoundPreset(
+  value: unknown,
+  path: string,
+  instruments: ReadonlyMap<string, Instrument>,
+  samples: ReadonlyMap<string, SampleSpec>,
+  envelopes: ReadonlyMap<string, Envelope>,
+  articulations: ReadonlyMap<string, Articulation>,
+): SoundPreset {
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with instrument, envelope, and sound fields`);
+  }
+  rejectUnknownKeys(
+    value,
+    [
+      'instrument',
+      'waveform',
+      'envelope',
+      'articulation',
+      'volume',
+      'pan',
+      'send',
+      'duck',
+      'filter',
+      'highpassHz',
+      'lowShelf',
+      'highShelf',
+      'delay',
+    ],
+    path,
+  );
+  if (Object.keys(value).length === 0) {
+    throw new ScoreError(`${path}: define at least one sound field`);
+  }
+
+  let instrument: Instrument | undefined;
+  if (value.instrument !== undefined) {
+    const resolved = resolveTrackInstrument(
+      value.instrument,
+      `${path}.instrument`,
+      instruments,
+      samples,
+    );
+    if (resolved.isDrums) {
+      throw new ScoreError(
+        `${path}.instrument: presets are melodic; use role "drums" and drumSamples for drum voices`,
+      );
+    }
+    instrument = resolved.instrument;
+  }
+
+  let waveform: Waveform | undefined;
+  if (value.waveform !== undefined) {
+    waveform = parseWaveform(value.waveform);
+    if (waveform === undefined) {
+      throw new ScoreError(
+        `${path}.waveform: use 0-7 or one of triangle, tilted_saw, saw, square, pulse, organ, noise, phaser`,
+      );
+    }
+  }
+
+  const envelope = parseNamedEnvelope(value.envelope, `${path}.envelope`, envelopes);
+
+  let articulation: string | undefined;
+  if (value.articulation !== undefined) {
+    if (typeof value.articulation !== 'string' || value.articulation.trim() === '') {
+      throw new ScoreError(`${path}.articulation must name an entry in the articulations table`);
+    }
+    articulation = value.articulation.trim();
+    if (!articulations.has(articulation)) {
+      throw new ScoreError(
+        `${path}.articulation: unknown articulation ${JSON.stringify(articulation)}; define it in the top-level articulations table`,
+      );
+    }
+  }
+
+  return {
+    ...(instrument === undefined ? {} : { instrument }),
+    ...(waveform === undefined ? {} : { waveform }),
+    ...(envelope === undefined ? {} : { envelope }),
+    ...(articulation === undefined ? {} : { articulation }),
+    ...(value.volume === undefined
+      ? {}
+      : { volume: readVolume(value.volume, `${path}.volume`, 5) }),
+    ...(value.pan === undefined
+      ? {}
+      : { pan: readNumber(value.pan, `${path}.pan`, 0, -1, 1) }),
+    ...(value.send === undefined
+      ? {}
+      : { send: readNumber(value.send, `${path}.send`, 0, 0, 1) }),
+    ...(value.duck === undefined
+      ? {}
+      : { duck: readNumber(value.duck, `${path}.duck`, 0, 0, 1) }),
+    ...(value.filter === undefined
+      ? {}
+      : { filter: parseTrackFilter(value.filter, `${path}.filter`) }),
+    ...(value.highpassHz === undefined
+      ? {}
+      : { highpassHz: readNumber(value.highpassHz, `${path}.highpassHz`, 20, 20, 4000) }),
+    ...(value.lowShelf === undefined
+      ? {}
+      : { lowShelf: parseTrackShelf(value.lowShelf, `${path}.lowShelf`, 250) }),
+    ...(value.highShelf === undefined
+      ? {}
+      : { highShelf: parseTrackShelf(value.highShelf, `${path}.highShelf`, 4000) }),
+    ...(value.delay === undefined
+      ? {}
+      : { delay: parseTrackDelay(value.delay, `${path}.delay`) }),
+  };
+}
+
+function parsePresets(
+  value: unknown,
+  instruments: ReadonlyMap<string, Instrument>,
+  samples: ReadonlyMap<string, SampleSpec>,
+  envelopes: ReadonlyMap<string, Envelope>,
+  articulations: ReadonlyMap<string, Articulation>,
+): ReadonlyMap<string, SoundPreset> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new ScoreError('presets must be an object mapping names to sound presets');
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_PRESETS) {
+    throw new ScoreError(`presets has ${entries.length} entries; use at most ${MAX_PRESETS}`);
+  }
+  const output = new Map<string, SoundPreset>();
+  for (const [name, entry] of entries) {
+    if (!ENVELOPE_NAME_RE.test(name)) {
+      throw new ScoreError(`presets.${name}: names use letters, digits, "_" or "-"`);
+    }
+    output.set(
+      name,
+      parseSoundPreset(entry, `presets.${name}`, instruments, samples, envelopes, articulations),
+    );
+  }
+  return output;
+}
+
+const SEND_DEFAULT_ROOM = 0.86;
+const SEND_DEFAULT_DAMP = 0.4;
+
+function parseSendReverb(value: unknown, path: string): SendReverb {
+  if (!isRecord(value)) {
+    throw new ScoreError(
+      `${path} must be an object with room, damp, predelayMs, lowCutHz, highCutHz, modDepth, or modRateHz`,
+    );
+  }
+  rejectUnknownKeys(
+    value,
+    ['room', 'damp', 'predelayMs', 'lowCutHz', 'highCutHz', 'modDepth', 'modRateHz'],
+    path,
+  );
+  return {
+    room: readNumber(value.room, `${path}.room`, SEND_DEFAULT_ROOM, 0, 0.98),
+    damp: readNumber(value.damp, `${path}.damp`, SEND_DEFAULT_DAMP, 0, 1),
+    ...(value.predelayMs === undefined
+      ? {}
+      : { predelayMs: readNumber(value.predelayMs, `${path}.predelayMs`, 0, 0, 200) }),
+    ...(value.lowCutHz === undefined
+      ? {}
+      : { lowCutHz: readNumber(value.lowCutHz, `${path}.lowCutHz`, 20, 20, 1000) }),
+    ...(value.highCutHz === undefined
+      ? {}
+      : { highCutHz: readNumber(value.highCutHz, `${path}.highCutHz`, 20000, 1000, 20000) }),
+    ...(value.modDepth === undefined
+      ? {}
+      : { modDepth: readNumber(value.modDepth, `${path}.modDepth`, 0, 0, 1) }),
+    ...(value.modRateHz === undefined
+      ? {}
+      : { modRateHz: readNumber(value.modRateHz, `${path}.modRateHz`, 0.7, 0.05, 5) }),
+  };
+}
+
+const GROUP_KEYS = [
+  'gain',
+  'pan',
+  'send',
+  'duck',
+  'filter',
+  'highpassHz',
+  'lowShelf',
+  'highShelf',
+  'delay',
+  'reverb',
+  'room',
+  'damp',
+  'predelayMs',
+  'lowCutHz',
+  'highCutHz',
+  'modDepth',
+  'modRateHz',
+] as const;
+const GROUP_REVERB_KEYS = [
+  'room',
+  'damp',
+  'predelayMs',
+  'lowCutHz',
+  'highCutHz',
+  'modDepth',
+  'modRateHz',
+] as const;
+
+function parseGroup(value: unknown, name: string, path: string): ScoreGroup {
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with gain, pan, send, filter, or reverb`);
+  }
+  rejectUnknownKeys(value, [...GROUP_KEYS], path);
+  const directReverbKeys = GROUP_REVERB_KEYS.filter((key) => value[key] !== undefined);
+  if (value.reverb !== undefined && directReverbKeys.length > 0) {
+    throw new ScoreError(
+      `${path}: use either reverb or the direct ${directReverbKeys.join('/')} fields, not both`,
+    );
+  }
+  const directReverb: Record<string, unknown> = {};
+  for (const key of directReverbKeys) directReverb[key] = value[key];
+  const reverb =
+    value.reverb !== undefined
+      ? parseSendReverb(value.reverb, `${path}.reverb`)
+      : directReverbKeys.length > 0
+        ? parseSendReverb(directReverb, path)
+        : undefined;
+  return {
+    name,
+    gain: readNumber(value.gain, `${path}.gain`, 1, 0, 4),
+    pan: readNumber(value.pan, `${path}.pan`, 0, -1, 1),
+    send: readNumber(value.send, `${path}.send`, 0, 0, 1),
+    duck: readNumber(value.duck, `${path}.duck`, 0, 0, 1),
+    ...(value.filter === undefined
+      ? {}
+      : { filter: parseTrackFilter(value.filter, `${path}.filter`) }),
+    ...(value.highpassHz === undefined
+      ? {}
+      : { highpassHz: readNumber(value.highpassHz, `${path}.highpassHz`, 20, 20, 4000) }),
+    ...(value.lowShelf === undefined
+      ? {}
+      : { lowShelf: parseTrackShelf(value.lowShelf, `${path}.lowShelf`, 250) }),
+    ...(value.highShelf === undefined
+      ? {}
+      : { highShelf: parseTrackShelf(value.highShelf, `${path}.highShelf`, 4000) }),
+    ...(value.delay === undefined
+      ? {}
+      : { delay: parseTrackDelay(value.delay, `${path}.delay`) }),
+    ...(reverb === undefined ? {} : { reverb }),
+  };
+}
+
+/**
+ * Named subgroups. `groups` and `buses` are synonyms; both are object tables
+ * keyed by the name tracks reference through `group` (or `bus`).
+ */
+function parseGroups(value: unknown, path: string): ReadonlyMap<string, ScoreGroup> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object mapping names to group settings`);
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_GROUPS) {
+    throw new ScoreError(`${path} has ${entries.length} entries; use at most ${MAX_GROUPS}`);
+  }
+  const output = new Map<string, ScoreGroup>();
+  for (const [name, entry] of entries) {
+    if (!ENVELOPE_NAME_RE.test(name)) {
+      throw new ScoreError(`${path}.${name}: names use letters, digits, "_" or "-"`);
+    }
+    output.set(name, parseGroup(entry, name, `${path}.${name}`));
   }
   return output;
 }
@@ -2127,11 +2930,16 @@ export function parseScore(input: string | unknown): Score {
       'swing',
       'seed',
       'envelopes',
+      'articulations',
+      'presets',
+      'groups',
+      'buses',
       'instruments',
       'samples',
       'drumSamples',
       'mode',
       'arrangement',
+      'inheritSections',
       'tracks',
       'motifs',
       'patterns',
@@ -2152,9 +2960,19 @@ export function parseScore(input: string | unknown): Score {
   const humanize = parseHumanize(raw.humanize);
   const tuning = parseTuning(raw.tuning);
   const tailSeconds = readNumber(raw.tail, 'tail', 0, 0, 30);
+  const inheritSections = readBoolean(raw.inheritSections, 'inheritSections', false);
   const envelopes = parseEnvelopes(raw.envelopes);
+  const articulations = parseArticulations(raw.articulations, envelopes);
   const samples = parseSamples(raw.samples);
   const instruments = parseInstruments(raw.instruments, samples);
+  const presets = parsePresets(raw.presets, instruments, samples, envelopes, articulations);
+  if (raw.groups !== undefined && raw.buses !== undefined) {
+    throw new ScoreError('groups and buses are synonyms; define the table once');
+  }
+  const groups = parseGroups(
+    raw.groups ?? raw.buses,
+    raw.groups !== undefined ? 'groups' : 'buses',
+  );
   const drumSamples = parseDrumSamples(raw.drumSamples, samples);
   const hasArrangement = raw.arrangement !== undefined;
   const mode = parseMode(raw.mode, hasArrangement);
@@ -2189,6 +3007,9 @@ export function parseScore(input: string | unknown): Score {
       envelopes,
       instruments,
       samples,
+      presets,
+      groups,
+      articulations,
       tuning,
     ),
   );
@@ -2213,9 +3034,11 @@ export function parseScore(input: string | unknown): Score {
       stepsPerBar,
       stepsPerBeat,
       bpm,
+      inheritSections,
       globalPatterns,
       expectedBars,
       envelopes,
+      articulations,
       warnings,
       tuning,
     );
@@ -2253,6 +3076,20 @@ export function parseScore(input: string | unknown): Score {
     }
   }
 
+  if (mode === 'song' && sections.some((section) => (section.space ?? 1) !== 1)) {
+    // space only scales the send buses; with every send at 0 it cannot be
+    // heard at all, which is more likely a mistake than a deliberate choice.
+    const sectionSend = sections.some((section) =>
+      Object.values(section.trackStates ?? {}).some((state) => (state.send ?? 0) > 0),
+    );
+    const groupSend = [...groups.values()].some((group) => group.send > 0);
+    if (!tracks.some((track) => track.send > 0) && !sectionSend && !groupSend) {
+      warnings.push(
+        'space-no-send: sections set space but no track or group has a send; space scales the send buses before their reverbs',
+      );
+    }
+  }
+
   if (durationSeconds + tailSeconds > MAX_SONG_SECONDS) {
     throw new ScoreError(
       `score is ${(durationSeconds + tailSeconds).toFixed(0)} s long including tail; the render budget is ${MAX_SONG_SECONDS} s (15 minutes)`,
@@ -2273,6 +3110,7 @@ export function parseScore(input: string | unknown): Score {
     humanize,
     tuning,
     tracks,
+    groups,
     sections,
     tailSeconds,
     samples,

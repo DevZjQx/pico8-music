@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
 import { parseScore, type SampleSpec, type Score } from '../features/score/feature.ts';
 import {
+  MAX_SAFE_LUFS,
   PRESETS,
   analyseAudio,
   createDitherState,
@@ -357,6 +358,14 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
   });
 
   if (exec.signal?.aborted) throw new Error('render aborted');
+  // Safety gate, not a mix opinion: the file is refused rather than written
+  // when the finished mix sits above the hearing-safety ceiling. Analysis of an
+  // existing WAV only warns, because measuring cannot make it quieter.
+  if (Number.isFinite(output.report.lufs) && output.report.lufs > MAX_SAFE_LUFS) {
+    throw new Error(
+      `rendered mix is ${output.report.lufs.toFixed(1)} LUFS, above the ${MAX_SAFE_LUFS} LUFS hearing-safety ceiling; lower track volumes or add a loudness step around -14..-16 LUFS`,
+    );
+  }
   await mkdir(dirname(outputPath), { recursive: true });
   await writeWaveFile(outputPath, output, exec.signal);
 

@@ -116,11 +116,11 @@ test('rejects invalid per-note volumes and envelopes', () => {
   assert.throws(() => parseScore({ tracks: [{ pattern: '-:4@3' }] }), /rest cannot carry/);
   assert.throws(
     () => parseScore({ tracks: [{ pattern: '-:4~slide' }] }),
-    /rest cannot carry an effect or a named envelope/,
+    /rest cannot carry an effect/,
   );
   assert.throws(
     () => parseScore({ envelopes: { pluck: {} }, tracks: [{ pattern: '-:4~pluck' }] }),
-    /rest cannot carry an effect or a named envelope/,
+    /rest cannot carry an effect/,
   );
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4@3@4' }] }), /at most one/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:4', envelope: { sustain: 2 } }] }), /\.sustain/);
@@ -908,7 +908,7 @@ test('named envelopes attach per note without changing the track default', () =>
 test('rejects unknown envelopes, effect-name collisions, and envelope parameters', () => {
   assert.throws(
     () => parseScore({ tracks: [{ pattern: 'C4:4~pluck' }] }),
-    /unknown envelope "pluck"/,
+    /unknown envelope or articulation "pluck"/,
   );
   assert.throws(
     () => parseScore({
@@ -931,6 +931,158 @@ test('rejects unknown envelopes, effect-name collisions, and envelope parameters
         tracks: [{ pattern: 'C4:4' }],
       }),
     /collides with the pitch effect/,
+  );
+});
+
+test('expands named articulations, with token values winning', () => {
+  const parsed = parseScore({
+    envelopes: {
+      pluck: { attack: 0.01, decay: 0.05, sustain: 0.2, release: 0.03 },
+    },
+    articulations: {
+      spiccato: {
+        gateScale: 0.5,
+        volume: 6,
+        envelope: 'pluck',
+        effect: 'vibrato',
+        effectParams: { vibratoDepth: 0.2, vibratoRate: 6 },
+      },
+      accent: { volume: 7 },
+    },
+    tracks: [
+      {
+        volume: 4,
+        articulation: 'accent',
+        pattern: 'C4:4~spiccato D4:4 E4:4~spiccato@5~slide(0.25)',
+      },
+    ],
+  });
+  const events = parsed.tracks[0]?.events ?? [];
+  assert.deepEqual(
+    events.map((event) => [event.gateSteps, event.volume, event.effect]),
+    [
+      [2, 6, 2],
+      [4, 7, 0],
+      [2, 5, 1],
+    ],
+  );
+  assert.deepEqual(events[0]?.effectParams, { vibratoDepth: 0.2, vibratoRate: 6 });
+  assert.deepEqual(events[2]?.effectParams, { slideSteps: 0.25 });
+  assert.equal(events[0]?.envelope?.decay, 0.05);
+  assert.equal(events[1]?.envelope, undefined, 'the default articulation leaves the track envelope');
+});
+
+test('section patterns and fills keep the track articulation', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    articulations: { staccato: { gateScale: 0.5 } },
+    tracks: [{ name: 'lead', articulation: 'staccato', pattern: 'C4:4' }],
+    arrangement: [{ bars: 1, patterns: { lead: 'D4:4' } }],
+  });
+  assert.equal(parsed.tracks[0]?.timeline?.[0]?.gateSteps, 2);
+  assert.equal(parsed.tracks[0]?.timeline?.[0]?.midi, 62);
+});
+
+test('rejects invalid articulations and ambiguous ~names', () => {
+  assert.throws(
+    () => parseScore({ articulations: { legato: {} }, tracks: [{ pattern: 'C4:4' }] }),
+    /define at least one of gateScale, volume, envelope, or effect/,
+  );
+  assert.throws(
+    () => parseScore({ articulations: { vibrato: { volume: 1 } }, tracks: [{ pattern: 'C4:4' }] }),
+    /name collides with the vibrato effect/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        envelopes: { pluck: { attack: 0.01 } },
+        articulations: { pluck: { volume: 1 } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /name collides with an envelope/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        articulations: { swell: { effectParams: { vibratoDepth: 0.2 } } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /effectParams requires/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        articulations: { hit: { volume: 1 } },
+        tracks: [{ role: 'drums', pattern: 'K:1~hit' }],
+      }),
+    /named articulations are only for melodic tracks/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        articulations: { hit: { volume: 1 } },
+        tracks: [{ role: 'drums', articulation: 'hit', pattern: 'K:1' }],
+      }),
+    /only melodic tracks can use named articulations/,
+  );
+});
+
+test('applies sound presets and lets track fields override them', () => {
+  const parsed = parseScore({
+    articulations: { legato: { gateScale: 1.5 } },
+    presets: {
+      string: {
+        instrument: { type: 'additive', partials: [1, 0.5, 0.25] },
+        envelope: { attack: 0.05, decay: 0.2, sustain: 0.8, release: 0.1 },
+        articulation: 'legato',
+        volume: 4,
+        pan: -0.3,
+        send: 0.2,
+        highpassHz: 120,
+        filter: { cutoffHz: 3000, resonance: 1, lfoHz: 0, lfoDepth: 0 },
+        delay: { steps: 2, feedback: 0.2, mix: 0.1 },
+      },
+    },
+    tracks: [{ preset: 'string', volume: 6, send: 0.4, pattern: 'C4:4' }],
+  });
+  const track = parsed.tracks[0];
+  assert.equal(track?.instrument?.type, 'additive');
+  assert.equal(track?.instrument?.partials?.length, 3);
+  assert.equal(track?.volume, 6);
+  assert.equal(track?.pan, -0.3);
+  assert.equal(track?.send, 0.4);
+  assert.equal(track?.highpassHz, 120);
+  assert.equal(track?.filter?.cutoffHz, 3000);
+  assert.equal(track?.delay?.steps, 2);
+  assert.equal(track?.envelope.decay, 0.2);
+  assert.equal(track?.articulation, 'legato');
+  assert.equal(track?.events[0]?.gateSteps, 6);
+});
+
+test('presets stay melodic and reject unknown references', () => {
+  assert.throws(
+    () => parseScore({ tracks: [{ preset: 'missing', pattern: 'C4:4' }] }),
+    /unknown preset "missing"/,
+  );
+  assert.throws(
+    () => parseScore({ presets: { kit: { instrument: 'drums' } }, tracks: [{ preset: 'kit', pattern: 'C4:4' }] }),
+    /presets are melodic/,
+  );
+  assert.throws(
+    () => parseScore({ presets: { kit: { volume: 2 } }, tracks: [{ role: 'drums', preset: 'kit', pattern: 'K:1' }] }),
+    /sound presets are for melodic tracks/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        presets: { pad: { articulation: 'missing' } },
+        tracks: [{ preset: 'pad', pattern: 'C4:4' }],
+      }),
+    /unknown articulation "missing"/,
+  );
+  assert.throws(
+    () => parseScore({ presets: { empty: {} }, tracks: [{ pattern: 'C4:4' }] }),
+    /define at least one sound field/,
   );
 });
 
@@ -1083,6 +1235,107 @@ test('parses a section filter sweep', () => {
   assert.equal(parsed.sections[0]?.filterEndHz, 8000);
   assert.equal(parsed.sections[1]?.filterHz, 1200);
   assert.equal(parsed.sections[1]?.filterEndHz, undefined);
+});
+
+test('sections accept per-track gain, pan, send, mute, and filter state', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    tracks: [
+      { name: 'kick', role: 'drums', pattern: 'K:4' },
+      { name: 'bass', role: 'bass', pattern: 'C2:4' },
+      { name: 'lead', role: 'lead', pattern: 'C4:4' },
+    ],
+    arrangement: [
+      {
+        bars: 1,
+        mute: ['bass'],
+        tracks: {
+          drums: { gain: 0.5, pan: -0.2 },
+          bass: { mute: false, send: 0.4, filter: { from: 300, to: 1200 } },
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(parsed.sections[0]?.trackStates, {
+    kick: { gain: 0.5, pan: -0.2 },
+    bass: { mute: false, send: 0.4, filter: { fromHz: 300, toHz: 1200 } },
+  });
+  assert.equal(parsed.tracks[0]?.timeline?.[0]?.gain, 0.5);
+  assert.ok(parsed.tracks[1]?.timeline?.[0] !== undefined, 'mute:false should unmute the track');
+  assert.ok(parsed.tracks[2]?.timeline?.[0] !== undefined, 'unmentioned tracks keep playing');
+
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        tracks: [{ name: 'lead', pattern: 'C4:4' }],
+        arrangement: [{ bars: 1, tracks: { nope: { pan: 0 } } }],
+      }),
+    /tracks: unknown track or role "nope"/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        tracks: [{ name: 'lead', pattern: 'C4:4' }],
+        arrangement: [{ bars: 1, tracks: { lead: { pan: 2 } } }],
+      }),
+    /pan must be between -1 and 1/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        mode: 'song',
+        tracks: [{ name: 'lead', pattern: 'C4:4' }],
+        arrangement: [{ bars: 1, tracks: { lead: { cutoff: 400 } } }],
+      }),
+    /unknown field "cutoff"/,
+  );
+});
+
+test('inheritSections copies mix and pattern state but not fill or riser', () => {
+  const parsed = parseScore({
+    mode: 'song',
+    bpm: 120,
+    inheritSections: true,
+    tracks: [{ name: 'lead', pattern: 'C4:4' }],
+    arrangement: [
+      {
+        name: 'a',
+        bars: 1,
+        bpm: 100,
+        filter: 800,
+        space: 1.5,
+        width: 0.5,
+        riser: 1,
+        patterns: { lead: 'C5:4' },
+        tracks: { lead: { pan: 0.5, send: 0.4 } },
+        gains: { lead: 0.7 },
+      },
+      { name: 'b', bars: 1 },
+      { name: 'c', bars: 1, inherit: false },
+    ],
+  });
+
+  const [a, b, c] = parsed.sections;
+  assert.ok(a !== undefined && b !== undefined && c !== undefined);
+  assert.equal(b.bpm, 100);
+  assert.equal(b.filterHz, 800);
+  assert.equal(b.space, 1.5);
+  assert.equal(b.width, 0.5);
+  assert.deepEqual(b.trackStates, a.trackStates);
+  assert.equal(b.riserBars, undefined, 'riser is an event and stays local');
+  assert.ok(
+    parsed.tracks[0]?.timeline
+      ?.filter((event) => event.step >= 16 && event.step < 32)
+      .every((event) => event.midi === 72),
+    'the inherited pattern should still be C5',
+  );
+
+  assert.equal(c.bpm, 120, 'inherit:false resets to the top-level bpm');
+  assert.equal(c.filterHz, undefined);
+  assert.equal(c.trackStates, undefined);
 });
 
 test('accepts a heavily damped filter resonance on tracks and instruments', () => {

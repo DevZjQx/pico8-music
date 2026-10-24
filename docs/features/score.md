@@ -5,7 +5,9 @@ to author and cheap to reject.
 
 **Owns.** The JSON wire format, note-name and drum-token parsing, waveform and
 effect names, per-note volume (`@volume`), track and named ADSR envelopes,
-slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
+reusable melodic articulations (`articulations`, resolved into gate/volume/
+envelope/effect at parse time), reusable sound presets (`presets`, instrument
+plus track sound defaults), slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
 `Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`),
 score-level `swing` and `seed`, the grid (`stepsPerBeat`, `beatsPerBar`, and
 whole-bar patterns), deterministic `humanize` timing/velocity
@@ -16,12 +18,15 @@ per-note cents), motif definitions and transforms
 top-level `instruments` table (including the opt-in `velocity` cutoff/drive
 mapping) and per-track `instrument` references, the
 top-level `samples` table (workspace WAV paths with root/loop/gain) and
-`drumSamples` replacements, loop vs song mode, named patterns, arrangement
-resolution (sections, mute, gain, filter and filter sweeps, `energy`, `fill`
-pattern replacement, `riser` bars, and per-section `bpm` with a resolved
+`drumSamples` replacements, the top-level `groups`/`buses` table and track
+`group`/`bus` routing (named stereo submixes, each with its own send return),
+loop vs song mode, named patterns, arrangement
+resolution (sections, mute, gain, filter and filter sweeps, `energy`, `space`,
+`width`, `fill` pattern replacement, `riser` bars, per-track section state and
+opt-in section inheritance, and per-section `bpm` with a resolved
 step-to-seconds tempo map), the song-end `tail`, the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `highpassHz`,
-`lowShelf`, `highShelf`, `delay`), the
+`lowShelf`, `highShelf`, `delay`, `group`), the
 model-facing wire-format reference (`help.ts`), and the normalised `Score` the renderer
 consumes.
 
@@ -60,8 +65,17 @@ to the same MIDI notes as the explicit form; explicit voicings accept up to
 eight voices, while named qualities stay capped at four. A digit
 quality that is also an octave (`C7`, `C5`, `C6`, `C9`) is shadowed by the
 note parser, so the brace form (`{C7}`) forces the chord reading; `G7/B` is
-safe because the slash rules out a note. Envelope names may not collide with
-effect or drum-articulation names, which is what keeps `~name` unambiguous. Motif pitch transforms
+safe because the slash rules out a note. Envelope and articulation names may
+not collide with each other, an effect name, or the drum vocabulary, which is
+what keeps `~name` unambiguous; named articulations are melodic-only, while
+drum tracks keep their fixed `~ghost` / `~flam` / `~roll`. A preset is a
+score-level sound default, not the p8_music `preset` argument (a post-chain
+shortcut outside the score), and a track field always overrides it. `group`
+and `bus` are synonyms at both levels: the table is `groups`/`buses`, the
+track field is `group`/`bus`. A track may join at most one group; group
+membership is routing, not a sound preset, so it is not inherited from
+`presets`. Group sends are stereo and each group resolves to its own return,
+which is why the old single mono send bus no longer bounds the mix. Motif pitch transforms
 (`transpose`/`invert`) reject chord tokens; time/order transforms still work.
 A sounding token's slot is 1-64 steps and its gate 1-256; a rest may span
 1-256 steps because it only advances the pattern cursor, so a long rest can pad
@@ -75,7 +89,12 @@ musical rule; `score` validates that cap together with the 256-section and
 15-minute budgets, and leaves the musical shape to the model. A section `bpm`
 changes the tempo only at a section boundary; the step grid stays integral, so
 patterns, fills, and swing keep their existing semantics. Loop mode remains a
-single tempo. Gradual ramps and arbitrary tempo automation are deliberately
+single tempo. Section `tracks` keys resolve by track name first and by role
+second, then normalise to one entry per track name; `gain` overrides the legacy
+section `gains`, and `mute:false` overrides a section `mute` entry. Inheritance
+is opt-in (`inheritSections` or a section `inherit`) so omitting it keeps the
+historical global defaults; inherited state copies mix/pattern fields but never
+`fill`, `riser`, `bars`, or `name`. Gradual ramps and arbitrary tempo automation are deliberately
 deferred. `delay.steps` keeps the top-level `bpm` as its default reference so a
 track's echo time does not silently change between sections; `delay.follow:
 "section"` opts into measuring each echo on the grid of the section it lands

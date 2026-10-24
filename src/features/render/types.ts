@@ -9,6 +9,11 @@ export type PostStep =
   | { readonly type: 'slow'; readonly speed?: number }
   | { readonly type: 'lowpass'; readonly cutoffHz?: number; readonly toneHz?: number }
   | {
+      readonly type: 'highpass';
+      /** Master high-pass cutoff, 20-500 Hz; removes sub-bass a small speaker cannot play. */
+      readonly highpassHz?: number;
+    }
+  | {
       readonly type: 'reverb';
       readonly wet?: number;
       readonly room?: number;

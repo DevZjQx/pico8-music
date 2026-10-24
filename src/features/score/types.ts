@@ -83,6 +83,24 @@ export interface EffectParams {
 }
 
 /**
+ * A reusable performance shape, referenced from a token as `~name`. It is
+ * expanded during parsing into the existing NoteEvent fields (gate, volume,
+ * envelope, effect), so the renderer needs no articulation branch. Token
+ * values always win over the articulation's defaults.
+ */
+export interface Articulation {
+  /** Multiply the slot length; 0.05..8. A shorter gate is staccato. */
+  readonly gateScale?: number;
+  /** Per-note volume 0..7, one decimal allowed; `@volume` still wins. */
+  readonly volume?: number;
+  /** ADSR supplied to every note using this articulation. */
+  readonly envelope?: Envelope;
+  /** One pitched effect; a token's own `~effect` still wins. */
+  readonly effect?: Effect;
+  readonly effectParams?: EffectParams;
+}
+
+/**
  * Drum-only articulations. `ghost` is a quiet, shorter, darker hit; `flam`
  * doubles a hit a few milliseconds later; `roll` subdivides the slot into
  * evenly spaced hits with a deterministic velocity decay.
@@ -214,6 +232,30 @@ export interface TrackFilter {
   readonly lfoDepth: number;
 }
 
+/** A section filter: a static cutoff or an exponential `from` -> `to` sweep. */
+export interface SectionFilter {
+  readonly fromHz: number;
+  readonly toHz?: number;
+}
+
+/**
+ * Per-section mix state for one track. The parser resolves keys by track name
+ * first and by role second, then stores the result under the track's name, so
+ * the renderer never has to re-resolve roles.
+ */
+export interface SectionTrackState {
+  /** Section fader, 0-4; overrides the legacy section `gains` entry. */
+  readonly gain?: number;
+  /** Equal-power pan, -1..1; absent keeps the track pan. */
+  readonly pan?: number;
+  /** Reverb send, 0..1; absent keeps the track send. */
+  readonly send?: number;
+  /** true mutes, false unmutes even when a section `mute` list names the track. */
+  readonly mute?: boolean;
+  /** Track-local low-pass, static or swept across this section. */
+  readonly filter?: SectionFilter;
+}
+
 /** One RBJ shelf; `gainDb` is the shelf gain, not the band level. */
 export interface TrackShelf {
   /** Corner frequency in Hz. */
@@ -235,6 +277,76 @@ export interface TrackDelay {
    * bpm; `section` measures each echo on the grid of the section it lands in.
    */
   readonly follow: DelayFollow;
+}
+
+/**
+ * Return settings for one named group's stereo send. The send is wet-only, so
+ * there is no `wet` mix here; `room` and `damp` shape the return itself.
+ */
+export interface SendReverb {
+  /** Room size, 0-0.98; larger is longer. */
+  readonly room: number;
+  /** High-frequency damping, 0-1. */
+  readonly damp: number;
+  /** Delay the stereo send before the comb bank, 0-200 ms. */
+  readonly predelayMs?: number;
+  /** High-pass the wet return, 20-1000 Hz. */
+  readonly lowCutHz?: number;
+  /** Low-pass the wet return, 1000-20000 Hz. */
+  readonly highCutHz?: number;
+  /** Slow delay modulation depth, 0-1. */
+  readonly modDepth?: number;
+  /** Modulation rate in Hz, 0.05-5. */
+  readonly modRateHz?: number;
+}
+
+/**
+ * A named subgroup. Tracks that name it are summed into one stereo buffer
+ * before the group fader, pan, filter, delay, duck, and send. Each group owns
+ * its own stereo send return, so groups do not share one reverb bus.
+ */
+export interface ScoreGroup {
+  readonly name: string;
+  /** Group fader, 0-4; 1 is neutral. */
+  readonly gain: number;
+  /** Equal-power group pan, -1..1; 0 is neutral. */
+  readonly pan: number;
+  /** 0..1 send from the finished group into this group's stereo return. */
+  readonly send: number;
+  /** 0..1 kick-triggered ducking on the summed group. */
+  readonly duck: number;
+  readonly filter?: TrackFilter;
+  readonly highpassHz?: number;
+  readonly lowShelf?: TrackShelf;
+  readonly highShelf?: TrackShelf;
+  readonly delay?: TrackDelay;
+  /** Return reverb settings; absent uses the send defaults. */
+  readonly reverb?: SendReverb;
+}
+
+/**
+ * A reusable sound preset: the instrument plus the track-level sound defaults
+ * a track would otherwise repeat. It deliberately holds no pattern, role, or
+ * post-chain state; post remains a p8_music argument, outside the score.
+ */
+export interface SoundPreset {
+  /** Resolved named or inline voice; absent keeps the legacy waveform path. */
+  readonly instrument?: Instrument;
+  /** Chip waveform default; only meaningful with chip/no instrument. */
+  readonly waveform?: Waveform;
+  /** Track ADSR default. */
+  readonly envelope?: Envelope;
+  /** Default articulation for tokens that carry no `~name`. */
+  readonly articulation?: string;
+  readonly volume?: number;
+  readonly pan?: number;
+  readonly send?: number;
+  readonly duck?: number;
+  readonly filter?: TrackFilter;
+  readonly highpassHz?: number;
+  readonly lowShelf?: TrackShelf;
+  readonly highShelf?: TrackShelf;
+  readonly delay?: TrackDelay;
 }
 
 export interface NoteEvent {
@@ -284,10 +396,14 @@ export interface ScoreTrack {
   readonly waveform: Waveform;
   /** Resolved instrument; absent keeps the historical waveform path. */
   readonly instrument?: Instrument;
+  /** Named group this track is summed into; absent routes straight to the master. */
+  readonly group?: string;
   /** 0..7 (one decimal allowed), the default per-note volume when a token has no `@volume` suffix. */
   readonly volume: number;
   /** ADSR applied to every note in the track. Drum hits ignore it. */
   readonly envelope: Envelope;
+  /** Default articulation for tokens without a `~name`; melodic tracks only. */
+  readonly articulation?: string;
   /** Length of one repetition of the authored default pattern, in steps. */
   readonly patternSteps: number;
   /** Sorted by step; pattern repetitions are expanded by the renderer in loop mode. */
@@ -298,8 +414,12 @@ export interface ScoreTrack {
   readonly timeline?: readonly NoteEvent[];
   /** -1 (left) .. 1 (right); 0 keeps the track centred. */
   readonly pan: number;
-  /** 0..1 send into the track-send reverb bus. */
+  /** 0..1 send into this track's stereo return (its group's, or the default bus). */
   readonly send: number;
+  /** Optional named return (a group) for this track's send, across groups. */
+  readonly sendBus?: string;
+  /** false feeds the pre-pan mono stem to the return; absent/true keeps the stereo image. */
+  readonly sendStereo?: boolean;
   /** 0..1 sidechain depth triggered by kick hits. */
   readonly duck: number;
   readonly filter?: TrackFilter;
@@ -331,8 +451,14 @@ export interface ScoreSection {
   readonly filterEndHz?: number;
   /** 0..1 macro that scales the section gain and filter cutoff; 1 is neutral. */
   readonly energy?: number;
+  /** 0..2 multiplier on the track reverb send; 1 is neutral, 0 is dry/close. */
+  readonly space?: number;
+  /** 0..2 multiplier on the finished side signal; 1 is neutral, 0 collapses to mono. */
+  readonly width?: number;
   /** Bars of synthesised noise sweep that end at this section's boundary. */
   readonly riserBars?: number;
+  /** Per-track overrides for this section, keyed by resolved track name. */
+  readonly trackStates?: Readonly<Record<string, SectionTrackState>>;
 }
 
 /**
@@ -368,6 +494,8 @@ export interface Score {
   /** Pitch reference, temperament, and per-note corrections; 440 equal by default. */
   readonly tuning: Tuning;
   readonly tracks: readonly ScoreTrack[];
+  /** Named subgroups, in declaration order; empty when no track uses one. */
+  readonly groups: ReadonlyMap<string, ScoreGroup>;
   /** Empty in loop mode; contiguous and ordered in song mode. */
   readonly sections: readonly ScoreSection[];
   /** Extra seconds rendered after the last step so reverb and one-shots ring out. */

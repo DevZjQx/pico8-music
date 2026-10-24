@@ -21,7 +21,7 @@ Scope: this is the wire format — fields, tokens, ranges, defaults and what fai
 ## Contents
 1. Minimal scores
 2. Render budgets
-3. Score fields (tuning, envelopes, motifs)
+3. Score fields (tuning, envelopes, articulations, presets, motifs)
 4. Track fields
 5. Pattern tokens (volumes, effects)
 6. Chords
@@ -65,10 +65,14 @@ Song mode adds patterns and an arrangement:
 | humanize | {timingMs 0-150, velocity 0-1}: deterministic timing and gain variation; 0 is neutral | 0 and 0 |
 | tuning | {a4, temperament, cents}; see Tuning | A4=440 equal |
 | tail | 0-30 seconds after the last step so reverb and one-shots ring out; song mode only | 0 |
+| inheritSections | boolean; when true, a section that omits bpm, patterns, mute, gain, gains, filter, energy, space, width, or tracks inherits the previous section | false |
 | tracks | 1-32, one independent bus each; see Render budgets | required |
 | patterns | top-level name -> token string, referenced by track.pattern or a section pattern | empty |
 | motifs | top-level name -> token string, played as @name; see Motifs | empty |
 | envelopes | top-level name -> {attack, decay, sustain, release}; see Envelopes | empty |
+| articulations | top-level name -> performance shape, played as ~name; see Articulations | empty |
+| presets | top-level name -> reusable sound defaults for a track; see Presets | empty |
+| groups | top-level name -> subgroup settings; a track joins with group; buses is a synonym; see Groups and stereo sends | empty |
 | instruments | top-level name -> voice; see Instruments | empty |
 | samples | top-level name -> WAV spec; see Samples | empty |
 | drumSamples | drum voice -> sample name, e.g. {"kick":"hit"}; unmapped voices stay synthetic | empty |
@@ -87,6 +91,32 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 - a track's envelope is an inline ADSR of the same shape for the whole track; drum tracks ignore it. Without one the default is attack 0.004, decay 0, sustain 1, release 0.008.
 - a token carries at most one named envelope (see Pattern tokens).
 
+### Articulations
+\`{"articulations":{"spiccato":{"gateScale":0.5,"volume":6,"envelope":"pluck","effect":"vibrato","effectParams":{"vibratoDepth":0.2}}}}\` defines a reusable performance shape, played as \`~spiccato\` on a melodic token.
+- gateScale 0.05-8 multiplies the slot; the result is rounded to 1-256 steps. A token's own gGATE wins.
+- volume 0-7 sets the default note volume; a token's @volume still wins.
+- envelope is an inline ADSR or the name of a top-level envelope.
+- effect is one pitched effect: slide, vibrato, drop, fadein, fadeout, arpfast, or arpslow. effectParams is {vibratoDepth, vibratoRate} for vibrato or {slideSteps} for slide. A token's own ~effect wins.
+- a track's articulation is the default for its tokens that carry no ~name.
+- names follow the envelope rules and may not collide with an envelope, an effect, or the drum vocabulary. Named articulations are melodic only; drums use ~ghost, ~flam, and ~roll.
+
+### Presets
+\`{"presets":{"violin-arco":{"instrument":"violin","envelope":{"attack":0.06,"sustain":0.8},"articulation":"legato","volume":5,"send":0.2}}}\` defines a reusable sound; a track uses \`{"preset":"violin-arco",...}\`.
+- preset fields: instrument, waveform, envelope, articulation, volume, pan, send, duck, filter, highpassHz, lowShelf, highShelf, delay.
+- an explicit track field wins over the preset, including track.instrument and track.envelope.
+- presets hold no pattern, role, or post chain. They are score-level sound defaults, not the p8_music \`preset\` argument (classic/dreamy/tape), which is a post shortcut outside the score.
+- presets are melodic only; drum tracks keep their voices and drumSamples.
+
+### Groups and stereo sends
+\`{"groups":{"drums":{"gain":0.9,"pan":0.1,"send":0.25,"reverb":{"room":0.8,"damp":0.4}}}}\` defines a named submix; a track joins it with \`"group":"drums"\`.
+- group fields: gain 0-4, pan -1..1, send 0..1, duck 0..1, filter, highpassHz, lowShelf, highShelf, delay, and reverb {room 0-0.98, damp 0-1, predelayMs 0-200, lowCutHz 20-1000, highCutHz 1000-20000, modDepth 0-1, modRateHz 0.05-5}; the reverb fields may also be written directly on the group. Neutral defaults are gain 1, pan/send/duck 0, and no filter/delay/reverb.
+- members render into one stereo subgroup before the group fader, pan, filter, delay, and duck; one group therefore shares one bus treatment and one send instead of every track owning its own. A member send follows its source group's fader and pan.
+- sends are stereo: a track send keeps its pan (a hard-left part returns on the left) instead of feeding one mono sum. Member sends and group.send both feed that group's own return; ungrouped tracks use the default return. Each group's reverb settings apply only to its return, so groups do not share one reverb.
+- write send: {amount, stereo:false} to restore the old pre-pan mono send; a pan+send score from before this change otherwise returns on its panned side.
+- group and bus are synonyms: top-level groups/buses and track group/bus. Define one table and one track field, not both spellings in the same score.
+- an unknown group name fails at parse time; a grouped track still keeps its own pan, filter, delay, duck, and send inside the subgroup.
+- send may be an object: {amount, bus} targets another group's return without changing the track's dry group, and {stereo:false} feeds the pre-pan mono stem instead of the stereo image.
+
 ### Motifs
 \`{"motifs":{"A":"C4:1 E4:1"}}\` defines a motif, played as "@A.transpose(2).retrograde". Motifs can sit at the top level or inside a track; a track-local name overrides a top-level one.
 - transpose(n): -24..24 semitones.
@@ -101,6 +131,8 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 | --- | --- | --- |
 | name | section target | track0, track1, ... |
 | role | drums, bass, lead, pad, ...; drums selects drum mode | melodic |
+| preset | a name from the top-level presets table; fills sound fields, never role or pattern | none |
+| group | a name from the top-level groups table (alias bus); members share a subgroup fader, pan, filter, delay, duck, and stereo return | none |
 | pattern | inline tokens, or a pattern name: track-local first, then top-level | first track-local pattern |
 | patterns | track-local name -> token string; a name here outranks a top-level one | empty |
 | motifs | track-local name -> token string; overrides a top-level name on collision | empty |
@@ -108,8 +140,9 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 | instrument | a top-level name, an inline definition, or chip/fm/additive/drums; sample voices are named or inline {"type":"sample","sample":"name"}; an explicit instrument outranks a style's role default; without one the legacy waveform path renders | none |
 | volume | 0-7, one decimal allowed; notes without @volume use it | 5 |
 | envelope | inline ADSR {attack, decay, sustain, release}; attack/decay/release 0-30 s, sustain 0-1 | 0.004, 0, 1, 0.008 |
+| articulation | default named articulation for tokens without a ~name; melodic only | none |
 | pan | -1 left .. 1 right; equal power, centred leaves the level unchanged | 0 |
-| send | 0..1 reverb send | 0 |
+| send | 0..1 stereo send into the track's return, or {amount 0..1, bus/group/to return name, stereo false for the old mono feed} | 0 |
 | duck | 0..1 kick sidechain depth | 0 |
 | filter | a cutoff number (100-20000 Hz) or {cutoffHz (alias cutoff), resonance (alias q) 0.05-20, lfoHz 0-20, lfoDepth 0-4 octaves} | none |
 | highpassHz | 20-4000 Hz, 12 dB/oct high-pass on this track only | none |
@@ -133,10 +166,10 @@ Space-separated tokens: NOTE:STEPS[gGATE] on melodic tracks, DRUM:STEPS on drum 
 | - | rest: no @volume, effect, envelope or drum suffix, and up to 1-256 steps |
 | @volume | 0-7, one decimal allowed, overrides the track volume; order with ~ is free ("@6~slide" or "~slide@6") |
 | ~effect | one pitched effect; see Effects |
-| ~name | one named envelope from the top-level envelopes table |
+| ~name | one named envelope or articulation from the top-level tables |
 | drum suffix | articulations and per-hit parameters; see Drums |
 
-At most one @volume, one ~effect, one named envelope and one drum articulation per token; each drum parameter also appears at most once.
+At most one @volume, one ~effect, one named suffix and one drum articulation per token; each drum parameter also appears at most once.
 
 ### Effects
 | Effect | Parameters | Default |
@@ -229,16 +262,25 @@ Single-letter tokens are case-insensitive except r, which is a rest; R is the ri
 | mute | track names or roles | none |
 | gain | 0-4 | 1 |
 | gains | track name or role -> 0-4 | none |
-| filter | cutoff Hz 100-20000, or {"from":500,"to":12000} for a sweep | none |
+| filter | cutoff Hz 100-20000, or {"from":500,"to":12000} for a sweep; applies to the summed mix | none |
 | energy | 0-1 macro; 0 halves gain and takes the filter cutoff to 0.35x, 1 changes nothing | 1 |
+| space | 0-2 multiplier on every stereo send bus inside the section; 0 dry/close, 1 unchanged, 2 twice the send (farther) | 1 |
+| width | 0-2 multiplier on the side signal inside the section; 0 mono, 1 unchanged, 2 wider | 1 |
 | riser | 1-64 bars of noise plus sine sweep ending at the section boundary; cannot exceed the section | none |
 | fill | {"bars":1,"patterns":{"drums":"fill.pattern"}}: replaces the last 1-2 bars for those tracks | none |
+| tracks | track name or role -> {gain 0-4, pan -1..1, send 0..1, mute true/false, filter cutoff or {"from","to"}}; track-local section state | none |
+| inherit | boolean; overrides the top-level inheritSections for this section | inheritSections |
 
 - with an arrangement, mode defaults to song; an arrangement without song mode is an error.
 - per-section bpm changes tempo only at section boundaries: the arrangement still writes bars and steps, but the section's duration is bars * beatsPerBar * 60 / bpm. Loop mode keeps one bpm, and there are no gradual ramps or arbitrary tempo automation.
 - a delay stays on the top-level bpm by default; set delay.follow to "section" to time echoes on each section's grid (a short tape-like pitch shift is possible at the boundary).
 - sections should be a whole multiple of every pattern they use; otherwise the parser warns (pattern-misaligned) and truncates the last repetition.
-- filter and energy stack: the sweep runs first, then energy multiplies the cutoff; gain and gains apply after energy.
+- filter and energy stack: the sweep runs first, then energy multiplies the cutoff; gain and gains apply after energy. energy by itself only changes level: pair it with filter when the section should also get darker.
+- tracks resolves keys by track name first, then by role. gain overrides gains for that track; mute overrides the section mute list; pan, send and filter run across the section. A track filter is local to that track, unlike the section-wide filter.
+- inherit copies bpm, patterns, mute, gain, gains, filter, energy, space, width and tracks from the previous section; fill, riser, bars and name stay local. Write tracks:{} to clear inherited track state, or patterns:{} to fall back to each track's default pattern.
+- inheritSections is strict opt-in. Without it, omitted fields keep their old defaults (top-level bpm, energy 1, space 1, width 1) so old scores render unchanged.
+- space scales every stereo send before its reverb, so it moves the wet/dry balance without touching the dry level; it needs at least one send > 0, from track.send, a section tracks.send, or a group send, otherwise the parser warns (space-no-send).
+- width is a section-side multiplier, applied to the finished song before the master width / monoBelowHz arguments; tape/slow keeps the section boundaries on the musical timeline.
 - a fill whose pattern does not divide the fill window warns (fill-misaligned).
 - the song renders once and ignores minutes; use post: [] plus send: 0 for a tight ending, or tail for ring-out.
 
@@ -249,11 +291,12 @@ post: [] skips the post chain (track send still applies; also set send: 0 for a 
 | --- | --- | --- |
 | tape / slow | speed 0.5-1.5 | speed sets the whole tape/slow chain's total speed |
 | lowpass | cutoffHz 100-22050 | |
+| highpass | highpassHz 20-500 | 12 dB/oct master high-pass; use 30-40 Hz for laptop/phone translation, higher if the mix rumbles |
 | reverb | wet 0-1, room 0-0.98, damp 0-1, predelayMs 0-200, lowCutHz 20-1000, highCutHz 1000-20000, modDepth 0-1, modRateHz 0.05-5 | wet is a dry/wet mix ratio, not a wet gain; the wet path sits about 5 dB under the dry, so 0.3 is a light reverb. predelay and modulation delay only the send; the wet filters remove low cloud and metallic highs |
 | tilt | tiltDb -12..12 | |
 | saturate | drive 0-1, mix 0-1 | |
 | compress | thresholdDb -60..0, ratio 1-40, attack 0.0005-1, release 0.01-2, makeupDb -12..24 | |
-| loudness | targetLufs -40..-5 | |
+| loudness | targetLufs -40..-9 | values above -9 LUFS are refused: that is the hearing-safety ceiling, not a louder master |
 | limiter | ceilingDb -12..0, release 0.01-2 | |
 
 Example: \`[{"type":"tape","speed":0.8},{"type":"reverb","wet":0.4},{"type":"loudness","targetLufs":-14},{"type":"limiter"}]\`
@@ -283,11 +326,19 @@ Example: \`[{"type":"tape","speed":0.8},{"type":"reverb","wet":0.4},{"type":"lou
 | out | workspace-relative path ending in .wav | pico8-music.wav |
 | detail | summary or raw; raw writes a sibling .analysis.json and returns its path | summary |
 
-Every render returns a report: peak, RMS, LUFS, spectrum, width, onsets, warnings, stems, and findings. Width is side/mid RMS (0 mono, 1 hard-panned); it can exceed 1 when the reverb is mostly wet, meaning out-of-phase or comb stereo, not a wider image. A render with a post chain also adds dry (the same facts before the post chain) and a post-delta line.
+Every render returns a report: peak, RMS, LUFS, LRA, spectrum, width, onsets, warnings, stems, and findings. LRA is the EBU Tech 3342 loudness range: 0 on a steady loop, 8-15 when an arrangement drops down and comes back. It ignores silence, so read it next to the per-section levels.
+
+Width is side/mid RMS (0 mono, 1 hard-panned); it can exceed 1 when the reverb is mostly wet, meaning out-of-phase or comb stereo, not a wider image. A render with a post chain also adds dry (the same facts before the post chain) and a post-delta line.
+
+Song renders also report each section's level, width, spectral centroid, and onset density, so an energy/space arc is visible without a second measurement pass. flat-space warns when neither the width nor the centroid moves between sections; flat-sections warns when the level range is under 2 dB. They are separate axes on purpose: a drop can open up without getting much louder.
 
 The spectrum also reports diagnostic low-mid (150-500 Hz) and 2-5k shares. Stems are per-track RMS, centroid, low-mid, and pan before pan/sum.
 
-Finding kinds: mud, harsh, masking, alias-risk, dynamics, post-mud, post-harsh, post-dynamics, target. Each has an optional attribution and a next suggestion; they are observations, not pass/fail gates. A target adds a report target line with passed/total range checks and one target finding per missed dimension.
+Finding kinds: sub-heavy, mud, harsh, masking, alias-risk, dynamics, loudness-flat, post-mud, post-harsh, post-dynamics, target. Each has an optional attribution and a next suggestion; they are observations, not pass/fail gates.
+
+loudness-flat means a song sits on one level (LRA under 4 LU, sections within 6 dB) and is louder than -16 LUFS. A target adds a report target line with passed/range checks and one target finding per missed dimension.
+
+Warnings loud (above -12 LUFS) and unsafe (above -9 LUFS) cover listening comfort; a render above -9 LUFS fails instead of writing the file.
 
 Both tools accept detail: "raw". p8_music writes the full render report (including stems and dry) as <out>.analysis.json (the .wav suffix is replaced); p8_analyze appends, so loop.wav becomes loop.wav.analysis.json. A WAV has no stems or dry snapshot, because attribution has to happen during the render.
 
@@ -305,4 +356,7 @@ Both tools accept detail: "raw". p8_music writes the full render report (includi
 | an envelope name that collides with an effect, a drum articulation or a drum parameter | error |
 | an absolute or escaping sample path, or a non-.wav sample | error before rendering |
 | a pattern that does not divide the loop or section length | warning (pattern-misaligned) and a truncated last repetition |
-| a step delay left on the base bpm while sections change tempo | warning (delay-base-tempo); set delay.follow to "section" or accept a constant echo time |`;
+| a step delay left on the base bpm while sections change tempo | warning (delay-base-tempo); set delay.follow to "section" or accept a constant echo time |
+| section space set while every track and group has send 0 | warning (space-no-send); space scales the send buses and cannot be heard |
+| an unknown group name, or both groups/buses or group/bus spellings | error; define one groups table and name a group that exists |
+| a finished mix above -9 LUFS, or a loudness step hotter than -9 | error (hearing-safety ceiling); lower track volumes or use -14..-16 LUFS |`;

@@ -107,7 +107,7 @@ renderScore
 | [旋律、动机与乐句](#p0-5-旋律动机与乐句) | P0 | motif 引用与变换已实现，乐句级与和声进行未做 |
 | [Groove、humanize、tuplet](#p1-1-groovehumanizetuplet) | P1 | swing、seed、humanize 已实现；tuplet 未做 |
 | [滤波、自动化、sidechain](#p1-2-滤波自动化sidechain) | P1 | 部分实现（M3） |
-| [分层、立体声、空间](#p1-3-分层立体声空间) | P1 | pan/send/delay 与 unison（M6）已实现；track group/bus 未做 |
+| [分层、立体声、空间](#p1-3-分层立体声空间) | P1 | pan/send/delay、unison（M6）、track group/bus 与立体声 send 已实现 |
 | [转场 FX](#p1-4-转场-fx) | P1 | 段落 `riser` 与 song `tail` 已实现；独立 impact/sub_drop FX 未做 |
 | [Mix / master](#p2-1-mix--master) | P2 | 已实现（M4）：tilt/saturate/compress/loudness/limiter |
 | [让模型「听见」结果](#p2-2-让模型听见结果) | P2 | 已实现（M4）：渲染报告 + `p8_analyze` |
@@ -262,7 +262,7 @@ renderScore
 
 **验收：** pan 改变 L/R 能量比；unison 的 side 能量 > 0；send 改变尾音长度而不影响干声。
 
-**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。track group 与 bus 级处理仍未做。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
+**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。命名 `group`/`bus` 子混音与组级 gain/pan/filter/EQ/delay/duck/send 已实现，每个组拥有自己的返回，因此不再被单条 mono send 总线限制。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
 
 #### P1-4 转场 FX
 
@@ -488,9 +488,9 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 **M3 状态：混音/运动核心已实现。**
 
 - 重构：`renderScore()` 先给每条 track 一个独立 buffer，再做滤波、延迟、duck、pan、send，最后求和。per-track 处理不再是「接在总线上」的近似。
-- 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.05-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（mono send 总线 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）。
+- 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.05-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）。
 - 验收：filter 静态开合的高频带能量比、LFO 的窗口能量起伏、段落扫频的首尾高频带比、pan 的左右 RMS、duck 的 kick 窗口 RMS、send 的尾音、delay 的偏移窗口 RMS 都有测试；示例 `examples/m3-space-motion.json`。
-- M6 已补 `unison`；仍不做 track group、任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
+- M6 已补 `unison`；后续又补了命名 `group`/`bus` 子混音、组级处理和每组独立的立体声返回。仍不做任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
 
 ### 7.4 M4：能「混音」和「自检」
 

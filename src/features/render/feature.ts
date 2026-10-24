@@ -4,8 +4,8 @@
 // Does not own: score validation or note naming — the score feature decides
 // what a score is; this feature only consumes it.
 export { renderLoop } from './render.ts';
-export { analyseAudio, analyseStem, formatReport, measureAudio, sectionEnergies } from './analyze.ts';
-export { integratedLufs } from './loudness.ts';
+export { analyseAudio, analyseStem, formatReport, measureAudio, sectionReadings } from './analyze.ts';
+export { integratedLufs, loudnessRange, loudnessSummary, MAX_SAFE_LUFS } from './loudness.ts';
 export {
   createDitherState,
   decodeWav,

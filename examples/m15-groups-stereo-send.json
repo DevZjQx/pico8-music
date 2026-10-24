@@ -1,0 +1,56 @@
+{
+  "mode": "song",
+  "bpm": 120,
+  "stepsPerBeat": 4,
+  "groups": {
+    "drums": {
+      "gain": 1.05,
+      "send": 0.12,
+      "reverb": { "room": 0.72, "damp": 0.6 }
+    },
+    "keys": {
+      "pan": 0.15,
+      "send": 0.45,
+      "reverb": { "room": 0.92, "damp": 0.32, "predelayMs": 24 },
+      "highpassHz": 120
+    }
+  },
+  "patterns": {
+    "drums.main": "K:2 H:2 S:2 H:2 K:2 H:2 S:2 H:2",
+    "drums.fill": "K:1 S:1 K:1 S:1 T:1 T:1 S:1 S:1",
+    "bass.main": "F1:4 F1:4 C2:4 C2:4",
+    "keys.main": "[F3,A3,C4]:8 [C3,E3,G3]:8"
+  },
+  "tracks": [
+    { "name": "drums", "role": "drums", "group": "drums", "volume": 6, "pattern": "drums.main" },
+    { "name": "bass", "role": "bass", "group": "keys", "waveform": "tilted_saw", "volume": 5, "pattern": "bass.main" },
+    {
+      "name": "keys",
+      "role": "keys",
+      "group": "keys",
+      "waveform": "organ",
+      "volume": 4,
+      "pattern": "keys.main",
+      "pan": -0.35
+    }
+  ],
+  "arrangement": [
+    {
+      "name": "intro",
+      "bars": 2,
+      "mute": ["drums"],
+      "energy": 0.6,
+      "filter": 2400,
+      "space": 1.4,
+      "tracks": { "keys": { "pan": -0.5 } }
+    },
+    {
+      "name": "drop",
+      "bars": 2,
+      "space": 0.7,
+      "width": 1.3,
+      "tracks": { "keys": { "pan": 0.4 } },
+      "fill": { "bars": 1, "patterns": { "drums": "drums.fill" } }
+    }
+  ]
+}

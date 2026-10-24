@@ -1,9 +1,11 @@
-import type { Score, TrackDelay } from '../score/feature.ts';
+import type { Score, ScoreTrack, TrackDelay } from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
+import { applyAutomatedLowpass } from './filters.ts';
 
 const DUCK_ATTACK_SECONDS = 0.005;
 const DUCK_RELEASE_SECONDS = 0.11;
 const DELAY_PASSES = 3;
+const OPEN_CUTOFF_HZ = 20000;
 
 /** Equal-power pan with unity gain at centre, so old centred scores keep their level. */
 export function panGains(pan: number): readonly [number, number] {
@@ -193,4 +195,118 @@ function applySectionDelay(
     line[i] = input + delay.feedback * delayed;
     samples[i] = input + delay.mix * delayed;
   }
+}
+
+/** One constant-pan/send span for a track inside a section. */
+export interface TrackSectionSegment {
+  readonly start: number;
+  readonly end: number;
+  readonly pan: number;
+  readonly send: number;
+}
+
+/** True when any section sets a send for this track, even if its base send is 0. */
+export function hasSectionSend(score: Score): boolean {
+  return score.sections.some((section) =>
+    Object.values(section.trackStates ?? {}).some((state) => (state.send ?? 0) > 0),
+  );
+}
+
+/** True when this track needs per-section pan, send, or filter automation. */
+export function hasSectionTrackAutomation(score: Score, track: ScoreTrack): boolean {
+  return score.sections.some((section) => {
+    const state = section.trackStates?.[track.name];
+    return (
+      state !== undefined &&
+      (state.pan !== undefined || state.send !== undefined || state.filter !== undefined)
+    );
+  });
+}
+
+/**
+ * Splits one track's sample buffer into section spans with the pan/send that
+ * apply there. A song tail keeps the last section's mix state; loop mode has no
+ * sections, so it returns one span with the track defaults.
+ */
+export function sectionTrackSegments(
+  score: Score,
+  track: ScoreTrack,
+  rate: number,
+  totalSamples: number,
+): readonly TrackSectionSegment[] {
+  if (score.sections.length === 0) {
+    return [{ start: 0, end: totalSamples, pan: track.pan, send: track.send }];
+  }
+
+  const segments: TrackSectionSegment[] = [];
+  let cursor = 0;
+  for (const section of score.sections) {
+    const end = Math.min(
+      totalSamples,
+      Math.max(cursor, Math.round((section.startSeconds + section.durationSeconds) * rate)),
+    );
+    if (end > cursor) {
+      const state = section.trackStates?.[track.name];
+      segments.push({
+        start: cursor,
+        end,
+        pan: state?.pan ?? track.pan,
+        send: state?.send ?? track.send,
+      });
+    }
+    cursor = end;
+  }
+
+  if (cursor < totalSamples) {
+    const last = score.sections[score.sections.length - 1];
+    const state = last?.trackStates?.[track.name];
+    segments.push({
+      start: cursor,
+      end: totalSamples,
+      pan: state?.pan ?? track.pan,
+      send: state?.send ?? track.send,
+    });
+  }
+  return segments;
+}
+
+/**
+ * Applies the per-section track low-pass to one track buffer. This is a track
+ * insert, not the section-wide filter on the summed mix: only this track is
+ * affected, and a section without a track filter stays open. The filter state
+ * crosses section boundaries, so a sweep into a drop does not click.
+ */
+export function applyTrackSectionFilter(
+  samples: Float32Array,
+  score: Score,
+  track: ScoreTrack,
+  rate: number,
+): void {
+  const sections = score.sections;
+  if (
+    !sections.some((section) => section.trackStates?.[track.name]?.filter !== undefined)
+  ) {
+    return;
+  }
+
+  let sectionIndex = 0;
+  const cutoffAt = (index: number): number => {
+    while (sectionIndex + 1 < sections.length) {
+      const next = sections[sectionIndex + 1];
+      if (next === undefined || index < Math.round(next.startSeconds * rate)) break;
+      sectionIndex += 1;
+    }
+    const section = sections[sectionIndex];
+    if (section === undefined) return OPEN_CUTOFF_HZ;
+    const filter = section.trackStates?.[track.name]?.filter;
+    if (filter === undefined) return OPEN_CUTOFF_HZ;
+    const start = section.startSeconds * rate;
+    const length = Math.max(1, section.durationSeconds * rate);
+    const progress = Math.min(1, Math.max(0, (index - start) / length));
+    const end = filter.toHz ?? filter.fromHz;
+    const energyFactor = 0.35 + 0.65 * (section.energy ?? 1);
+    return filter.fromHz * energyFactor * (end / filter.fromHz) ** progress;
+  };
+
+  applyAutomatedLowpass(samples, cutoffAt, rate);
 }

@@ -198,6 +198,48 @@ export function reverb(input: StereoAudio, options: ReverbOptions, rate: number)
   return { left, right };
 }
 
+/**
+ * Stereo-input reverb. Each channel drives its own comb bank, so a hard-panned
+ * send returns on that side instead of being folded through a mono sum. For a
+ * centred send (left === right) this is sample-identical to `reverb`, which is
+ * what keeps the old mono-send scores stable when their sources are centred.
+ */
+export function reverbStereo(input: StereoAudio, options: ReverbOptions, rate: number): StereoAudio {
+  const scale = rate / 44100;
+  const room = clamp(options.room, 0, 0.98);
+  const feedback = 0.7 + room * 0.28;
+  const damp = clamp(options.damp, 0, 1) * 0.4;
+  const wet = clamp(options.wet, 0, 1);
+  const dry = 1 - wet;
+
+  const sendLeft = delaySend(
+    input.left,
+    options.predelayMs ?? 0,
+    options.modDepth ?? 0,
+    options.modRateHz ?? 0.7,
+    rate,
+  );
+  const sendRight = delaySend(
+    input.right,
+    options.predelayMs ?? 0,
+    options.modDepth ?? 0,
+    options.modRateHz ?? 0.7,
+    rate,
+  );
+  const leftReverb = reverbChannel(sendLeft, 0, scale, feedback, damp);
+  const rightReverb = reverbChannel(sendRight, STEREO_SPREAD, scale, feedback, damp);
+  filterWet(leftReverb, options.lowCutHz, options.highCutHz, rate);
+  filterWet(rightReverb, options.lowCutHz, options.highCutHz, rate);
+  const left = new Float32Array(input.left.length);
+  const right = new Float32Array(input.right.length);
+
+  for (let i = 0; i < left.length; i += 1) {
+    left[i] = (input.left[i] ?? 0) * dry + (leftReverb[i] ?? 0) * wet;
+    right[i] = (input.right[i] ?? 0) * dry + (rightReverb[i] ?? 0) * wet;
+  }
+  return { left, right };
+}
+
 /** Linear-interpolated resampling: speed < 1 is slower and lower. */
 export function resample(input: Float32Array, speed: number): Float32Array {
   const length = Math.max(1, Math.round(input.length / speed));

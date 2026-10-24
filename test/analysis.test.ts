@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { executeAnalyze, executeRender } from '../src/app/render-service.ts';
-import { analyseAudio, formatReport, renderLoop } from '../src/features/render/feature.ts';
+import { analyseAudio, formatReport, loudnessRange, renderLoop } from '../src/features/render/feature.ts';
 import { parseScore } from '../src/features/score/feature.ts';
 
 const RATE = 44100;
@@ -155,6 +155,110 @@ test('both tools write raw artifacts without clobbering each other', async () =>
       () => executeRender({ score: JSON.stringify(rawScore), out: target, detail: 'deep' }),
       /detail must be summary or raw/,
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('analysis flags sub-bass that small speakers cannot reproduce', () => {
+  const output = renderLoop(
+    parseScore({
+      bpm: 120,
+      bars: 1,
+      tracks: [{ waveform: 'triangle', volume: 6, pattern: 'C1:16' }],
+    }),
+    { post: [], minutes: 0.05, withWav: false },
+  );
+  assert.ok(output.report.bands.sub >= 0.06, `sub ${output.report.bands.sub}`);
+  const finding = output.report.findings.find((entry) => entry.kind === 'sub-heavy');
+  assert.ok(finding !== undefined, 'expected a sub-heavy finding');
+  assert.match(finding.next ?? '', /high-pass|monoBelowHz/);
+});
+
+test('loudness range measures how far the short-term level travels', () => {
+  const steady = Float32Array.from(
+    { length: RATE * 12 },
+    (_, i) => 0.5 * Math.sin((2 * Math.PI * 440 * i) / RATE),
+  );
+  assert.ok(loudnessRange([steady, steady], RATE) < 1, 'a steady tone has no range');
+
+  // A 14 dB step stays inside the -20 LU relative gate; a deeper drop would be
+  // gated out entirely, which is why the finding also checks section spread.
+  const stepped = Float32Array.from({ length: RATE * 12 }, (_, i) => {
+    const amplitude = i < RATE * 6 ? 0.1 : 0.5;
+    return amplitude * Math.sin((2 * Math.PI * 440 * i) / RATE);
+  });
+  const range = loudnessRange([stepped, stepped], RATE);
+  assert.ok(range > 8, `a 14 dB step should open the range, got ${range}`);
+});
+
+test('a song that holds one loudness raises the loudness-flat finding', () => {
+  const steady = parseScore({
+    mode: 'song',
+    bpm: 120,
+    stepsPerBeat: 4,
+    tracks: [{ waveform: 'triangle', pattern: 'C4:4 E4:4 G4:4 C5:4' }],
+    arrangement: [
+      { name: 'a', bars: 8 },
+      { name: 'b', bars: 8 },
+    ],
+  });
+  const output = renderLoop(steady, { post: [{ type: 'loudness', targetLufs: -14 }] });
+  assert.ok(output.report.seconds >= 10, `seconds ${output.report.seconds}`);
+  assert.ok(output.report.lra < 4, `LRA ${output.report.lra}`);
+  const flat = output.report.findings.find((finding) => finding.kind === 'loudness-flat');
+  assert.ok(flat !== undefined, 'expected a loudness-flat finding');
+  assert.match(flat.next ?? '', /section|bar/);
+  assert.match(formatReport(output.report), /· LRA \d+\.\d LU/);
+
+  // A silent intro is a real rest even though LRA's absolute gate drops it.
+  const withRest = parseScore({
+    mode: 'song',
+    bpm: 120,
+    stepsPerBeat: 4,
+    tracks: [{ name: 'lead', waveform: 'triangle', pattern: 'C4:4 E4:4 G4:4 C5:4' }],
+    arrangement: [
+      { name: 'rest', bars: 8, mute: ['lead'] },
+      { name: 'drop', bars: 8 },
+    ],
+  });
+  const contrasted = renderLoop(withRest, { post: [{ type: 'loudness', targetLufs: -14 }] });
+  assert.ok(
+    !contrasted.report.findings.some((finding) => finding.kind === 'loudness-flat'),
+    `LRA ${contrasted.report.lra}, spread ${contrasted.report.sections.map((s) => s.rmsDb).join(',')}`,
+  );
+});
+
+test('an already-unsafe file is reported by analysis, not rejected', () => {
+  const hot = Float32Array.from(
+    { length: RATE * 4 },
+    (_, i) => 0.95 * Math.sin((2 * Math.PI * 1000 * i) / RATE),
+  );
+  const analysis = analyseAudio(hot, hot, RATE);
+  assert.ok(analysis.lufs > -9, `LUFS ${analysis.lufs}`);
+  assert.match(analysis.warnings.join(' | '), /unsafe: .*hearing-safety/);
+});
+
+test('the render tool refuses to write a file above the hearing-safety ceiling', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-safety-'));
+  try {
+    const out = join(directory, 'hot');
+    const loud = {
+      bpm: 120,
+      stepsPerBeat: 4,
+      bars: 1,
+      tracks: Array.from({ length: 4 }, () => ({
+        waveform: 'square',
+        volume: 7,
+        pattern: 'C4:4 D4:4 E4:4 F4:4',
+      })),
+    };
+    await assert.rejects(
+      () => executeRender({ score: JSON.stringify(loud), minutes: 0.05, out }),
+      /hearing-safety ceiling/,
+    );
+    // The refusal happens before the write, so no partial file is left behind.
+    await assert.rejects(() => stat(`${out}.wav`), /ENOENT/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

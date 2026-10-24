@@ -32,7 +32,15 @@ test('the help covers fields that fail or change a render', () => {
   assert.match(SCORE_HELP, /1-256/);
   // The top-level pattern table and the output default.
   assert.match(SCORE_HELP, /top-level name -> token string/);
+  // Reusable performance shapes and sound presets.
+  assert.match(SCORE_HELP, /gateScale 0\.05-8/);
+  assert.match(SCORE_HELP, /top-level presets table/);
+  // Named subgroups and the stereo send contract.
+  assert.match(SCORE_HELP, /Groups and stereo sends/);
+  assert.match(SCORE_HELP, /sends are stereo/);
+  assert.match(SCORE_HELP, /group and bus are synonyms/);
   assert.match(SCORE_HELP, /pico8-music\.wav/);
+  assert.match(SCORE_HELP, /named suffix/);
 });
 
 test('the help keeps both worked examples', () => {

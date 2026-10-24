@@ -469,7 +469,7 @@ test('post: [] renders dry and the post chain is validated', () => {
 
   assert.throws(
     () => renderLoop(score, { post: [{ type: 'flanger' }] as never }),
-    /must be tape, slow, lowpass, reverb, tilt/,
+    /must be tape, slow, lowpass, highpass, reverb, tilt/,
   );
   assert.throws(() => renderLoop(score, { post: 'dry' as never }), /post must be an array/);
 });
@@ -1605,4 +1605,50 @@ test('the renderer sounds the tuned frequency, not the 12-TET default', () => {
   );
   const plain = render();
   assert.ok(magnitudeAt(plain, 440, 1) > magnitudeAt(plain, 442, 1) * 5);
+});
+
+test('the articulation and preset example renders with its performance shapes', async () => {
+  const raw = await readFile(
+    new URL('../examples/m14-articulations-presets.json', import.meta.url),
+    'utf8',
+  );
+  const parsed = parseScore(raw);
+  assert.deepEqual(parsed.warnings, []);
+  const lead = parsed.tracks.find((track) => track.name === 'lead');
+  const events = lead?.events ?? [];
+  assert.equal(events[0]?.gateSteps, 1, 'spiccato shortens a 2-step slot to 1');
+  assert.equal(events[2]?.gateSteps, 3, 'legato extends a 2-step slot to 3');
+  assert.equal(events[3]?.volume, 6, 'accent raises the note volume');
+  assert.equal(lead?.instrument?.type, 'additive');
+  const output = renderLoop(parsed, { preset: 'classic', minutes: 0.05 });
+  assert.ok(rms(output.left) > 0.001);
+});
+
+test('a post high-pass removes sub-bass and keeps the loop length', () => {
+  const low = parseScore({
+    bpm: 120,
+    bars: 1,
+    tracks: [{ waveform: 'triangle', volume: 6, pattern: 'C1:16' }],
+  });
+  const dry = renderLoop(low, { post: [], minutes: 0.05, withWav: false });
+  const cut = renderLoop(low, {
+    post: [{ type: 'highpass', highpassHz: 200 }],
+    minutes: 0.05,
+    withWav: false,
+  });
+  assert.ok(dry.report.bands.sub > 0.1, `dry sub ${dry.report.bands.sub}`);
+  assert.ok(
+    cut.report.bands.sub < dry.report.bands.sub * 0.5,
+    `high-pass sub ${cut.report.bands.sub} vs dry ${dry.report.bands.sub}`,
+  );
+  assert.equal(cut.loopSamples, dry.loopSamples);
+
+  assert.throws(
+    () => renderLoop(low, {
+      post: [{ type: 'highpass', highpassHz: 'loud' } as never],
+      minutes: 0.05,
+      withWav: false,
+    }),
+    /highpassHz must be a finite number/,
+  );
 });

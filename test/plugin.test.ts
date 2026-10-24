@@ -292,7 +292,7 @@ test('rejects unknown presets and malformed scores', async () => {
   await assert.rejects(() => executeRender({ score: '{}' }), /tracks/);
   await assert.rejects(
     () => executeRender({ score, post: [{ type: 'flanger' }] as never }),
-    /must be tape, slow, lowpass, reverb/,
+    /must be tape, slow, lowpass, highpass, reverb/,
   );
 });
 

@@ -5,7 +5,9 @@ import type {
   Instrument,
   NoteEvent,
   Score,
+  ScoreGroup,
   ScoreTrack,
+  SendReverb,
 } from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
 import { analyseStem, type StemReading } from './analyze.ts';
@@ -13,19 +15,45 @@ import { renderDrumHit } from './drums.ts';
 import { applyAutomatedLowpass, applyTrackEq, filterTrack } from './filters.ts';
 import { addSectionRisers } from './fx.ts';
 import { InstrumentVoice } from './instrument.ts';
-import { applyDelay, applyDuck, panGains } from './mix.ts';
+import {
+  applyDelay,
+  applyDuck,
+  applyTrackSectionFilter,
+  hasSectionTrackAutomation,
+  panGains,
+  sectionTrackSegments,
+} from './mix.ts';
 import { SampleVoice, renderSampleOneShot, type SampleSource } from './sample.ts';
 import { createWaveState, sampleWaveformAt } from './waveform.ts';
 import type { Quality } from './types.ts';
+
+interface StereoBus {
+  readonly left: Float32Array;
+  readonly right: Float32Array;
+}
+
+/** One stereo send destined for a reverb return. */
+export interface SendBusAudio extends StereoBus {
+  /** Group return settings; absent is the default send return. */
+  readonly reverb?: SendReverb;
+}
 
 export interface SongAudio {
   readonly left: Float32Array;
   readonly right: Float32Array;
   readonly loopSamples: number;
-  /** Mono send bus, present only when some track has `send > 0`. */
-  readonly sendBus?: Float32Array;
+  /**
+   * Stereo sends. The first bus, when present, is the default return used by
+   * tracks without a group; each named group owns a separate return. Every bus
+   * keeps the pan of its sources instead of folding them to mono.
+   */
+  readonly sendBuses: readonly SendBusAudio[];
   /** Per-track measurements taken before pan/sum; no track audio is retained. */
   readonly stems: readonly StemReading[];
+}
+
+function stereoBus(length: number): StereoBus {
+  return { left: new Float32Array(length), right: new Float32Array(length) };
 }
 
 const ARP_SEMITONES = [0, 4, 7, 12] as const;
@@ -493,6 +521,33 @@ function applySectionFilter(samples: Float32Array, score: Score, rate: number): 
   applyAutomatedLowpass(samples, cutoffAt, rate);
 }
 
+/**
+ * Section-level `space`: scales each send bus drive before its reverb, so
+ * distance can move without touching the dry level. 1 is neutral, 0 is dry,
+ * 2 is twice the send. A score with no track send has no bus and no-op's; the
+ * parser warns about that combination instead of failing the render.
+ */
+function applySectionSend(samples: Float32Array, score: Score, rate: number): void {
+  if (!score.sections.some((section) => (section.space ?? 1) !== 1)) return;
+  let cursor = 0;
+  for (const section of score.sections) {
+    const end = Math.min(
+      samples.length,
+      Math.max(cursor, Math.round((section.startSeconds + section.durationSeconds) * rate)),
+    );
+    const gain = section.space ?? 1;
+    if (gain !== 1) {
+      for (let i = cursor; i < end; i += 1) samples[i] = (samples[i] ?? 0) * gain;
+    }
+    cursor = end;
+  }
+  // The tail is the last section's ring-out and keeps its space.
+  const tailGain = score.sections[score.sections.length - 1]?.space ?? 1;
+  if (tailGain !== 1) {
+    for (let i = cursor; i < samples.length; i += 1) samples[i] = (samples[i] ?? 0) * tailGain;
+  }
+}
+
 function collectKickOffsets(
   score: Score,
   rate: number,
@@ -569,8 +624,32 @@ export function renderScore(
   const wrap = score.mode === 'loop';
   const left = new Float32Array(loopSamples);
   const right = new Float32Array(loopSamples);
-  const hasSend = score.tracks.some((track) => track.send > 0);
-  const sendBus = hasSend ? new Float32Array(loopSamples) : undefined;
+  // Section track state is a song-only add-on. Old scores have none, so every
+  // extra scan and branch below is skipped for the common legacy path.
+  const hasTrackSections = score.sections.some((section) => section.trackStates !== undefined);
+  const groupBuffers = new Map<string, StereoBus>();
+  const groupSends = new Map<string, StereoBus>();
+  let defaultSend: StereoBus | undefined;
+
+  const bufferForGroup = (group: ScoreGroup): StereoBus => {
+    const existing = groupBuffers.get(group.name);
+    if (existing !== undefined) return existing;
+    const created = stereoBus(loopSamples);
+    groupBuffers.set(group.name, created);
+    return created;
+  };
+  const sendForGroup = (group: ScoreGroup | undefined): StereoBus => {
+    if (group === undefined) {
+      defaultSend ??= stereoBus(loopSamples);
+      return defaultSend;
+    }
+    const existing = groupSends.get(group.name);
+    if (existing !== undefined) return existing;
+    const created = stereoBus(loopSamples);
+    groupSends.set(group.name, created);
+    return created;
+  };
+
   const kicks = collectKickOffsets(score, rate, sampleBank, signal);
   const stems: StemReading[] = [];
 
@@ -610,6 +689,10 @@ export function renderScore(
       applyDelay(buffer, track.delay, score, rate, loopSamples, wrap, signal);
     }
     if (track.duck > 0) applyDuck(buffer, kicks, track.duck, rate, loopSamples, wrap, signal);
+    // A section can filter this track alone; it runs after the track's own
+    // filter/EQ/delay/duck and before pan/send, so neighboring tracks keep
+    // their highs when one part closes.
+    if (hasTrackSections) applyTrackSectionFilter(buffer, score, track, rate);
 
     // Measure the finished stem before pan/send: this is the only place where
     // the report can attribute a band to a track without keeping its audio.
@@ -623,27 +706,143 @@ export function renderScore(
       }),
     );
 
-    const [leftGain, rightGain] = panGains(track.pan);
-    for (let i = 0; i < loopSamples; i += 1) {
-      if ((i & 16383) === 0) throwIfAborted(signal);
-      const value = buffer[i] ?? 0;
-      left[i] = (left[i] ?? 0) + value * leftGain;
-      right[i] = (right[i] ?? 0) + value * rightGain;
-      if (sendBus && track.send > 0) {
-        sendBus[i] = (sendBus[i] ?? 0) + value * track.send;
+    const group = track.group === undefined ? undefined : score.groups.get(track.group);
+    if (track.group !== undefined && group === undefined) {
+      throw new Error(`track ${track.name} references unknown group ${track.group}`);
+    }
+    const sendGroup =
+      track.sendBus === undefined ? group : score.groups.get(track.sendBus);
+    if (track.sendBus !== undefined && sendGroup === undefined) {
+      throw new Error(`track ${track.name} references unknown send return ${track.sendBus}`);
+    }
+    const destination = group === undefined ? { left, right } : bufferForGroup(group);
+    // A member's send is post its source group's fader and pan, so muting or
+    // moving the group moves its return too. A cross-group send keeps the
+    // source group's balance and targets the other group's return.
+    const [groupLeftGain, groupRightGain] =
+      group === undefined ? [1, 1] : panGains(group.pan);
+    const sendScaleLeft = group === undefined ? 1 : group.gain * groupLeftGain;
+    const sendScaleRight = group === undefined ? 1 : group.gain * groupRightGain;
+
+    if (hasTrackSections && hasSectionTrackAutomation(score, track)) {
+      for (const segment of sectionTrackSegments(score, track, rate, loopSamples)) {
+        const [leftGain, rightGain] = panGains(segment.pan);
+        const send = segment.send > 0 ? sendForGroup(sendGroup) : undefined;
+        const sendMono = track.sendStereo === false;
+        for (let i = segment.start; i < segment.end; i += 1) {
+          if ((i & 16383) === 0) throwIfAborted(signal);
+          const value = buffer[i] ?? 0;
+          const leftValue = value * leftGain;
+          const rightValue = value * rightGain;
+          destination.left[i] = (destination.left[i] ?? 0) + leftValue;
+          destination.right[i] = (destination.right[i] ?? 0) + rightValue;
+          if (send !== undefined) {
+            const sendLeft = sendMono ? value * segment.send : leftValue * segment.send;
+            const sendRight = sendMono ? value * segment.send : rightValue * segment.send;
+            send.left[i] = (send.left[i] ?? 0) + sendLeft * sendScaleLeft;
+            send.right[i] = (send.right[i] ?? 0) + sendRight * sendScaleRight;
+          }
+        }
+      }
+    } else {
+      const [leftGain, rightGain] = panGains(track.pan);
+      const send = track.send > 0 ? sendForGroup(sendGroup) : undefined;
+      const sendMono = track.sendStereo === false;
+      for (let i = 0; i < loopSamples; i += 1) {
+        if ((i & 16383) === 0) throwIfAborted(signal);
+        const value = buffer[i] ?? 0;
+        const leftValue = value * leftGain;
+        const rightValue = value * rightGain;
+        destination.left[i] = (destination.left[i] ?? 0) + leftValue;
+        destination.right[i] = (destination.right[i] ?? 0) + rightValue;
+        if (send !== undefined) {
+          const sendLeft = sendMono ? value * track.send : leftValue * track.send;
+          const sendRight = sendMono ? value * track.send : rightValue * track.send;
+          send.left[i] = (send.left[i] ?? 0) + sendLeft * sendScaleLeft;
+          send.right[i] = (send.right[i] ?? 0) + sendRight * sendScaleRight;
+        }
       }
     }
   });
 
   throwIfAborted(signal);
+
+  // A group is a real submix: its members are summed before the group fader,
+  // pan, filter, delay, and duck. This is what lets a drum or pad group share
+  // one send and one bus treatment instead of every track owning its own.
+  for (const group of score.groups.values()) {
+    const bus = groupBuffers.get(group.name);
+    if (bus === undefined) continue;
+    throwIfAborted(signal);
+
+    if (group.filter) {
+      filterTrack(bus.left, group.filter, rate);
+      filterTrack(bus.right, group.filter, rate);
+    }
+    if (
+      group.highpassHz !== undefined ||
+      group.lowShelf !== undefined ||
+      group.highShelf !== undefined
+    ) {
+      const eq = {
+        ...(group.highpassHz === undefined ? {} : { highpassHz: group.highpassHz }),
+        ...(group.lowShelf === undefined ? {} : { lowShelf: group.lowShelf }),
+        ...(group.highShelf === undefined ? {} : { highShelf: group.highShelf }),
+      };
+      applyTrackEq(bus.left, eq, rate);
+      applyTrackEq(bus.right, eq, rate);
+    }
+    if (group.delay) {
+      applyDelay(bus.left, group.delay, score, rate, loopSamples, wrap, signal);
+      applyDelay(bus.right, group.delay, score, rate, loopSamples, wrap, signal);
+    }
+    if (group.duck > 0) {
+      applyDuck(bus.left, kicks, group.duck, rate, loopSamples, wrap, signal);
+      applyDuck(bus.right, kicks, group.duck, rate, loopSamples, wrap, signal);
+    }
+
+    const [leftGain, rightGain] = panGains(group.pan);
+    const send = group.send > 0 ? sendForGroup(group) : undefined;
+    for (let i = 0; i < loopSamples; i += 1) {
+      if ((i & 16383) === 0) throwIfAborted(signal);
+      const leftValue = (bus.left[i] ?? 0) * group.gain * leftGain;
+      const rightValue = (bus.right[i] ?? 0) * group.gain * rightGain;
+      left[i] = (left[i] ?? 0) + leftValue;
+      right[i] = (right[i] ?? 0) + rightValue;
+      if (send !== undefined) {
+        send.left[i] = (send.left[i] ?? 0) + leftValue * group.send;
+        send.right[i] = (send.right[i] ?? 0) + rightValue * group.send;
+      }
+    }
+  }
+
   addSectionRisers(left, right, score, rate, signal);
   applySectionFilter(left, score, rate);
   applySectionFilter(right, score, rate);
-  // The send bus is part of the section's mix too. Filtering it before the
-  // reverb keeps a low-passed section from returning unfiltered highs through
-  // its send tail; the reverb is linear, so filtering its input is equivalent
-  // to filtering its return.
-  if (sendBus) applySectionFilter(sendBus, score, rate);
+  // A send is part of the section's mix too. Filtering it before the reverb
+  // keeps a low-passed section from returning unfiltered highs through its
+  // tail; the reverb is linear, so filtering its input is equivalent to
+  // filtering its return. Each group send gets the same treatment.
+  const sendBuses: SendBusAudio[] = [];
+  if (defaultSend !== undefined) {
+    applySectionFilter(defaultSend.left, score, rate);
+    applySectionFilter(defaultSend.right, score, rate);
+    applySectionSend(defaultSend.left, score, rate);
+    applySectionSend(defaultSend.right, score, rate);
+    sendBuses.push(defaultSend);
+  }
+  for (const group of score.groups.values()) {
+    const send = groupSends.get(group.name);
+    if (send === undefined) continue;
+    applySectionFilter(send.left, score, rate);
+    applySectionFilter(send.right, score, rate);
+    applySectionSend(send.left, score, rate);
+    applySectionSend(send.right, score, rate);
+    sendBuses.push({
+      ...send,
+      ...(group.reverb === undefined ? {} : { reverb: group.reverb }),
+    });
+  }
 
-  return { left, right, loopSamples, stems, ...(sendBus === undefined ? {} : { sendBus }) };
+  return { left, right, loopSamples, stems, sendBuses };
 }

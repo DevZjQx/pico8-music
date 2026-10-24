@@ -47,15 +47,19 @@ This separates "the arrangement was already muddy" from "reverb/saturation made 
 | kind | trigger | typical next |
 | --- | --- | --- |
 | `alias-risk` | highest note of a chip pulse/saw/organ >= C6 | use additive/triangle, drop an octave, or accept the chip grit |
+| `sub-heavy` | 20-60 Hz share >= 6% | high-pass the bass/pad or add a post high-pass around 30-40 Hz; use monoBelowHz 100-140 |
 | `mud` | 150-500 Hz share >= 25% | high-pass or EQ the bass/pad, move a part up an octave, shorten overlapping gates |
 | `masking` | two or more stems occupy 150-500 Hz or 250 Hz-2 kHz at once | spread the panning, change octaves, shorten one of them |
 | `harsh` | 2-5 kHz share >= 22% | use a softer waveform, tilt down 2-5 kHz, reduce drive |
 | `dynamics` | crest < 9 dB | lower the loudness target, reduce saturation/compression, leave more rests |
+| `loudness-flat` | song with LRA < 4 LU, section level spread < 6 dB, and LUFS > -16 | leave one section quieter or drop a part for a bar; a constant level is what makes a long listen feel loud |
 | `post-mud` | post raises low-mid by >= 5% and the result is still >= 25% | check reverb wet/room, lowpass, and saturation; try a reverb low-cut or less wet |
 | `post-harsh` | post raises 2-5 kHz by >= 5% and the result is still >= 22% | reduce saturation drive/mix, change the tilt |
 | `post-dynamics` | post lowers crest by >= 3 dB | lower the loudness target/compression ratio, or reduce saturation mix |
 
 These are **observations**, not hard pass conditions. `warnings` keeps its existing semantics unchanged; findings are appended to the report.
+
+Listening comfort is the one place where the report states a limit that is not just advice. `warnings` carries `loud` above -12 LUFS and `unsafe` above the -9 LUFS hearing-safety ceiling, and the renderer turns that ceiling into a hard error (`MAX_SAFE_LUFS` in `loudness.ts`); `p8_analyze` still only reports it for an existing file. `loudness-flat` is the soft counterpart: it names the sustained-level case that makes a long listen feel loud even when every individual section is fine.
 
 ### 4. `detail` on both tools
 
@@ -69,7 +73,7 @@ These are **observations**, not hard pass conditions. `warnings` keeps its exist
 - Existing golden hashes are unchanged (analysis does not touch DSP).
 - Every melodic / drum track has a stem summary; silent tracks do not enter the top list.
 - `report.dry` appears in the `p8_music` report when the post chain is non-empty; `p8_analyze` never has it.
-- `findings` covers positive and negative cases for at least mud / harsh / masking / alias-risk / dynamics.
+- `findings` covers positive and negative cases for at least sub-heavy / mud / harsh / masking / alias-risk / dynamics.
 - The `p8_music` and `p8_analyze` raw artifacts each write parseable JSON, their paths do not collide, and `summary` output is unchanged.
 
 ## M2: raising the sonic ceiling (opt-in)

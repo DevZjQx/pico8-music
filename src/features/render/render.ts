@@ -1,7 +1,18 @@
 import type { Score } from '../score/feature.ts';
 import { throwIfAborted } from './abort.ts';
-import { analyseAudio, measureAudio, sectionEnergies, type AnalysisFacts } from './analyze.ts';
-import { copyWindow, dcBlock, limitPeak, lowpass, repeat, resample, reverb } from './dsp.ts';
+import { analyseAudio, measureAudio, sectionReadings, type AnalysisFacts } from './analyze.ts';
+import { applyTrackEq } from './filters.ts';
+import {
+  copyWindow,
+  dcBlock,
+  limitPeak,
+  lowpass,
+  repeat,
+  resample,
+  reverb,
+  reverbStereo,
+} from './dsp.ts';
+import { MAX_SAFE_LUFS } from './loudness.ts';
 import {
   applyCompressor,
   applyLimiter,
@@ -93,6 +104,13 @@ function normalisePostStep(value: unknown, index: number): PostStep {
         cutoffHz: numberField(cutoff, `${path}.cutoffHz`, DEFAULT_TONE_HZ, 100, RATE / 2),
       };
     }
+    case 'highpass': {
+      const cutoff = value.highpassHz ?? value.cutoffHz;
+      return {
+        type: 'highpass',
+        highpassHz: numberField(cutoff, `${path}.highpassHz`, 35, 20, 500),
+      };
+    }
     case 'reverb': {
       const predelayMs = optionalNumberField(value.predelayMs, `${path}.predelayMs`, 0, 200);
       const lowCutHz = optionalNumberField(value.lowCutHz, `${path}.lowCutHz`, 20, 1000);
@@ -131,11 +149,15 @@ function normalisePostStep(value: unknown, index: number): PostStep {
         release: numberField(value.release, `${path}.release`, DEFAULT_COMPRESS_RELEASE, 0.01, 2),
         makeupDb: numberField(value.makeupDb, `${path}.makeupDb`, 0, -12, 24),
       };
-    case 'loudness':
-      return {
-        type: 'loudness',
-        targetLufs: numberField(value.targetLufs, `${path}.targetLufs`, DEFAULT_TARGET_LUFS, -40, -5),
-      };
+    case 'loudness': {
+      const targetLufs = numberField(value.targetLufs, `${path}.targetLufs`, DEFAULT_TARGET_LUFS, -40, -5);
+      if (targetLufs > MAX_SAFE_LUFS) {
+        throw new Error(
+          `${path}.targetLufs ${targetLufs} is above the ${MAX_SAFE_LUFS} LUFS hearing-safety ceiling; use -14..-16 for a comfortable master`,
+        );
+      }
+      return { type: 'loudness', targetLufs };
+    }
     case 'limiter':
       return {
         type: 'limiter',
@@ -144,7 +166,7 @@ function normalisePostStep(value: unknown, index: number): PostStep {
       };
     default:
       throw new Error(
-        `${path}.type must be tape, slow, lowpass, reverb, tilt, saturate, compress, loudness, or limiter, got ${JSON.stringify(value.type)}`,
+        `${path}.type must be tape, slow, lowpass, highpass, reverb, tilt, saturate, compress, loudness, or limiter, got ${JSON.stringify(value.type)}`,
       );
   }
 }
@@ -280,6 +302,52 @@ function chainSpeed(chain: readonly PostStep[]): number {
 }
 
 /**
+ * Section width automation for songs: scales the side signal inside each
+ * section, so an intro can stay narrow while the drop opens up. It runs before
+ * the master mono/width stage, which still has the final say, and it divides
+ * section seconds by the tape/slow chain speed so a retimed song keeps its arc
+ * on the same musical boundaries. Loop mode has no sections and is untouched.
+ */
+function applySectionWidth(
+  left: Float32Array,
+  right: Float32Array,
+  score: Score,
+  speed: number,
+): void {
+  if (!score.sections.some((section) => (section.width ?? 1) !== 1)) return;
+  let cursor = 0;
+  for (const section of score.sections) {
+    const end = Math.min(
+      left.length,
+      Math.max(
+        cursor,
+        Math.round(((section.startSeconds + section.durationSeconds) * RATE) / speed),
+      ),
+    );
+    const gain = section.width ?? 1;
+    if (gain !== 1) {
+      for (let i = cursor; i < end; i += 1) {
+        const mid = ((left[i] ?? 0) + (right[i] ?? 0)) * 0.5;
+        const side = ((left[i] ?? 0) - (right[i] ?? 0)) * 0.5 * gain;
+        left[i] = mid + side;
+        right[i] = mid - side;
+      }
+    }
+    cursor = end;
+  }
+  // A song tail is the last section's ring-out, so it keeps that width.
+  const tailGain = score.sections[score.sections.length - 1]?.width ?? 1;
+  if (tailGain !== 1) {
+    for (let i = cursor; i < left.length; i += 1) {
+      const mid = ((left[i] ?? 0) + (right[i] ?? 0)) * 0.5;
+      const side = ((left[i] ?? 0) - (right[i] ?? 0)) * 0.5 * tailGain;
+      left[i] = mid + side;
+      right[i] = mid - side;
+    }
+  }
+}
+
+/**
  * A song tail ends wherever the requested extra time ends, which can cut a
  * reverb or one-shot mid-cycle. A short linear fade turns that cut into
  * silence without touching scores that do not ask for a tail.
@@ -338,6 +406,15 @@ function applyPost(
         const cutoff = step.cutoffHz ?? step.toneHz ?? DEFAULT_TONE_HZ;
         left = lowpass(left, cutoff, RATE);
         right = lowpass(right, cutoff, RATE);
+        break;
+      }
+      case 'highpass': {
+        // RBJ 12 dB/oct, the same biquad the track EQ uses. A master high-pass
+        // is the portable-speaker safety net: placed before the limiter, it
+        // removes rumble below what a laptop or phone driver can reproduce.
+        ensureDcBlock();
+        applyTrackEq(left, { highpassHz: step.highpassHz ?? 35 }, RATE);
+        applyTrackEq(right, { highpassHz: step.highpassHz ?? 35 }, RATE);
         break;
       }
       case 'reverb': {
@@ -414,25 +491,38 @@ function applyPost(
 }
 
 /**
- * Renders the per-track send bus through one reverb and adds it to the dry
- * mix. In loop mode the bus is run for three passes and the last pass is kept,
- * matching the steady-state treatment of the post reverb. Song mode gets a
- * single pass, so a send tail stops with the song unless a score-level `tail`
- * extends the rendered buffer.
+ * Renders each stereo send through its own return and adds it to the dry mix.
+ * The default bus serves ungrouped tracks; every named group has its own return
+ * and can therefore use different room/damp settings. In loop mode each bus is
+ * run for three passes and the last pass is kept, matching the steady-state
+ * treatment of the post reverb. Song mode gets a single pass, so a send tail
+ * stops with the song unless a score-level `tail` extends the rendered buffer.
  */
-function addSendReverb(song: SongAudio, passes: number): void {
-  const bus = song.sendBus;
-  if (!bus) return;
-  const input = passes > 1 ? repeat(bus, passes) : bus;
-  const wet = reverb(
-    { left: input, right: input },
-    { wet: 1, room: SEND_ROOM, damp: SEND_DAMP },
-    RATE,
-  );
-  const start = (passes - 1) * song.loopSamples;
-  for (let i = 0; i < song.loopSamples; i += 1) {
-    song.left[i] = (song.left[i] ?? 0) + (wet.left[start + i] ?? 0) * SEND_GAIN;
-    song.right[i] = (song.right[i] ?? 0) + (wet.right[start + i] ?? 0) * SEND_GAIN;
+function addSendReverbs(song: SongAudio, passes: number): void {
+  for (const bus of song.sendBuses) {
+    const leftInput = passes > 1 ? repeat(bus.left, passes) : bus.left;
+    const rightInput = passes > 1 ? repeat(bus.right, passes) : bus.right;
+    const wet = reverbStereo(
+      { left: leftInput, right: rightInput },
+      {
+        wet: 1,
+        room: bus.reverb?.room ?? SEND_ROOM,
+        damp: bus.reverb?.damp ?? SEND_DAMP,
+        ...(bus.reverb?.predelayMs === undefined
+          ? {}
+          : { predelayMs: bus.reverb.predelayMs }),
+        ...(bus.reverb?.lowCutHz === undefined ? {} : { lowCutHz: bus.reverb.lowCutHz }),
+        ...(bus.reverb?.highCutHz === undefined ? {} : { highCutHz: bus.reverb.highCutHz }),
+        ...(bus.reverb?.modDepth === undefined ? {} : { modDepth: bus.reverb.modDepth }),
+        ...(bus.reverb?.modRateHz === undefined ? {} : { modRateHz: bus.reverb.modRateHz }),
+      },
+      RATE,
+    );
+    const start = (passes - 1) * song.loopSamples;
+    for (let i = 0; i < song.loopSamples; i += 1) {
+      song.left[i] = (song.left[i] ?? 0) + (wet.left[start + i] ?? 0) * SEND_GAIN;
+      song.right[i] = (song.right[i] ?? 0) + (wet.right[start + i] ?? 0) * SEND_GAIN;
+    }
   }
 }
 
@@ -483,7 +573,9 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
     quality,
   );
   throwIfAborted(signal);
-  if (song.sendBus) addSendReverb(song, score.mode === 'song' ? 1 : RENDER_LOOPS);
+  if (song.sendBuses.length > 0) {
+    addSendReverbs(song, score.mode === 'song' ? 1 : RENDER_LOOPS);
+  }
   // Snapshot the mix before the post chain. The final report uses the same
   // measurement code, so `post-delta` compares like with like and can say
   // whether an effect (rather than the arrangement) caused a symptom.
@@ -498,11 +590,12 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
         : undefined;
     const drySections =
       score.mode === 'song'
-        ? sectionEnergies(
+        ? sectionReadings(
             song.left,
             song.right,
             score.sections,
             score.durationSeconds,
+            RATE,
             dryContentSamples,
           )
         : [];
@@ -535,6 +628,9 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
 
   // Master width/mono are opt-in and run after the ordered chain, so they can
   // tame a reverb's stereo return without changing the arrangement's pan.
+  // Section width runs first: it is material, not a trim, and the low-band fold
+  // must be able to re-centre lows after it.
+  applySectionWidth(finalLeft, finalRight, score, speed);
   const masterWidth = optionNumber(options.width, 'width') ?? styleDefinition?.master?.width;
   const monoBelowHz = optionNumber(options.monoBelowHz, 'monoBelowHz') ?? styleDefinition?.master?.monoBelowHz;
   if (monoBelowHz !== undefined) {
@@ -558,17 +654,18 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
       : undefined;
   const sections =
     score.mode === 'song'
-      ? sectionEnergies(
+      ? sectionReadings(
           finalLeft,
           finalRight,
           score.sections,
           score.durationSeconds,
+          RATE,
           contentSamples,
         )
       : [];
   const trimmed =
     safetyGain < 0.7
-      ? [`trimmed: peak safety net pulled the mix down ${(-gainToDb(safetyGain)).toFixed(1)} dB`]
+      ? [`trimmed: peak safety net pulled the mix down ${(-gainToDb(safetyGain)).toFixed(1)} dB — lower track volumes to keep the authored balance`]
       : [];
   const report = analyseAudio(finalLeft, finalRight, RATE, {
     sections,

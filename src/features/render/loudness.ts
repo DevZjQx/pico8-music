@@ -12,8 +12,29 @@ const ABSOLUTE_GATE_LUFS = -70;
 const RELATIVE_GATE_LU = -10;
 const BLOCK_SECONDS = 0.4;
 const HOP_SECONDS = 0.1;
+/** EBU Tech 3342 short-term window and step, used only by the LRA. */
+const LRA_WINDOW_SECONDS = 3;
+const LRA_HOP_SECONDS = 1;
+/** LRA gates: absolute -70 LUFS, then -20 LU below the gated mean. */
+const LRA_ABSOLUTE_GATE_LUFS = -70;
+const LRA_RELATIVE_GATE_LU = -20;
+/** LRA prints in LU; anything above this is a mis-measurement, not music. */
+const LRA_MAX_LU = 40;
 /** Power floor so log10 stays finite for digital silence. */
 const SILENCE_POWER = 1e-20;
+
+/**
+ * Hard ceiling for the finished mix's integrated loudness, in LUFS.
+ *
+ * A file is not an SPL — the listener's playback gain decides that — but a
+ * K-system calibrated room gives a bridge: the -20 dBFS reference mark sits at
+ * 83 dB SPL, so a stereo master plays roughly 100 dB above its LUFS figure at
+ * reference gain. NIOSH allows 8 h at 85 dBA and halves the time every 3 dB,
+ * which puts -9 LUFS near the one-hour mark. Past it, a normal session at
+ * reference gain is no longer safe and the mix has no headroom left anyway, so
+ * the renderer refuses instead of warning.
+ */
+export const MAX_SAFE_LUFS = -9;
 
 interface BiquadCoefficients {
   readonly b0: number;
@@ -85,6 +106,116 @@ function kWeight(samples: Float32Array, rate: number): Float32Array {
   return biquad(biquad(samples, shelfCoefficients(safeRate)), highpassCoefficients(safeRate));
 }
 
+function loudnessOf(power: number): number {
+  return -0.691 + 10 * Math.log10(Math.max(power, SILENCE_POWER));
+}
+
+/**
+ * Mean power per block for an already K-weighted signal. A block shorter than
+ * `block` is only kept when it is the first one, so a buffer shorter than a
+ * single window still yields one measurement.
+ */
+function blockPowers(
+  filtered: readonly Float32Array[],
+  length: number,
+  block: number,
+  hop: number,
+): number[] {
+  const powers: number[] = [];
+  for (let start = 0; start < length; start += hop) {
+    const end = Math.min(length, start + block);
+    if (end - start < block && start > 0) break;
+    let sum = 0;
+    for (const channel of filtered) {
+      let squares = 0;
+      for (let i = start; i < end; i += 1) squares += (channel[i] ?? 0) ** 2;
+      sum += squares / Math.max(1, end - start);
+    }
+    powers.push(sum);
+  }
+  return powers;
+}
+
+function integratedFrom(powers: readonly number[]): number {
+  if (powers.length === 0) return -Infinity;
+
+  const audible = powers.filter((power) => loudnessOf(power) > ABSOLUTE_GATE_LUFS);
+  if (audible.length === 0) return -Infinity;
+
+  const ungatedMean = audible.reduce((sum, power) => sum + power, 0) / audible.length;
+  const relativeGate = loudnessOf(ungatedMean) + RELATIVE_GATE_LU;
+  const gated = audible.filter((power) => loudnessOf(power) > relativeGate);
+  const kept = gated.length > 0 ? gated : audible;
+  const mean = kept.reduce((sum, power) => sum + power, 0) / kept.length;
+  return clamp(loudnessOf(mean), -120, 40);
+}
+
+/** Linear-interpolated percentile of an ascending list. */
+function percentile(sorted: readonly number[], fraction: number): number {
+  if (sorted.length === 1) return sorted[0] ?? 0;
+  const index = (sorted.length - 1) * fraction;
+  const low = Math.floor(index);
+  const high = Math.min(sorted.length - 1, low + 1);
+  const weight = index - low;
+  return (sorted[low] ?? 0) * (1 - weight) + (sorted[high] ?? 0) * weight;
+}
+
+/**
+ * Loudness range in LU (EBU Tech 3342): the 10th-to-95th percentile spread of
+ * short-term loudness after the absolute and relative gates. A loop that holds
+ * one groove reports a small range; an arrangement that drops down and comes
+ * back reports a large one. Silence and buffers too short to measure report 0
+ * rather than a negative or non-finite number.
+ */
+function rangeFrom(filtered: readonly Float32Array[], length: number, rate: number): number {
+  const window = Math.min(length, Math.max(1, Math.round(LRA_WINDOW_SECONDS * rate)));
+  const hop = Math.max(1, Math.round(LRA_HOP_SECONDS * rate));
+  const measured = blockPowers(filtered, length, window, hop).map((power) => ({
+    power,
+    loudness: loudnessOf(power),
+  }));
+
+  const audible = measured.filter((block) => block.loudness > LRA_ABSOLUTE_GATE_LUFS);
+  if (audible.length === 0) return 0;
+
+  const meanPower = audible.reduce((sum, block) => sum + block.power, 0) / audible.length;
+  const relativeGate = loudnessOf(meanPower) + LRA_RELATIVE_GATE_LU;
+  const kept = audible
+    .filter((block) => block.loudness > relativeGate)
+    .map((block) => block.loudness)
+    .sort((a, b) => a - b);
+  if (kept.length === 0) return 0;
+
+  return clamp(percentile(kept, 0.95) - percentile(kept, 0.1), 0, LRA_MAX_LU);
+}
+
+export interface LoudnessSummary {
+  /** Integrated loudness in LUFS; -Infinity for a silent buffer. */
+  readonly integrated: number;
+  /** Loudness range in LU; 0 when there is nothing measurable. */
+  readonly range: number;
+}
+
+/**
+ * Both loudness figures from one K-weighting pass. The report needs the pair,
+ * and K-weighting a long song twice is pure waste.
+ */
+export function loudnessSummary(
+  channels: readonly Float32Array[],
+  rate: number,
+): LoudnessSummary {
+  const length = Math.min(...channels.map((channel) => channel.length));
+  if (length === 0) return { integrated: -Infinity, range: 0 };
+
+  const filtered = channels.map((channel) => kWeight(channel, rate));
+  const block = Math.max(1, Math.round(BLOCK_SECONDS * rate));
+  const hop = Math.max(1, Math.round(HOP_SECONDS * rate));
+  return {
+    integrated: integratedFrom(blockPowers(filtered, length, block, hop)),
+    range: rangeFrom(filtered, length, rate),
+  };
+}
+
 /**
  * Integrated loudness in LUFS. Returns -Infinity for a silent buffer. The
  * caller passes the samples it wants measured: the loop body for a loop, the
@@ -97,32 +228,12 @@ export function integratedLufs(channels: readonly Float32Array[], rate: number):
   const filtered = channels.map((channel) => kWeight(channel, rate));
   const block = Math.max(1, Math.round(BLOCK_SECONDS * rate));
   const hop = Math.max(1, Math.round(HOP_SECONDS * rate));
-  const powers: number[] = [];
+  return integratedFrom(blockPowers(filtered, length, block, hop));
+}
 
-  for (let start = 0; start < length; start += hop) {
-    const end = Math.min(length, start + block);
-    if (end - start < block && start > 0) break;
-    let sum = 0;
-    for (const channel of filtered) {
-      let squares = 0;
-      for (let i = start; i < end; i += 1) squares += (channel[i] ?? 0) ** 2;
-      sum += squares / Math.max(1, end - start);
-    }
-    powers.push(sum);
-  }
-
-  if (powers.length === 0) return -Infinity;
-
-  const loudnessOf = (power: number): number =>
-    -0.691 + 10 * Math.log10(Math.max(power, SILENCE_POWER));
-
-  const audible = powers.filter((power) => loudnessOf(power) > ABSOLUTE_GATE_LUFS);
-  if (audible.length === 0) return -Infinity;
-
-  const ungatedMean = audible.reduce((sum, power) => sum + power, 0) / audible.length;
-  const relativeGate = loudnessOf(ungatedMean) + RELATIVE_GATE_LU;
-  const gated = audible.filter((power) => loudnessOf(power) > relativeGate);
-  const kept = gated.length > 0 ? gated : audible;
-  const mean = kept.reduce((sum, power) => sum + power, 0) / kept.length;
-  return clamp(loudnessOf(mean), -120, 40);
+/** Loudness range in LU; see `rangeFrom` for the gating. */
+export function loudnessRange(channels: readonly Float32Array[], rate: number): number {
+  const length = Math.min(...channels.map((channel) => channel.length));
+  if (length === 0) return 0;
+  return rangeFrom(channels.map((channel) => kWeight(channel, rate)), length, rate);
 }

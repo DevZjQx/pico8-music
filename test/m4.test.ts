@@ -64,10 +64,16 @@ test('loudness normalisation hits the target and the limiter holds its ceiling',
   );
   assert.ok(normalised.report.peakDb <= -0.9, `peak ${normalised.report.peakDb}`);
 
-  // A deliberately hot target must be caught by the limiter, not by clipping.
+  // A target above the hearing-safety ceiling is an error, not a louder render.
+  assert.throws(
+    () => renderLoop(mixed, { post: [{ type: 'loudness', targetLufs: -6 }], minutes: 0.05 }),
+    /hearing-safety ceiling/,
+  );
+
+  // Within the ceiling, the limiter still holds its own ceiling.
   const hot = renderLoop(mixed, {
     post: [
-      { type: 'loudness', targetLufs: -6 },
+      { type: 'loudness', targetLufs: -9 },
       { type: 'limiter', ceilingDb: -3 },
     ],
     minutes: 0.05,
@@ -401,18 +407,19 @@ test('the render service validates style names and post types', async () => {
   );
   await assert.rejects(
     () => executeRender({ score: JSON.stringify(rawScore), post: [{ type: 'flanger' }] as never }),
-    /must be tape, slow, lowpass, reverb/,
+    /must be tape, slow, lowpass, highpass, reverb/,
   );
 });
 
 
 test('fixed renders keep their golden hashes', () => {
   const hashes = {
-    // Hashes moved once when the 16-bit conversion gained TPDF dither, and
-    // again when the post reverb stopped folding its dry path to mono.
-    dry: 'f1a890a827943d9ad16ad97ee6467725e88b5f8e7dd59ea4f5977274a8e21034',
-    classic: '5412ba2a8103a7cf61c597db8ee0e09fe1fdcffa6abd722c903642739f0586a0',
-    hitech: '009d6c31cc7b17eed665695c3ebbae7696f223c9c1a7c4503edf5119d13be704',
+    // Hashes moved when the 16-bit conversion gained TPDF dither, when the post
+    // reverb stopped folding its dry path to mono, and when track sends became
+    // stereo (the mixed fixture has a panned send).
+    dry: '798d8716038234daf2ec17986db9ca9e460e2667fe5d5cc77c1d5deff4787bb1',
+    classic: 'c6ecf45d709213ef08b6cdaa0614f8e397d5ead04c06185610aed1f63b931079',
+    hitech: 'a7919483ad100d7a8d0facab18b5c3f2cf4be79d7f24db030d337ddf75aad86a',
   };
   const digest = (options: Parameters<typeof renderLoop>[1]) =>
     createHash('sha256').update(renderLoop(mixed, options).wav).digest('hex');

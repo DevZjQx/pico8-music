@@ -21,6 +21,7 @@ src/
 docs/expressiveness-review.md      # 表现力审查：从慢速混响循环到可编曲的引擎
 docs/evaluation.md           # 曲目评分维度：频谱/瞬态/空间/和声/结构/响度
 docs/analysis-roadmap.md     # 分析反馈 M1-M3：stem 归因、post delta、findings、raw artifact
+docs/space-energy-plan.md    # 空间与能量弧线：P0 已实施（space/width/段落读数），P1-P2 计划
 docs/design-boundaries.md    # 设计边界与风险：产品、模块、兼容、资源
 docs/features/               # 两个 feature 的边界决策
 examples/m1-16bar.json       # 16 小节 intro/build/drop/break 示例
@@ -34,6 +35,8 @@ examples/m8-samples.json   # 工作区 WAV 采样：sample 音源 + 鼓声替换
 examples/m9-additive-textures.json # additive 非谐、tilt、逐谐波衰减：钟声/拨弦/暗垫
 examples/m10-tuning.json      # A=442、钢琴式 Railsback 逐音 cents 与 additive 钢琴音色
 examples/m11-velocity-timbre.json # 力度映射到滤波 cutoff 与 drive：重音更亮
+examples/m14-articulations-presets.json # 可复用演奏法（spiccato/legato）与音色预设（violin/viola）
+examples/m15-groups-stereo-send.json # 鼓/键盘分组、组级滤波与各自的立体声混响返回
 examples/assets/           # m8 引用的 16-bit PCM WAV 素材
 scripts/check-boundaries.ts  # shared -> features -> app 的零依赖检查
 test/
@@ -114,9 +117,13 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 | `humanize` | `{timingMs:0-150, velocity:0-1}`；确定性时序/力度扰动，0 不改变旧渲染 | 关闭 |
 | `tuning` | 可选，整曲调律：`{a4, temperament, cents}`；`a4` 400-480 Hz，`temperament` 是内置律制，`cents` 逐音 -100..100 音分 | 440 Hz 十二平均律 |
 | `tail` | 0-30 秒，song 模式在最后一步后多渲染一段让混响和 one-shot 收尾 | 0 |
+| `inheritSections` | 布尔；为 true 时，省略 `bpm`、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`space`、`width`、`tracks` 的 section 继承上一段的值 | false |
 | `seed` | 0-2147483647 整数，影响 noise 音色、鼓瞬态、humanize 与段落 riser | 0 |
 | `motifs` | 可选，命名动机：`{"A":"C4:1 E4:1"}` | 空 |
 | `envelopes` | 可选，命名 ADSR：`{"pluck":{"attack":0.001,...}}` | 空 |
+| `articulations` | 可选，可复用演奏法：`{"spiccato":{"gateScale":0.45,"volume":5,"envelope":"short"}}`，token 用 `~spiccato` 引用 | 空 |
+| `presets` | 可选，可复用音色预设：`{"violin":{"instrument":"strings","envelope":{...},"articulation":"legato","send":0.2}}`，track 用 `"preset":"violin"` 引用 | 空 |
+| `groups` | 可选，命名分组/子混音：`{"drums":{"gain":0.9,"pan":0.1,"send":0.2,"reverb":{"room":0.8}}}`，track 用 `"group":"drums"` 加入；`buses` 是同义词 | 空 |
 | `tracks` | 1-32 个；每条轨是独立总线，轨数由编曲需要决定 | 必填 |
 | `samples` | 可选，命名 WAV 素材：`{"hit":"assets/hit.wav"}` 或 `{"vox":{"file":"assets/vox.wav","root":"C4","loop":false,"gain":1}}` | 空 |
 | `drumSamples` | 可选，按鼓声替换素材：`{"kick":"hit","snare":"hit2"}`；没映射的鼓仍用合成音 | 空 |
@@ -127,6 +134,8 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 | --- | --- |
 | `name` | 可选，段落覆盖时用；默认 `track0`、`track1`… |
 | `role` | 可选，`drums`、`bass`、`lead`、`pad` 等；默认 `melodic` |
+| `preset` | 可选，引用顶层 `presets` 里的音色预设；只填音色/包络/演奏法/混音默认值，不填 role 或 pattern |
+| `group` | 可选，引用顶层 `groups` 里的分组（别名 `bus`）；组内轨道先合成一个立体声子混音，再走组级 gain/pan/filter/delay/duck/send |
 | `pattern` | 必填（或提供 `patterns`）。`音符:步数[g门限]` 用空格分隔，`-` 是休止；发声音符的步数 1-64，休止可到 1-256 步（用于填充 pattern），门限 1-256 步；可选后缀 `@力度`、`~效果`、`~包络` |
 | `patterns` | 可选，本轨的命名 pattern：`{"A":"...","B":"..."}` |
 | `motifs` | 可选，本轨的命名动机；同名时覆盖顶层 `motifs` |
@@ -134,8 +143,9 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 | `instrument` | 可选，顶层 `instruments` 里的名字、内联定义，或 `chip`/`fm`/`additive`/`drums`，也可以引用 `samples` 里的素材；显式写入时优先于 style 的 role 默认值 |
 | `volume` | 0-7（可带一位小数），默认 5。没有 `@力度` 的音符用它 |
 | `envelope` | 可选 ADSR：`{attack, decay, sustain, release}`，attack/decay/release 为 0-30 秒（`sustain` 是 0-1 电平） |
+| `articulation` | 可选，本轨默认演奏法名；token 自己的 `~名字` 优先 |
 | `pan` | -1（左）..1（右），默认 0；等功率，居中不改变音量 |
-| `send` | 0-1，送入轨道混响 send；默认 0 |
+| `send` | 0-1，送入这条轨的立体声混响返回（有 group 时是组返回，否则是默认返回）；也可写 `{amount, bus}` 指定别的组返回，或 `{stereo:false}` 回到旧的 pre-pan mono send；默认 0 |
 | `duck` | 0-1，被鼓轨 kick 触发的压低深度；默认 0 |
 | `filter` | 数字（截止 Hz）或 `{cutoffHz, resonance, lfoHz, lfoDepth}`；默认无 |
 | `highpassHz` | 20-4000 Hz，12 dB/oct 高通；只作用于这条轨，用来单独挖掉某条轨的浑浊，默认无 |
@@ -244,6 +254,61 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - 逐谐波衰减写作 `[振幅, 相位度数, 秒数]`，是 `exp(-t/秒数)` 的时间常数；0 或省略表示不衰减。高次谐波先死适合钟、拨弦、电钢。
 - 没有 `stretch`、也没有任何逐谐波衰减时仍走原来的波表路径，旧 score 逐样本不变。出现两者之一时改为逐 partial 合成：仍按音符带限、仍把初始峰值锚在 0.25，但每个 partial 每采样一次 `sin`，所以适合 lead/pad/bell，不适合 8 声部以上的密集和弦。
 - 不做数学公式/表达式音源：周期公式与 `partials` 表达力重叠，非周期音色用 `samples`（工作区脚本生成任意 WAV）质量更高；这里只加数值参数。完整示例见 `examples/m9-additive-textures.json`。
+
+### 演奏法与音色预设（articulations / presets）
+
+把重复的发音方式和音色写成数据，而不是在每条 track 上反复展开：
+
+```json
+{
+  "envelopes": { "short": { "attack": 0.01, "decay": 0.08, "sustain": 0.05, "release": 0.04 } },
+  "articulations": {
+    "spiccato": { "gateScale": 0.45, "volume": 5, "envelope": "short", "effect": "vibrato", "effectParams": { "vibratoDepth": 0.12 } },
+    "legato": { "gateScale": 1.5, "effect": "vibrato", "effectParams": { "vibratoDepth": 0.22, "vibratoRate": 5.2 } }
+  },
+  "instruments": {
+    "strings": { "type": "additive", "partials": [1, 0.62, 0.44, 0.3, 0.22], "unison": 2, "detune": 5 }
+  },
+  "presets": {
+    "violin-lead": { "instrument": "strings", "articulation": "legato", "volume": 5, "pan": -0.15, "send": 0.22, "highpassHz": 140 }
+  },
+  "tracks": [
+    { "role": "lead", "preset": "violin-lead", "pattern": "C5:2~spiccato D5:2~spiccato E5:2~legato" }
+  ]
+}
+```
+
+- `articulations` 的字段：`gateScale`（0.05-8，乘 slot 后取整到 1-256 步）、`volume`（0-7）、`envelope`（内联 ADSR 或顶层 `envelopes` 的名字）、`effect`（一个 pitched effect）和 `effectParams`（vibrato 用 `{vibratoDepth, vibratoRate}`，slide 用 `{slideSteps}`）。
+- token 自己的 `gGATE`、`@volume`、`~effect` 优先于 articulation；track 的 `articulation` 是没有 `~名字` 的 token 的默认值。
+- articulation 名与 envelope 名、effect 名、鼓词汇互斥，保证 `~名字` 只有一种解释；命名 articulation 只用于旋律轨，鼓仍用 `~ghost`/`~flam`/`~roll`。
+- `presets` 的字段：`instrument`、`waveform`、`envelope`、`articulation`、`volume`、`pan`、`send`、`duck`、`filter`、`highpassHz`、`lowShelf`、`highShelf`、`delay`。track 上显式写的字段优先于 preset。
+- score 里的 `presets` 不是 `p8_music` 的 `preset` 工具参数：后者只选 `classic`/`dreamy`/`tape` 后处理链，且必须写在 score 外面。preset 也不保存 role 或 pattern。
+
+完整示例见 `examples/m14-articulations-presets.json`。
+
+### 分组、总线与立体声 send
+
+当前 send 不是一条 mono 总线：轨道按自己的 pan 把左右信号分别送进返回，所以硬左的轨道混响也留在左边。`groups` 再把多条轨合成一个子混音，每组拥有自己的返回和混响参数，鼓组、键盘组可以各自用不同的 room/damp，不再共享同一个混响。
+
+```json
+{
+  "groups": {
+    "drums": { "gain": 1.05, "send": 0.12, "reverb": { "room": 0.72, "damp": 0.6 } },
+    "keys": { "pan": 0.15, "send": 0.45, "reverb": { "room": 0.92, "damp": 0.32, "predelayMs": 24 }, "highpassHz": 120 }
+  },
+  "tracks": [
+    { "name": "kick", "role": "drums", "group": "drums", "pattern": "K:2 H:2 S:2 H:2" },
+    { "name": "keys", "role": "keys", "group": "keys", "pattern": "[F3,A3,C4]:8", "send": 0.2 }
+  ]
+}
+```
+
+- `groups` 字段：`gain` 0-4、`pan` -1..1、`send` 0..1、`duck` 0..1、`filter`、`highpassHz`、`lowShelf`、`highShelf`、`delay`、`reverb`（`{room, damp, predelayMs, lowCutHz, highCutHz, modDepth, modRateHz}`）；这些混响字段也可以直接写在组上。中性默认是 `gain:1`、`pan:0`、`send:0`、`duck:0`、无滤波/延迟/混响。
+- 组内轨道先做各自的滤波、EQ、delay、duck、pan、send，再求和成组缓冲；组级处理在这个和上做一次，所以组滤波器、组 delay、组 duck 不会逐轨重复。
+- 组级 `send` 送的是处理完的组输出；组内轨道自己的 `send` 也进同一个组返回，并跟随源组的 gain/pan（组拉小或搬到一边，send 一起走），因此可以既保留单轨 send 深度，又用 `group.send` 统一加湿。没有 `group` 的轨道走默认返回。
+- `send` 除了数字还可以写 `{"amount":0.4,"bus":"hall"}`：干声仍走自己的 group，但 send 进 `hall` 的返回；`{"amount":0.4,"stereo":false}` 回到旧的 pre-pan mono send（左右相同），用于需要旧行为的场合。旧 score 若同时写了 `pan` 和 `send`，混响位置会和以前不同；要逐样本复现旧 send，加 `stereo:false`。
+- `group`/`bus` 是同义词：顶层 `groups`/`buses`、track `group`/`bus`。同一份 score 只用一种拼写；未知组名在解析期报错。
+- 段落 `space` 会乘到所有立体声 send（默认返回和每个组返回），段落 `tracks.<name>.send` 对有组的轨道仍然有效。
 
 ### 采样素材（samples）
 
@@ -364,10 +429,15 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - 每个 section 的长度应当是所用 pattern 长度的整数倍；否则解析器仍按旧行为截断最后一遍，并在报告里写 `pattern-misaligned` 警告。loop 模式也会对不整除 loop 的 pattern 给出同样警告。
 - 一次渲染的 arrangement 总量上限是 15 分钟和 256 个 section；最终输出（包括降速后）也以 15 分钟为硬上限，超出会直接报错，而不是分配一个不可控的缓冲区。
 - `patterns` 可以放在顶层，也可以放在 track 内；section 的 `patterns` 用 track 的 `name` 或 `role` 指向 pattern 名。也可以直接写内联 pattern（如 `C4:4 C4:4`，或单 token `C4`）；已定义的 pattern 名优先。
-- section 字段：`bars`（必填）、`bpm`、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`fill`、`riser`。
+- section 字段：`bars`（必填）、`bpm`、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`space`、`width`、`fill`、`riser`、`tracks`、`inherit`。
+- `tracks` 是段落级单轨状态：键可以是 track 的 `name` 或 `role`（同名时按 name 优先），值支持 `gain` 0-4、`pan` -1..1、`send` 0..1、`mute` true/false、`filter`（数字或 `{"from","to"}`）。`gain` 覆盖同轨的 `gains`；`mute:false` 可以把被 `mute` 列表点名的轨重新打开；`pan`/`send`/`filter` 在这一段内生效，且 `filter` 只作用于这条轨，不是整段求和后的低通。
+- `inheritSections` 是整曲开关，`arrangement[].inherit` 可以逐段覆盖。继承会复制 `bpm`、`patterns`、`mute`、`gain`、`gains`、`filter`、`energy`、`space`、`width` 和 `tracks`；`fill`、`riser`、`bars`、`name` 始终只属于声明它的那一段。写 `tracks:{}` 可以清空继承来的单轨状态，写 `patterns:{}` 可以回到各轨默认 pattern。
+- 不写 `inheritSections` 时旧行为不变：省略的字段仍用顶层 `bpm`、`energy:1`、`space:1`、`width:1` 等默认值，不会自动继承上一段。
 - `bpm`：可选，30-300，默认继承顶层 `bpm`。变速只发生在 section 边界，小节和 step 网格不变；该段实际时长是 `bars * beatsPerBar * 60 / bpm`。loop 模式仍只有一个速度，不支持段内渐快/渐慢或任意 BPM 自动化。track 的 `delay.steps` 默认按顶层 `bpm` 计时，因此在变速段之间保持不变；要让它跟随段落网格，写 `delay.follow: "section"`。
 - `riser`：1-64 小节，不能超过所在 section 的长度；在这一段末尾合成一条噪声 + 正弦上行扫频，正好结束在段落边界，用作 build/转场的上扬。它不占 track，声音由 `seed` 决定。
-- `energy`：0-1 的段落宏。0 时该段增益 ×0.5，若有 `filter` 则截止频率 ×0.35；1（默认）不改变任何东西，所以旧 score 不受影响。适合写 intro/break 的“收”。
+- `energy`：0-1 的段落宏。0 时该段增益 ×0.5，若有 `filter` 则截止频率 ×0.35；1（默认）不改变任何东西，所以旧 score 不受影响。适合写 intro/break 的“收”。单独写 `energy` 只改电平，要同时变暗还需要给该段 `filter`。
+- `space`：0-2 的段落乘数，作用在轨道 `send` 总线进入混响之前；0 贴脸/干，1（默认）不变，2 是原 send 的两倍（更远、更湿）。它不改干声电平，因此不会像推音量那样改变段落响度。至少需要一条 `send > 0`（track 级或 section `tracks.<name>.send`）才有效，否则报告给出 `space-no-send` 警告。
+- `width`：0-2 的段落乘数，作用在成品 side 信号上；0 折成单声道，1（默认）不变，2 更宽。它在 post 链之后、master 的 `width`/`monoBelowHz` 之前执行，所以工具级参数仍是最后一道全局裁决；`tape`/`slow` 降速后段落边界仍落在正确位置。
 - `fill`：`{"bars":1,"patterns":{"drums":"drums.fill"}}`，用指定 pattern 替换该 section 最后 1-2 小节的普通 pattern；`patterns` 的键可以是 track 的 `name` 或 `role`。fill pattern 长度不整除 fill 窗口时会在报告里给出 `fill-misaligned` 警告。
 - `filter` 与 `energy` 可以叠加：滤波先按 section 扫频，再乘 energy 的截止系数；`gain`/`gains` 也在 energy 之后相乘。
 - `filter` 是该段的低通截止频率（Hz），作用于干声和 send 总线的输入；写成 `{"from":600,"to":12000}` 时在整个 section 内指数扫频，`from` 到 `to` 单调上升就是 riser 的滤波部分；`mute` 接受 track 的 `name` 或 `role`。
@@ -381,7 +451,9 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - `width` / `monoBelowHz` 是 `p8_music` 的 master 参数，在整条 `post` 链之后执行：`width` 0-2 缩放 side 信号（0 mono、1 不变、2 更宽），`monoBelowHz` 20-500 只把低频折成 mono，高频声像保留。两者默认都不执行。
 - `delay`：`steps` 1-64，`feedback` 0-0.95，`mix` 0-1，`follow` 为 `"base"`（默认，按顶层 bpm）或 `"section"`（回声落在哪个段落就按哪个段落的 step 计时）。`follow: "section"` 时跨段读头连续、单调，边界处会有约 `steps` 步长的轻微变速/变调（类似磁带延迟），不会 click；loop 模式只有一个速度，两种取值等价。loop 模式会先跑 3 遍再取最后一遍，延迟尾巴在循环接缝处连续；延迟不短于一圈时按循环长度折叠，不会变成静音。song 模式中超过歌曲长度的延迟还没到达，因此是静音。
 - `duck`：所有鼓轨的 kick 都会触发；每轨独立深度，启动约 5 ms、释放约 110 ms。
-- `send`：所有开 send 的轨道汇入一条 mono send 总线，经过一个独立混响后加回干声；它发生在 `post` 链之前，因此会跟随 `tape`/`lowpass` 一起被处理。
+- `send`：轨道按 pan 把左右分别送入立体声返回；有 `group` 时进组返回（组可单独设 reverb room/damp），否则进默认返回。返回在 `post` 链之前加回干声，因此会跟随 `tape`/`lowpass` 一起被处理。
+- `group`：组内轨道先合成一个子混音，再统一过组级 gain/pan/filter/EQ/delay/duck/send；一条组共享一个返回，不再需要把所有轨塞进同一条 mono send。
+- `space` 和 `width` 是段落级的空间旋钮：`space` 乘在所有 send 总线/返回上（改干湿比/远近），`width` 乘在成品 side 上（改宽窄）。两者默认 1，旧 score 逐样本不变；`width` 在 master `monoBelowHz` 之前执行，低频折叠仍然有效。
 - `post` 里的 `reverb` 仍是总线混响；`send` 和它不是互斥的，可以叠加。
 
 ### Post 链
@@ -399,11 +471,12 @@ PICO-8 乐谱 DSL 的线格式说明不再塞进工具描述里（那会让每�
 - 步骤按数组顺序执行；`tape` / `lowpass` 作用于左右声道，`reverb` 只用输入的单声道求和驱动湿声，干声保持原来的立体声，所以插入混响不会把声像折成 mono。
 - `tape` / `slow`：`speed` 0.5-1.5，降速同时降音高；多个降速步骤会串联相乘。
 - `lowpass`：`cutoffHz`（或别名 `toneHz`）100-22050。
+- `highpass`：`highpassHz` 20-500，12 dB/oct 母带高通。需要让笔记本/手机小喇叭少一点嗡嗡时，放在链首用 30-40 Hz；如果整体低频仍然过多，先处理编曲里的贝斯和 kick，而不是只靠这一刀。
 - `reverb`：`wet` 0-1 是干湿混合比，不是湿声增益；湿声路径本身约比干声低 5 dB，所以 `wet: 0.3` 听起来只是轻混响（湿声能量约占 6%）。`room` 0-0.98 控制房间大小，`damp` 0-1 控制高频阻尼。M2 追加可选 `predelayMs` 0-200（只延迟 send，不糊干声）、`lowCutHz` 20-1000 / `highCutHz` 1000-20000（只滤湿声，减少低频云和金属尾）、`modDepth` 0-1 / `modRateHz` 0.05-5（轻微延迟调制，削弱 comb 金属感）；都不写时与旧混响逐样本一致。
 - `tilt`：`tiltDb` -12..12，700 Hz 上下的倾斜 EQ；正值更亮，负值更暗。
 - `saturate`：`drive`、`mix` 0-1，tanh 软饱和，压峰并把安静段落补厚。
 - `compress`：`thresholdDb`（默认 -18）、`ratio`（默认 2）、`attack` / `release`（秒）、`makeupDb`。立体声联动，检波器跟左右声道中较响的一侧。
-- `loudness`：`targetLufs` -40..-5（默认 -14），按 BS.1770 积分响度整体加/减增益。通常放在 `limiter` 之前。
+- `loudness`：`targetLufs` -40..-5（默认 -14），按 BS.1770 积分响度整体加/减增益。通常放在 `limiter` 之前。`targetLufs` 高于 -9 会直接报错（人耳安全上限，见上）；成品即使没写这一步，只要总响度超过 -9 LUFS 也会在写文件前被拒绝。
 - `limiter`：`ceilingDb`（默认 -1）、`release`（默认 0.1 s）。瞬时启动、指数恢复，保证没有样本超过 ceiling。
 - `preset` 仍可用：`classic`、`dreamy`、`tape`。`speed` / `wet` / `toneHz` 是 post 的快捷覆盖；有对应步骤时改该步骤，没有时补一个。`speed` 作用于整条 tape/slow 链：第一个步骤取目标速度，后续 tape/slow 设为 1，所以链的总速度等于 `speed`。`room` / `damp` 直接写在 `reverb` 步骤里。
 - `style` 填默认值：`chip`（`post: []`，无 post 处理）、`hitech`（饱和 + glue 压缩 + -14 LUFS + limiter）、`ambient`（slow 0.8 + lowpass + reverb + limiter）、`studio` / `lofi`（各自的 post 链 + 非芯片的 role 音色），以及 `soft`（clean、低阶 additive、20-80 ms attack、5.2 kHz lowpass、轻 reverb、-16 LUFS）。`style` 不改变 `mode` 和 score；和显式 `preset` 同时出现会报错，显式 `post` 仍然优先，显式 `track.instrument` 优先于 style 音色。
@@ -420,25 +493,25 @@ loop 模式默认 2 分钟，WAV 由整数个循环单元重复而成，首尾�
 每次 `p8_music` 都会在路径和参数之后返回一份报告，模型不用再盲写：
 
 ```
-report peak -1.0 dBFS · RMS -14.1 dBFS · LUFS -12.2
+report peak -1.0 dBFS · RMS -14.1 dBFS · LUFS -12.2 · LRA 0.6 LU
 report spectrum centroid 3625 Hz · sub 4% low 19% mid 35% high 24% air 19% · low-mid 31% · 2-5k 18%
 report space width 0.25 · onsets 25.3/s
-report sections intro -18.0 dBFS · drop -10.0 dBFS
+report sections intro -18.0 dBFS w0.12 780Hz 3.2/s · drop -10.0 dBFS w0.34 2400Hz 6.8/s
 report stems pad -7.5dBFS 3807Hz low-mid 17% pan 0.00 · drums -15.0dBFS 4490Hz low-mid 14% pan 0.00 · bass -15.0dBFS 2631Hz low-mid 19% pan 0.00
 report post-delta centroid -825 Hz · low-mid +8% · crest -2.5 dB · width +0.16
 report finding mud: 150-500 Hz is 31% of the spectrum (mostly pad + bass)
 report next: high-pass or EQ 150-500 Hz on the bass/pad, move one part up an octave, or shorten overlapping gates
-report warnings: trimmed: peak safety net pulled the mix down 3.5 dB
+report warnings: trimmed: peak safety net pulled the mix down 3.5 dB — lower track volumes to keep the authored balance
 ```
 
-- peak / RMS / LUFS：整段音频（loop 取循环本体，song 取整首）。
+- peak / RMS / LUFS / LRA：整段音频（loop 取循环本体，song 取整首）。LRA 是 EBU Tech 3342 的响度范围：3 秒短时响度经绝对 -70 LUFS 和相对 -20 LU 门限后，10% 到 95% 分位的跨度。循环通常接近 0（它本来就该稳定），song 有明显强弱段时才会拉开。注意静音段会被绝对门限去掉，所以 LRA 不衡量“有没有留白”。
 - 频谱：2048 样本（约 46 ms）帧的幅度谱质心与 sub/low/mid/high/air 占比，最多抽样 48 帧；不是 4 秒窗。`low-mid`（150-500 Hz）和 `2-5k` 是与五个频带重叠的诊断占比，用于找浑浊和刺耳。宽度、峰值、RMS 和 LUFS 使用全部样本。
 - 空间与节奏：side/mid RMS 比（0 是单声道，1 是硬声像）和 onset 密度。这个比值可以超过 1（混响 `wet` 很高时会出现），超过 1 表示左右声道是反相/梳状关系，是相位上的“宽”，不是更稳定的声场；判断空间时应结合 L/R 相关性，而不是只看它接近 1。
-- sections：song 模式每段的 RMS。
+- sections：song 模式每段的 RMS、side/mid 宽度、频谱质心和 onset 密度。宽度和亮度是两条独立的弧线：`flat-sections` 只在电平差小于 2 dB 时提示，`flat-space` 只在宽度跨度和质心跨度同时偏小时提示（宽度 < 0.08 且质心 < 400 Hz）。
 - stems：每条轨在 pan/sum 之前的 RMS、质心、low-mid、pan 和 alias 风险；按 RMS 排序，报告只列前 6 条。`stems` 只在渲染时存在，因为成品 WAV 无法反推声部。
 - dry / post-delta：post 链之前的同口径测量，以及质心、low-mid、crest、宽度的变化。它回答“是编曲糊，还是混响/饱和把 mix 弄糊了”。
-- findings：`mud`、`harsh`、`masking`、`alias-risk`、`dynamics`、`post-mud`、`post-harsh`、`post-dynamics`、`target`，每条带可选的 attribution 和 `next`。findings 是观察，不是通过/失败门槛；声明 `target` 后，`target` finding 会写出相对目标的偏差，但仍然没有总分。
-- warnings：`dark`（2 kHz 以上太少）、`narrow`（几乎单声道）、`sparse`（瞬态太少）、`low-heavy`（250 Hz 以下超过 70%）、`quiet` / `loud`、`flat-sections`（段落能量差小于 2 dB）、`pattern-misaligned` / `fill-misaligned`（pattern 截断）、`trimmed`（峰值安全网下拉超过 3 dB）。
+- findings：`mud`、`harsh`、`masking`、`sub-heavy`、`alias-risk`、`dynamics`、`loudness-flat`、`post-mud`、`post-harsh`、`post-dynamics`、`target`，每条带可选的 attribution 和 `next`。findings 是观察，不是通过/失败门槛；声明 `target` 后，`target` finding 会写出相对目标的偏差，但仍然没有总分。`loudness-flat` 是听感提示：song 的 LRA < 4 LU、段落电平差 < 6 dB 且整体响于 -16 LUFS 时触发，说明整首停在一个音量上，长听会显得吵，drop 也没有上升空间。
+- warnings：`dark`（2 kHz 以上太少）、`narrow`（几乎单声道）、`sparse`（瞬态太少）、`low-heavy`（250 Hz 以下超过 70%）、`quiet` / `loud`（响于 -12 LUFS）/ `unsafe`（响于 -9 LUFS 的人耳安全上限）、`flat-sections`（段落能量差小于 2 dB）、`flat-space`（段落宽度和亮度都没有对比）、`space-no-send`（写了 `space` 但没有任何 track/section/group send）、`pattern-misaligned` / `fill-misaligned`（pattern 截断）、`trimmed`（峰值安全网下拉超过 3 dB）。`unsafe` 在渲染时是**硬错误**：成品积分响度超过 -9 LUFS 时 `p8_music` 直接拒绝写文件，而不是只给提示；`p8_analyze` 读别人的文件时仍然只报 `unsafe`，因为分析不能改变已有音频。
 
 `p8_analyze` 对已有 WAV 做同一套测量，不需要重新渲染：
 
@@ -466,14 +539,16 @@ bun run check      # 边界检查 + 类型检查 + 测试
 - 效果是音乐语义的近似，不是 PICO-8 sfx 状态机的逐样本复刻。
 - 鼓默认是合成瞬态；`drumSamples` 可以按声替换成 WAV，`~ghost` 的力度/低通、`~flam`/`~roll` 与 per-hit `~pitch`/`~tone` 仍生效，但采样鼓的 `~decay`（含 ghost 的缩短衰减）会被忽略，也没有逐 hit 滤波包络。
 - M2 和声/发音法已做：显式与命名和弦、斜杠低音、gate、swing、命名 per-note 包络、参数化 slide/vibrato、seed。仍不做 `key`/`scale` 度数记谱与 voice leading：命名和弦已覆盖大部分和声写法，voice leading 需要跨段和声状态且验收主观。
-- M3 已做：per-track filter（带 LFO/共振）、段落滤波扫频、pan、send、duck（kick 触发）、step 计时 delay。M8 追加了独立的段落 `riser`、`tail` 与 `humanize`；仍不做任意 sidechain 源和 impact/sub-drop 采样 FX。
+- M3 已做：per-track filter（带 LFO/共振）、段落滤波扫频、pan、send、duck（kick 触发）、step 计时 delay。M8 追加了独立的段落 `riser`、`tail` 与 `humanize`；分组/总线与立体声 send 已补齐：每组有独立返回和组级 gain/pan/filter/EQ/delay/duck，轨道 send 保留 pan。仍不做任意 sidechain 源和 impact/sub-drop 采样 FX。
 - M4 已做：渲染报告（peak/RMS/LUFS/频谱/宽度/onset/分段/警告）、`p8_analyze`、`tilt`/`saturate`/`compress`/`loudness`/`limiter` 五个 master 步骤。
+- 空间与能量弧线 P0 已做（见 `docs/space-energy-plan.md`）：段落 `space`（send 乘数）、段落 `width`（side 乘数）、每段 level/width/centroid/onset 读数，以及 `flat-space` / `space-no-send` 警告。仍不做任意自动化曲线、逐段混响参数和 L/R 相关性数值。
 - 分析路线图 M2 已做：`quality: "clean"` 带限 chip/FM、track 级 high-pass/低/高 shelf、master `width`/`monoBelowHz`、reverb predelay/low-cut/high-cut/轻调制、`target` profiles 与 `soft` style。全部 opt-in；不传新字段时旧渲染逐样本不变。仍不做自动混音、自动母带或单一评分。
+- 可复用演奏法与音色预设已做：顶层 `articulations` 把 gate/volume/envelope/effect 组合命名后用 `~名字` 引用，顶层 `presets` 把 instrument/envelope/默认 articulation/轨道音色字段组合成 track 可引用的音色；两者都是 score 内数据，track 显式字段优先。仍不做 per-instrument 独立调音、per-note 滤波、跨 score 的声库文件，也不把 `post` 链写进 preset。
 - M6 已做：命名/内联 `instruments`（chip / additive / FM）、unison 失谐、drive、逐音滤波包络、鼓的 per-hit pitch/decay/tone、`studio`/`lofi` 两个换音色的 style。采样素材（`samples` / `drumSamples`）已支持 16-bit PCM WAV；仍不做切片/多采样映射/任意波表、任意 FM 算子矩阵、per-note pan。
 - additive 扩展已做：`stretch` 非谐、`tilt` 频谱倾斜、逐谐波衰减；静态路径逐样本兼容。仍不做公式/表达式音源、任意 FM 算子矩阵和波表文件。
 - 力度到音色已做：`chip`/`additive`/`fm` 的 `velocity: {cutoffOctaves, drive}` 让 `@力度` 同时打开滤波 cutoff 和增加 drive；不写或全 0 时逐样本不变，`sample` 乐器不接受这个字段。暂不把力度映射到 decay 或 FM index，避免在没有明确听感目标时扩大语义。
 - 调律已做：顶层 `tuning` 的 `a4` 400-480 Hz、七种内置律制和逐音 `cents`；律制以 A 为锚点，所以换律制不会移动 A4，逐音 `cents` 还能在此基础上微调任意键。采样音源靠变速跟随目标频率，所以逐键微调也生效；但没有 per-zone 多采样映射，`samples.root` 仍按素材自身的 440 Hz 十二平均律解释。
-- 轨数上限是 32，不是音乐规则：每条轨都要一整段 buffer 和一次逐样本混音，所以长歌 + 很多轨会明显变慢。需要更多层次时优先增加 track，而不是把和弦塞到 8 个声部以上。
+- 轨数上限是 32，命名分组上限也是 32，不是音乐规则：每条轨都要一整段 buffer，每个使用中的组还要一条子混音 buffer 和一条立体声 send buffer，所以长歌 + 很多组会明显变慢。需要更多层次时优先增加 track 或把同处理的轨道放进一个 group。
 - `humanize` 只改时序和力度，不做 probability/ratchet；`tuplet` 仍不做：三连音需要分数 step 网格，会同时影响 parser、swing、段落对齐和循环接缝，收益低于成本。
 - 段落变速已做：`arrangement[].bpm` 在 section 边界切换速度，默认继承顶层 `bpm`；loop 模式仍是单一 BPM。暂不做段内渐快/渐慢、任意 BPM 自动化。`delay.steps` 默认仍按顶层 bpm 计时；写 `delay.follow: "section"` 可以按段落网格重算回声时间，代价是边界处会有最多约 `steps` 步长的变速/变调窗口。
 - song 模式的 `send` 混响和 `post` 混响尾音默认会在歌曲结束时截断；设置顶层 `tail` 可以留出收尾时间，或用 `send: 0` + `post: []` 做紧结尾。
