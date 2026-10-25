@@ -1,7 +1,13 @@
 import type { TrackFilter } from '../score/feature.ts';
+import type { LowpassOrder } from './types.ts';
 
 const MIN_HZ = 20;
 const MAX_HZ = 20000;
+/** Butterworth pole Qs; odd orders (1) use the one-pole path instead. */
+const BUTTERWORTH_Q: Record<Exclude<LowpassOrder, 1>, readonly number[]> = {
+  2: [Math.SQRT1_2],
+  4: [0.5411961001461969, 1.3065629648763766],
+};
 /** Coefficient refresh interval; 32 samples is under a millisecond at 44.1 kHz. */
 const LFO_BLOCK = 32;
 
@@ -96,6 +102,21 @@ function highpassCoefficients(cutoffHz: number, rate: number): Biquad {
   };
 }
 
+/** RBJ low-pass with the given Q (0.707 is 12 dB/oct Butterworth). */
+function lowpassCoefficients(cutoffHz: number, q: number, rate: number): Biquad {
+  const w0 = (2 * Math.PI * cutoffHz) / rate;
+  const cos = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * q);
+  const a0 = 1 + alpha;
+  return {
+    b0: ((1 - cos) / 2) / a0,
+    b1: (1 - cos) / a0,
+    b2: ((1 - cos) / 2) / a0,
+    a1: (-2 * cos) / a0,
+    a2: (1 - alpha) / a0,
+  };
+}
+
 /** RBJ shelving filter with slope S = 1. `gainDb` > 0 boosts. */
 function shelfCoefficients(
   type: 'low' | 'high',
@@ -147,6 +168,33 @@ function applyBiquad(samples: Float32Array, coefficients: Biquad): void {
     y2 = y1;
     y1 = y;
     samples[i] = y;
+  }
+}
+
+/**
+ * Post-chain low-pass. Order 1 keeps the historical one-pole 6 dB/oct path
+ * sample-identical; orders 2 and 4 are Butterworth biquad cascades at
+ * 12 and 24 dB/oct.
+ */
+export function applyLowpass(
+  samples: Float32Array,
+  cutoffHz: number,
+  order: LowpassOrder,
+  rate: number,
+): void {
+  if (order === 1) {
+    const coefficient = 1 - Math.exp((-2 * Math.PI * cutoffHz) / rate);
+    let value = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      value += coefficient * ((samples[i] ?? 0) - value);
+      samples[i] = value;
+    }
+    return;
+  }
+
+  const cutoff = clamp(cutoffHz, MIN_HZ, Math.min(MAX_HZ, rate * 0.45));
+  for (const q of BUTTERWORTH_Q[order]) {
+    applyBiquad(samples, lowpassCoefficients(cutoff, q, rate));
   }
 }
 

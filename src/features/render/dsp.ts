@@ -255,18 +255,6 @@ export function resample(input: Float32Array, speed: number): Float32Array {
   return output;
 }
 
-/** One-pole low-pass; removes the fizz that slowed-down chiptune exposes. */
-export function lowpass(input: Float32Array, cutoffHz: number, rate: number): Float32Array {
-  const coefficient = 1 - Math.exp((-2 * Math.PI * cutoffHz) / rate);
-  const output = new Float32Array(input.length);
-  let value = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    value += coefficient * ((input[i] ?? 0) - value);
-    output[i] = value;
-  }
-  return output;
-}
-
 /**
  * One-pole high-pass. Pulse-family timbres are not zero-mean, and the reverb
  * comb bank has a large DC gain, so any offset would otherwise survive as a

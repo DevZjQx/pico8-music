@@ -18,6 +18,7 @@ import type {
   Effect,
   EffectParams,
   Envelope,
+  FmOperator,
   Humanize,
   Instrument,
   InstrumentFilter,
@@ -25,8 +26,10 @@ import type {
   NoteEvent,
   Partial,
   SampleSpec,
+  SampleZone,
   Score,
   ScoreGroup,
+  ScoreKey,
   ScoreMode,
   ScoreSection,
   SendReverb,
@@ -94,6 +97,12 @@ const MAX_PRESETS = 32;
 const MAX_ARTICULATIONS = 64;
 const MAX_PARTIALS = 16;
 const MAX_PARTIAL_DECAY = 8;
+/** Carrier plus three modulators is the whole multi-operator palette. */
+const MAX_FM_OPERATORS = 3;
+/** A zone set can layer key ranges and velocity layers without becoming a library. */
+const MAX_ZONES = 16;
+/** Matches the app layer's 30 s sample budget; offsets past it cannot point at audio. */
+const MAX_SAMPLE_OFFSET_SECONDS = 30;
 const INSTRUMENT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const RESERVED_INSTRUMENT_NAMES = new Set(['chip', 'fm', 'additive', 'drums']);
 /** Song sections are cheap individually but each one can be 64 bars long. */
@@ -264,17 +273,59 @@ function parseInstrumentFilter(value: unknown, path: string): InstrumentFilter |
  * Velocity offsets are opt-in so old instrument definitions keep their fixed
  * response. `cutoffOctaves` is expressed as a full-velocity opening, so a
  * quiet note sits at the authored cutoff and a loud one opens above it.
+ * `indexScale` only means something on an FM voice, so other types reject it
+ * instead of accepting a field the renderer would silently ignore.
  */
-function parseVelocityMapping(value: unknown, path: string): VelocityMapping | undefined {
+function parseVelocityMapping(
+  value: unknown,
+  path: string,
+  type: InstrumentType,
+): VelocityMapping | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
-    throw new ScoreError(`${path} must be an object with cutoffOctaves and drive`);
+    throw new ScoreError(`${path} must be an object with cutoffOctaves, drive, and indexScale`);
   }
-  rejectUnknownKeys(value, ['cutoffOctaves', 'drive'], path);
+  rejectUnknownKeys(value, ['cutoffOctaves', 'drive', 'indexScale'], path);
+  const indexScale = readNumber(value.indexScale, `${path}.indexScale`, 0, 0, 1);
+  if (indexScale > 0 && type !== 'fm') {
+    throw new ScoreError(`${path}.indexScale only applies to fm instruments`);
+  }
   return {
     cutoffOctaves: readNumber(value.cutoffOctaves, `${path}.cutoffOctaves`, 0, 0, 6),
     drive: readNumber(value.drive, `${path}.drive`, 0, 0, 1),
+    indexScale,
   };
+}
+
+/**
+ * Fixed-routing FM operators. `target` must point at a lower operator index so
+ * evaluation needs no cycle check and no graph bookkeeping at render time.
+ */
+function parseFmOperators(value: unknown, path: string): readonly FmOperator[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_FM_OPERATORS) {
+    throw new ScoreError(
+      `${path} must be an array of 1-${MAX_FM_OPERATORS} modulators with ratio, index, indexDecay, and target`,
+    );
+  }
+  return value.map((entry, index) => {
+    const operatorPath = `${path}[${index}]`;
+    if (!isRecord(entry)) {
+      throw new ScoreError(`${operatorPath} must be an object with ratio, index, indexDecay, and target`);
+    }
+    rejectUnknownKeys(entry, ['ratio', 'index', 'indexDecay', 'target'], operatorPath);
+    const target = readRequiredNumber(entry.target, `${operatorPath}.target`, 0, MAX_FM_OPERATORS, true);
+    if (target >= index + 1) {
+      throw new ScoreError(
+        `${operatorPath}.target must be 0 (the carrier) or a lower modulator index, got ${target}`,
+      );
+    }
+    return {
+      ratio: readRequiredNumber(entry.ratio, `${operatorPath}.ratio`, 0.25, 8),
+      index: readRequiredNumber(entry.index, `${operatorPath}.index`, 0, 12),
+      indexDecay: readNumber(entry.indexDecay, `${operatorPath}.indexDecay`, 0.3, 0.01, 4),
+      target,
+    };
+  });
 }
 
 /**
@@ -303,6 +354,7 @@ function parseInstrumentSpec(
       'ratio',
       'index',
       'indexDecay',
+      'operators',
       'unison',
       'detune',
       'detuneCents',
@@ -341,6 +393,7 @@ function parseInstrumentSpec(
       'ratio',
       'index',
       'indexDecay',
+      'operators',
       'unison',
       'detune',
       'detuneCents',
@@ -384,6 +437,8 @@ function parseInstrumentSpec(
   const fmIndex = value.index === undefined ? undefined : readNumber(value.index, `${path}.index`, 3, 0, 12);
   const indexDecay =
     value.indexDecay === undefined ? undefined : readNumber(value.indexDecay, `${path}.indexDecay`, 0.3, 0.01, 4);
+  const operators =
+    value.operators === undefined ? undefined : parseFmOperators(value.operators, `${path}.operators`);
 
   if (type !== 'chip' && value.waveform !== undefined) {
     throw new ScoreError(`${path}.waveform only applies to chip instruments`);
@@ -391,12 +446,22 @@ function parseInstrumentSpec(
   if (type !== 'additive' && (partials !== undefined || stretch !== undefined || tilt !== undefined)) {
     throw new ScoreError(`${path}.partials, .stretch, and .tilt only apply to additive instruments`);
   }
-  if (type !== 'fm' && (ratio !== undefined || fmIndex !== undefined || indexDecay !== undefined)) {
-    throw new ScoreError(`${path}.ratio, .index, and .indexDecay only apply to fm instruments`);
+  if (
+    type !== 'fm' &&
+    (ratio !== undefined || fmIndex !== undefined || indexDecay !== undefined || operators !== undefined)
+  ) {
+    throw new ScoreError(
+      `${path}.ratio, .index, .indexDecay, and .operators only apply to fm instruments`,
+    );
+  }
+  if (operators !== undefined && (ratio !== undefined || fmIndex !== undefined || indexDecay !== undefined)) {
+    throw new ScoreError(
+      `${path}.operators replaces ${path}.ratio, .index, and .indexDecay; define the voice once`,
+    );
   }
 
   const filter = parseInstrumentFilter(value.filter, `${path}.filter`);
-  const velocity = parseVelocityMapping(value.velocity, `${path}.velocity`);
+  const velocity = parseVelocityMapping(value.velocity, `${path}.velocity`, type);
   if (velocity !== undefined && velocity.cutoffOctaves > 0 && filter === undefined) {
     throw new ScoreError(
       `${path}.velocity.cutoffOctaves needs ${path}.filter; without a filter there is no cutoff to open`,
@@ -411,6 +476,7 @@ function parseInstrumentSpec(
     ...(ratio === undefined ? {} : { ratio }),
     ...(fmIndex === undefined ? {} : { index: fmIndex }),
     ...(indexDecay === undefined ? {} : { indexDecay }),
+    ...(operators === undefined ? {} : { operators }),
     unison: readNumber(value.unison, `${path}.unison`, 1, 1, 4, true),
     detuneCents: readNumber(value.detune ?? value.detuneCents, `${path}.detune`, 0, 0, 50),
     drive: readNumber(value.drive, `${path}.drive`, 0, 0, 1),
@@ -481,14 +547,82 @@ function parseSampleFile(value: unknown, path: string): string {
   return file;
 }
 
+/**
+ * Zone bounds accept a note name or a MIDI integer, so a model can write
+ * `C#3` for the musical intent or 49 when it already has numbers.
+ */
+function readMidiBound(value: unknown, path: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 0 || value > 127) {
+      throw new ScoreError(`${path} must be a MIDI note 0-127 or a note name such as C3`);
+    }
+    return value;
+  }
+  const text = readString(value, path, '');
+  const parsed = parseNoteName(text);
+  if (parsed === undefined || parsed < 0 || parsed > 127) {
+    throw new ScoreError(`${path} must be a note name between C-1 and G9, got ${JSON.stringify(value)}`);
+  }
+  return parsed;
+}
+
+function parseSampleZones(value: unknown, path: string): readonly SampleZone[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ZONES) {
+    throw new ScoreError(
+      `${path} must be an array of 1-${MAX_ZONES} zones with sample, lo, hi, velLo, and velHi`,
+    );
+  }
+  return value.map((entry, index) => {
+    const zonePath = `${path}[${index}]`;
+    if (!isRecord(entry)) {
+      throw new ScoreError(`${zonePath} must be an object with sample, lo, hi, velLo, and velHi`);
+    }
+    rejectUnknownKeys(entry, ['sample', 'lo', 'hi', 'velLo', 'velHi'], zonePath);
+    const sample = readString(entry.sample, `${zonePath}.sample`, '');
+    if (sample === '') {
+      throw new ScoreError(`${zonePath}.sample must name a plain sample entry in the same table`);
+    }
+    const loMidi = readMidiBound(entry.lo, `${zonePath}.lo`, 0);
+    const hiMidi = readMidiBound(entry.hi, `${zonePath}.hi`, 127);
+    if (loMidi > hiMidi) {
+      throw new ScoreError(`${zonePath}.lo (${loMidi}) must not be above .hi (${hiMidi})`);
+    }
+    const loVelocity = readNumber(entry.velLo, `${zonePath}.velLo`, 0, 0, 1);
+    const hiVelocity = readNumber(entry.velHi, `${zonePath}.velHi`, 1, 0, 1);
+    if (loVelocity > hiVelocity) {
+      throw new ScoreError(
+        `${zonePath}.velLo (${loVelocity}) must not be above .velHi (${hiVelocity})`,
+      );
+    }
+    return { sample, loMidi, hiMidi, loVelocity, hiVelocity };
+  });
+}
+
+/**
+ * Slicing is expressed as named regions over one file: a model defines
+ * `break_1` and `break_2` with different `start`/`end` offsets, and the decoded
+ * PCM is still read and cached once per file. Loop points are relative to the
+ * selected region, never to the raw file.
+ */
 function parseSampleSpec(value: unknown, path: string): SampleSpec {
   if (typeof value === 'string') {
-    return { file: parseSampleFile(value, path), rootMidi: 60, loop: false, gain: 1 };
+    return { kind: 'file', file: parseSampleFile(value, path), rootMidi: 60, loop: false, gain: 1 };
   }
   if (!isRecord(value)) {
-    throw new ScoreError(`${path} must be a .wav path or an object with file, root, loop, and gain`);
+    throw new ScoreError(
+      `${path} must be a .wav path, a file object with file, root, loop, and gain, or a zones object`,
+    );
   }
-  rejectUnknownKeys(value, ['file', 'root', 'loop', 'gain'], path);
+  if (value.zones !== undefined) {
+    rejectUnknownKeys(value, ['zones'], path);
+    return { kind: 'zones', zones: parseSampleZones(value.zones, `${path}.zones`) };
+  }
+  rejectUnknownKeys(
+    value,
+    ['file', 'root', 'loop', 'gain', 'start', 'end', 'reverse', 'loopStart', 'loopEnd'],
+    path,
+  );
   const file = parseSampleFile(value.file, `${path}.file`);
 
   let rootMidi = 60;
@@ -506,13 +640,74 @@ function parseSampleSpec(value: unknown, path: string): SampleSpec {
   if (value.loop !== undefined && typeof value.loop !== 'boolean') {
     throw new ScoreError(`${path}.loop must be true or false`);
   }
+  const loop = value.loop === true;
+  const startSeconds = readNumber(value.start, `${path}.start`, 0, 0, MAX_SAMPLE_OFFSET_SECONDS);
+  const endSeconds =
+    value.end === undefined
+      ? undefined
+      : readNumber(value.end, `${path}.end`, 0, 0, MAX_SAMPLE_OFFSET_SECONDS);
+  if (endSeconds !== undefined && endSeconds <= startSeconds) {
+    throw new ScoreError(`${path}.end (${endSeconds}s) must be after .start (${startSeconds}s)`);
+  }
+  const loopStartSeconds =
+    value.loopStart === undefined
+      ? undefined
+      : readNumber(value.loopStart, `${path}.loopStart`, 0, 0, MAX_SAMPLE_OFFSET_SECONDS);
+  const loopEndSeconds =
+    value.loopEnd === undefined
+      ? undefined
+      : readNumber(value.loopEnd, `${path}.loopEnd`, 0, 0, MAX_SAMPLE_OFFSET_SECONDS);
+  if ((loopStartSeconds !== undefined || loopEndSeconds !== undefined) && !loop) {
+    throw new ScoreError(`${path}.loopStart and .loopEnd need ${path}.loop true`);
+  }
+  if (loopStartSeconds !== undefined && loopStartSeconds < startSeconds) {
+    throw new ScoreError(`${path}.loopStart must not be before ${path}.start`);
+  }
+  if (loopStartSeconds !== undefined && endSeconds !== undefined && loopStartSeconds >= endSeconds) {
+    throw new ScoreError(`${path}.loopStart must be before ${path}.end`);
+  }
+  if (loopEndSeconds !== undefined && loopStartSeconds !== undefined && loopEndSeconds <= loopStartSeconds) {
+    throw new ScoreError(`${path}.loopEnd must be after ${path}.loopStart`);
+  }
+  if (loopEndSeconds !== undefined && endSeconds !== undefined && loopEndSeconds > endSeconds) {
+    throw new ScoreError(`${path}.loopEnd must not be past ${path}.end`);
+  }
 
   return {
+    kind: 'file',
     file,
     rootMidi,
-    loop: value.loop === true,
+    loop,
     gain: readNumber(value.gain, `${path}.gain`, 1, 0, 4),
+    ...(startSeconds === 0 ? {} : { startSeconds }),
+    ...(endSeconds === undefined ? {} : { endSeconds }),
+    ...(value.reverse === undefined ? {} : { reverse: readBoolean(value.reverse, `${path}.reverse`, false) }),
+    ...(loopStartSeconds === undefined ? {} : { loopStartSeconds }),
+    ...(loopEndSeconds === undefined ? {} : { loopEndSeconds }),
   };
+}
+
+/**
+ * Zone sets are one level deep: a zone must point at a plain file entry. That
+ * keeps selection a single lookup and avoids recursive sample graphs.
+ */
+function validateSampleZones(samples: ReadonlyMap<string, SampleSpec>): void {
+  for (const [name, spec] of samples) {
+    if (spec.kind !== 'zones') continue;
+    for (const [index, zone] of spec.zones.entries()) {
+      const target = samples.get(zone.sample);
+      if (target === undefined) {
+        throw new ScoreError(
+          `samples.${name}.zones[${index}]: unknown sample ${JSON.stringify(zone.sample)}; define it in the same samples table`,
+        );
+      }
+      if (target.kind !== 'file') {
+        throw new ScoreError(
+          `samples.${name}.zones[${index}]: ${JSON.stringify(zone.sample)} is itself a zone set; zones must point at plain files`,
+        );
+      }
+    }
+  }
 }
 
 function parseSamples(value: unknown): ReadonlyMap<string, SampleSpec> {
@@ -2897,6 +3092,38 @@ function parseTuning(value: unknown): Tuning {
   };
 }
 
+/**
+ * Accepts `C`, `C major`, `C maj`, `Am`, `A minor`, `A min` (case-insensitive).
+ * The key is a declaration, so a typo should fail loudly rather than be
+ * silently dropped: an absent key changes what the report can measure.
+ */
+const KEY_RE = /^([A-Ga-g])([#b]?)\s*(major|minor|maj|min|m)?$/i;
+const KEY_SEMITONES: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+function parseKey(value: unknown): ScoreKey | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new ScoreError(`key must be a string such as "Am" or "C major", got ${JSON.stringify(value)}`);
+  }
+  const match = KEY_RE.exec(value.trim());
+  if (match === null) {
+    throw new ScoreError(
+      `key must be a tonic with an optional mode, e.g. "C", "Am", "F# minor"; got ${JSON.stringify(value)}`,
+    );
+  }
+  const letter = (match[1] ?? '').toUpperCase();
+  const accidental = match[2] ?? '';
+  const quality = (match[3] ?? '').toLowerCase();
+  const base = KEY_SEMITONES[letter];
+  if (base === undefined) {
+    throw new ScoreError(`key ${JSON.stringify(value)}: use a note letter A-G`);
+  }
+  const shift = accidental === '#' ? 1 : accidental === 'b' ? -1 : 0;
+  const tonic = (((base + shift) % 12) + 12) % 12;
+  const mode = quality === 'm' || quality === 'min' || quality === 'minor' ? 'minor' : 'major';
+  return { tonic, mode, label: `${letter}${accidental}${mode === 'minor' ? 'm' : ''}` };
+}
+
 function parseMode(value: unknown, hasArrangement: boolean): ScoreMode {
   if (value === undefined) return hasArrangement ? 'song' : 'loop';
   if (value === 'song' || value === 'loop') return value;
@@ -2946,6 +3173,7 @@ export function parseScore(input: string | unknown): Score {
       'bars',
       'humanize',
       'tuning',
+      'key',
       'tail',
     ],
     '',
@@ -2959,11 +3187,13 @@ export function parseScore(input: string | unknown): Score {
   const seed = readNumber(raw.seed, 'seed', 0, 0, 2147483647, true);
   const humanize = parseHumanize(raw.humanize);
   const tuning = parseTuning(raw.tuning);
+  const key = parseKey(raw.key);
   const tailSeconds = readNumber(raw.tail, 'tail', 0, 0, 30);
   const inheritSections = readBoolean(raw.inheritSections, 'inheritSections', false);
   const envelopes = parseEnvelopes(raw.envelopes);
   const articulations = parseArticulations(raw.articulations, envelopes);
   const samples = parseSamples(raw.samples);
+  validateSampleZones(samples);
   const instruments = parseInstruments(raw.instruments, samples);
   const presets = parsePresets(raw.presets, instruments, samples, envelopes, articulations);
   if (raw.groups !== undefined && raw.buses !== undefined) {
@@ -3109,6 +3339,7 @@ export function parseScore(input: string | unknown): Score {
     seed,
     humanize,
     tuning,
+    ...(key === undefined ? {} : { key }),
     tracks,
     groups,
     sections,

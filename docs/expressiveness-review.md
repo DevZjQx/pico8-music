@@ -190,7 +190,7 @@ renderScore
 
 **验收：** gate 变短会降低 RMS 但不改变事件起点；slide 在指定时间内到达目标音高；vibrato 的 rate/depth 可测量；ghost note 的频谱重心低于正常 hit。
 
-**现状：slot/gate 分离、per-note ADSR 与力度到音色已实现。** `C4:4g2` / `C4:4g6` 分别覆盖 staccato 和 legato；音高和事件起点不变。顶层 `envelopes` + `~pluck` 提供命名 per-note ADSR；`~slide(steps)`（0.05–8）与 `~vib(depth[,rate])`（0–2 半音，0.1–20 Hz）已参数化，无参数时行为与旧版一致。乐器可以写 `velocity: {cutoffOctaves 0-6, drive 0-1}`，让 `@力度` 在乘振幅之外还打开滤波 cutoff 并叠加 drive；不写或全 0 时旧 score 逐样本不变，`cutoffOctaves` 需要 `filter`，`sample` 乐器不接受该字段。humanize 的力度起伏也会参与映射。仍不做：参数化 arp（只有固定的 `arpfast` / `arpslow`）、力度映射到 decay/FM index。
+**现状：slot/gate 分离、per-note ADSR 与力度到音色已实现。** `C4:4g2` / `C4:4g6` 分别覆盖 staccato 和 legato；音高和事件起点不变。顶层 `envelopes` + `~pluck` 提供命名 per-note ADSR；`~slide(steps)`（0.05–8）与 `~vib(depth[,rate])`（0–2 半音，0.1–20 Hz）已参数化，无参数时行为与旧版一致。乐器可以写 `velocity: {cutoffOctaves 0-6, drive 0-1}`，让 `@力度` 在乘振幅之外还打开滤波 cutoff 并叠加 drive；不写或全 0 时旧 score 逐样本不变，`cutoffOctaves` 需要 `filter`，`sample` 乐器不接受该字段。humanize 的力度起伏也会参与映射。后续已补：力度映射到 FM index（`velocity.indexScale`）；仍不做参数化 arp（只有固定的 `arpfast` / `arpslow`）与力度映射到 envelope decay。
 
 #### P0-5 旋律、动机与乐句
 
@@ -262,7 +262,7 @@ renderScore
 
 **验收：** pan 改变 L/R 能量比；unison 的 side 能量 > 0；send 改变尾音长度而不影响干声。
 
-**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。命名 `group`/`bus` 子混音与组级 gain/pan/filter/EQ/delay/duck/send 已实现，每个组拥有自己的返回，因此不再被单条 mono send 总线限制。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
+**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。命名 `group`/`bus` 子混音与组级 gain/pan/filter/EQ/delay/duck/send 已实现，每个组拥有自己的返回，因此不再被单条 mono send 总线限制。宽度验收改由 pan + send 的左右声道差异间接覆盖；报告现在另给 `correlation` / `balance`，但宽度验收不以它作为通过条件。
 
 #### P1-4 转场 FX
 
@@ -291,7 +291,7 @@ renderScore
 **设计建议：**
 
 - bus compressor / glue、saturation、tilt EQ、limiter。
-- 目标响度（如 −14 LUFS integrated）和 true peak ceiling（当前 limiter 是 sample-peak，不做 4× 过采样）。
+- 目标响度（如 −14 LUFS integrated）和 true peak ceiling（当前 limiter 仍是 sample-peak；报告已能测 4× 过采样 true peak，但 limiter 不按它限幅）。
 - sidechain 与 mix bus 结合。
 - 保留 `limitPeak` 作为最后的安全网，不要把它当混音。
 
@@ -490,7 +490,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 - 重构：`renderScore()` 先给每条 track 一个独立 buffer，再做滤波、延迟、duck、pan、send，最后求和。per-track 处理不再是「接在总线上」的近似。
 - 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.05-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）。
 - 验收：filter 静态开合的高频带能量比、LFO 的窗口能量起伏、段落扫频的首尾高频带比、pan 的左右 RMS、duck 的 kick 窗口 RMS、send 的尾音、delay 的偏移窗口 RMS 都有测试；示例 `examples/m3-space-motion.json`。
-- M6 已补 `unison`；后续又补了命名 `group`/`bus` 子混音、组级处理和每组独立的立体声返回。仍不做任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖，没有单独计算 correlation。
+- M6 已补 `unison`；后续又补了命名 `group`/`bus` 子混音、组级处理和每组独立的立体声返回。仍不做任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖；报告现在另给 `correlation` / `balance`，但宽度验收不以它作为通过条件。
 
 ### 7.4 M4：能「混音」和「自检」
 
@@ -506,7 +506,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 
 **M4 状态：已实现。**
 
-- 报告：`renderLoop` 对 loop 本体或整首 song 测量 peak/RMS/积分 LUFS/幅度谱质心与五个频带/宽度/onset 密度/分段 RMS，并生成 `dark`、`narrow`、`sparse`、`low-heavy`、`quiet`、`loud`、`flat-sections`、`trimmed` 警告。报告是 `RenderOutput.report`，`p8_music` 把它附在工具结果里；`p8_analyze` 对已有 WAV 复用同一套测量（`decodeWav` 只接受 16-bit PCM）。
+- 报告：`renderLoop` 对 loop 本体或整首 song 测量 peak/RMS/积分 LUFS/幅度谱质心与五个频带/宽度/onset 密度/分段 RMS，并生成 `dark`、`narrow`、`sparse`、`low-heavy`、`quiet`、`loud`、`flat-sections`、`trimmed` 警告。此外还有符号结构读数（`docs/features/structure.md`）：每小节 attack/鼓击/音符数、逐轨音级熵与音程/重复、逐段密度、音区重叠，以及 `density-*` / `melody-*` / `register-collision` findings；它们从 score 时间线计算，不受 post 链影响。报告是 `RenderOutput.report`，`p8_music` 把它附在工具结果里；`p8_analyze` 对已有 WAV 复用同一套测量（`decodeWav` 只接受 16-bit PCM）。
 - master 链：`post` 新增 `tilt`、`saturate`、`compress`、`loudness`、`limiter`；`loudness` 与报告共用同一个 BS.1770 实现，所以「命中 -14 LUFS」可以被报告直接验证。`limitPeak` 保留为最后的安全网，limiter 才是 mix 的一部分。
 - style：`chip`（干声）、`hitech`（饱和 + glue + -14 LUFS + limiter）、`ambient`（slow + lowpass + reverb + limiter）；`style` 只填 post 默认值，不改 `mode`，与显式 `preset` 互斥。
 - 验收：`target -14 LUFS + limiter -1` 的报告落在 -14 ±1、峰值 ≤ -0.9 dBFS；热目标 `-6 LUFS + limiter -3` 下解码后的每个样本都不超过 -3 dBFS；压缩把两段 gain 1 / 0.15 的能量差从 16.5 dB 压到 2.2 dB；低通 300 Hz 的单音触发 `dark`/`narrow`/`sparse`；鼓循环不误报 `dark`/`narrow`；两段等能量的 song 触发 `flat-sections`。
@@ -529,7 +529,7 @@ M5 把 P0-1 的鼓效果尾巴和 P0-2 的 `fill`/`energy` 作为一个包做，
 - 鼓：`~pitch` / `~decay` / `~tone` 与 `~ghost`/`~flam`/`~roll` 正交叠加，不再抢同一个后缀槽。
 - style：新增 `studio` 与 `lofi`，按 role（bass/lead/pad/keys/default）填非芯片音色；显式 `track.instrument` 优先。
 - 验证：显式 chip instrument 与旧 `waveform` 逐字节一致；additive/FM 与 chip 的渲染 hash 不同；`~pitch(12)` 抬高 kick 质心、`~decay(4)` 降低尾音 RMS；`studio`/`lofi` 不改变 loop 长度。
-- M6 当时仍不做采样/波表文件；M8 已补 `samples`/`drumSamples`，波表文件仍不做。任意 FM 算子矩阵、per-note pan 也仍不做。
+- M6 当时仍不做采样/波表文件；M8 已补 `samples`/`drumSamples`，之后又补了区域/反向/循环点/分键分层；独立波表文件仍不做（短素材 + loop 即可），自动瞬态切片也不做。任意 FM 算子矩阵与反馈、per-note pan 仍不做；固定路由的 1-3 个调制器已经支持。
 - M7：`additive.partials` 的元素可以是负振幅或 `[振幅, 相位度数]`，相位折进波表，归一化改成按实测峰值且锚定 0.25（与 chip/FM 一致）。于是「设计波形」成了分数内的事：25% 占空比脉冲（带偶次谐波）、相位阶梯、反向锯齿都能写出来，换相位只扭形状不改电平。旧 additive 分数相对电平会升约 2.6 dB，这是为了让三种 voice 可以互换而不跳音。
 - 验证：负振幅与 `[振幅, 180]` 渲染逐字节相同；相位转 90° 后 WAV 改变而峰值变化 ≤ 0.5 dB；方波与同电平 25% 脉冲的质心不同。
 - 示例：`examples/m6-instruments.json`、`examples/m7-wave-shapes.json`。
@@ -557,7 +557,7 @@ M7 让模型用振幅 + 相位设计周期波形，但 additive 仍然只有「�
 
 验证：`stretch` 把能量从 `2·f0` 移到 `2·f0·√(1+3·stretch)`，基频幅度保持；`tilt` 降低第 4 谐波与基频的幅度比；逐谐波衰减让高次谐波在音尾消失而基频仍在；显式写 `stretch: 0` / 衰减 0 与省略字段逐字节相同；旧静态 additive 的 InstrumentVoice 输出与改动前逐样本一致。示例：`examples/m9-additive-textures.json`。
 
-仍不做：公式/表达式音源、任意 FM 算子矩阵、波表文件、per-note pan。
+仍不做：公式/表达式音源、任意 FM 算子矩阵与反馈、独立波表文件、自动切片、per-note pan。
 
 ## 8. 一句话总结
 

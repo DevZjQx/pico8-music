@@ -20,6 +20,7 @@ interface Definition {
   description?: string;
   parameters?: any;
   output?: any;
+  isConcurrencySafe?: (args: any) => boolean;
   execute?: (...args: any[]) => Promise<unknown>;
 }
 
@@ -88,6 +89,8 @@ test('registers p8_music and p8_help as DSH tools', () => {
   assert.ok(music?.parameters?.properties?.score);
   assert.ok(music?.parameters?.properties?.scoreFile);
   assert.ok(music?.parameters?.properties?.post);
+  assert.ok(music?.parameters?.properties?.post?.items?.properties?.order);
+  assert.ok(music?.parameters?.properties?.post?.items?.properties?.gainDb);
   assert.ok(music?.parameters?.properties?.toneHz);
   assert.ok(music?.parameters?.properties?.style);
   assert.ok(music?.parameters?.properties?.quality);
@@ -98,7 +101,27 @@ test('registers p8_music and p8_help as DSH tools', () => {
   const analyze = captured.tools.get('p8_analyze');
   assert.deepEqual(analyze?.parameters?.required, ['path']);
   assert.ok(analyze?.parameters?.properties?.target);
+  assert.ok(analyze?.parameters?.properties?.sections);
+  assert.ok(analyze?.parameters?.properties?.contentSeconds);
+  assert.ok(analyze?.parameters?.properties?.assert);
+  assert.ok(music?.parameters?.properties?.assert);
   assert.match(analyze?.description ?? '', /LUFS/);
+
+  const exportTool = captured.tools.get('p8_export');
+  assert.ok(exportTool?.parameters?.properties?.score);
+  assert.ok(exportTool?.parameters?.properties?.scoreFile);
+  assert.ok(exportTool?.parameters?.properties?.out);
+  assert.match(exportTool?.description ?? '', /MusicXML/);
+  assert.equal(exportTool?.isConcurrencySafe?.({}), false);
+
+  const probe = captured.tools.get('p8_probe');
+  assert.equal(probe?.parameters?.properties?.score?.type, 'string');
+  assert.equal(probe?.parameters?.required, undefined);
+  assert.ok(probe?.parameters?.properties?.track);
+  assert.ok(probe?.parameters?.properties?.note);
+  assert.ok(probe?.parameters?.properties?.bypassFilter);
+  assert.ok(probe?.parameters?.properties?.sensitivity);
+  assert.match(probe?.description ?? '', /odd\/even/);
 
   const help = captured.tools.get('p8_help');
   assert.deepEqual(help?.parameters?.properties, {});
@@ -167,7 +190,7 @@ test('a host without a command surface still gets the tools', () => {
       },
     },
   });
-  assert.deepEqual([...captured.tools.keys()], ['p8_help', 'p8_music', 'p8_analyze']);
+  assert.deepEqual([...captured.tools.keys()], ['p8_help', 'p8_music', 'p8_export', 'p8_probe', 'p8_analyze']);
 });
 
 test('a bad score points the model at p8_help', async () => {
@@ -292,7 +315,7 @@ test('rejects unknown presets and malformed scores', async () => {
   await assert.rejects(() => executeRender({ score: '{}' }), /tracks/);
   await assert.rejects(
     () => executeRender({ score, post: [{ type: 'flanger' }] as never }),
-    /must be tape, slow, lowpass, highpass, reverb/,
+    /must be tape, slow, lowpass, highpass, highShelf, reverb/,
   );
 });
 

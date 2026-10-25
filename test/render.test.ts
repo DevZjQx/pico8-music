@@ -469,7 +469,7 @@ test('post: [] renders dry and the post chain is validated', () => {
 
   assert.throws(
     () => renderLoop(score, { post: [{ type: 'flanger' }] as never }),
-    /must be tape, slow, lowpass, highpass, reverb, tilt/,
+    /must be tape, slow, lowpass, highpass, highShelf, reverb, tilt/,
   );
   assert.throws(() => renderLoop(score, { post: 'dry' as never }), /post must be an array/);
 });
@@ -1115,6 +1115,7 @@ test('renders the M11 velocity-to-timbre example', async () => {
   assert.deepEqual(example.tracks[0]?.instrument?.velocity, {
     cutoffOctaves: 2.5,
     drive: 0.25,
+    indexScale: 0,
   });
 
   const output = renderLoop(example, { post: [], minutes: 0.05 });

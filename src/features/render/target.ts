@@ -25,8 +25,14 @@ export interface TargetProfile {
   readonly harshMax?: number;
   /** Minimum peak-minus-RMS crest, dB. */
   readonly crestMin?: number;
+  /** Maximum 4x-oversampled true peak, dBTP. */
+  readonly truePeakMax?: number;
   /** Minimum side/mid RMS ratio. */
   readonly width?: readonly [number, number];
+  /** Allowed L/R waveform correlation, -1..1. */
+  readonly correlation?: readonly [number, number];
+  /** Maximum absolute L/R RMS difference, dB. */
+  readonly balanceMax?: number;
   /** Integrated loudness range, LUFS. */
   readonly lufs?: readonly [number, number];
   /** Spectrum centroid range, Hz. */
@@ -45,7 +51,10 @@ const TARGET_FIELDS = new Set([
   'lowMidMax',
   'harshMax',
   'crestMin',
+  'truePeakMax',
   'width',
+  'correlation',
+  'balanceMax',
   'lufs',
   'centroidHz',
 ]);
@@ -92,6 +101,19 @@ function range(value: unknown, path: string): readonly [number, number] {
   return [min, max];
 }
 
+function rangeIn(
+  value: unknown,
+  path: string,
+  lower: number,
+  upper: number,
+): readonly [number, number] {
+  const pair = range(value, path);
+  if (pair[0] < lower || pair[1] > upper) {
+    throw new Error(`${path} must stay inside ${lower}..${upper}`);
+  }
+  return pair;
+}
+
 /**
  * Resolves a profile name or an inline object. Unknown fields are rejected so a
  * typo cannot silently produce a target that never checks anything.
@@ -127,7 +149,20 @@ export function resolveTarget(input: TargetInput | undefined): ResolvedTarget | 
     ...(record.crestMin === undefined
       ? {}
       : { crestMin: finite(record.crestMin, 'target.crestMin') }),
+    ...(record.truePeakMax === undefined
+      ? {}
+      : { truePeakMax: finite(record.truePeakMax, 'target.truePeakMax') }),
     ...(record.width === undefined ? {} : { width: range(record.width, 'target.width') }),
+    ...(record.correlation === undefined
+      ? {}
+      : { correlation: rangeIn(record.correlation, 'target.correlation', -1, 1) }),
+    ...(record.balanceMax === undefined
+      ? {}
+      : (() => {
+          const value = finite(record.balanceMax, 'target.balanceMax');
+          if (value < 0) throw new Error('target.balanceMax must be >= 0');
+          return { balanceMax: value };
+        })()),
     ...(record.lufs === undefined ? {} : { lufs: range(record.lufs, 'target.lufs') }),
     ...(record.centroidHz === undefined
       ? {}
@@ -135,7 +170,7 @@ export function resolveTarget(input: TargetInput | undefined): ResolvedTarget | 
   };
 
   if (Object.keys(profile).length === 0) {
-    throw new Error('target must constrain at least one of lowMidMax, harshMax, crestMin, width, lufs, centroidHz');
+    throw new Error('target must constrain at least one of lowMidMax, harshMax, crestMin, truePeakMax, width, correlation, balanceMax, lufs, centroidHz');
   }
   return { name: 'custom', profile };
 }

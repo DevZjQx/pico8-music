@@ -14,7 +14,8 @@ export const SCORE_BRIEF =
 export const SCORE_HELP = `PICO-8 score reference
 
 Pass \`score\` as a JSON string, not a nested object, or pass \`scoreFile\` with a workspace-relative path to a JSON score file (.json is appended when omitted). Provide exactly one of them; a scoreFile is read on every render, so editing the file changes the next output.
-The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes and out are p8_music arguments passed next to score/scoreFile; putting any of them inside the score JSON is an error.
+The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes and out are p8_music arguments passed next to score/scoreFile; p8_export also reads score/scoreFile and takes out.
+track, note, volume, seconds, style, bypassFilter, sensitivity and detail are p8_probe arguments. Putting any tool argument inside the score JSON is an error.
 
 Scope: this is the wire format — fields, tokens, ranges, defaults and what fails. The pico8-songwriter skill owns how to compose: form, track layout, arrangement, mix decisions, the revise loop. Read this reference before writing a field the skill does not name; it is authoritative on every range.
 
@@ -64,6 +65,7 @@ Song mode adds patterns and an arrangement:
 | seed | integer 0-2147483647; varies noise timbres, drum transients, humanize and section risers | 0 |
 | humanize | {timingMs 0-150, velocity 0-1}: deterministic timing and gain variation; 0 is neutral | 0 and 0 |
 | tuning | {a4, temperament, cents}; see Tuning | A4=440 equal |
+| key | declared tonic for the harmonic reading: a letter, an optional # or b, and an optional maj/major/min/minor, e.g. "C", "Am", "F# minor", "Bbm" | none; no key means no in-key share |
 | tail | 0-30 seconds after the last step so reverb and one-shots ring out; song mode only | 0 |
 | inheritSections | boolean; when true, a section that omits bpm, patterns, mute, gain, gains, filter, energy, space, width, or tracks inherits the previous section | false |
 | tracks | 1-32, one independent bus each; see Render budgets | required |
@@ -195,11 +197,12 @@ The top-level instruments table maps a name to a voice; a track uses it as "inst
 | --- | --- | --- |
 | chip | waveform | the eight PICO-8 waveforms |
 | additive | partials 1-16, harmonic 1 first | band-limited harmonic sum, peak-normalised |
-| fm | ratio 0.25-8, index 0-12, indexDecay 0.01-4 s | two-operator phase modulation |
+| fm | classic: ratio 0.25-8, index 0-12, indexDecay 0.01-4 s; or operators: 1-3 x {ratio, index, indexDecay, target} | phase modulation; operators is a fixed routing tree (target 0 = carrier, target < own index), and one operator matches the classic voice exactly |
 | sample | sample: "name" | plays an entry from the score's samples table |
 
-chip/additive/fm share unison 1-4, detune 0-50 cents, drive 0-1, filter {cutoffHz 80-18000, resonance 0.05-20, envAmount 0-6 octaves, attack, decay, sustain, release}, and optional velocity {cutoffOctaves 0-6, drive 0-1}.
-- velocity: @volume then also opens the instrument filter by cutoffOctaves and adds soft-clip drive, so accents get brighter; cutoffOctaves needs a filter; absent or all zeros is neutral; sample voices reject velocity.
+chip/additive/fm share unison 1-4, detune 0-50 cents, drive 0-1, filter {cutoffHz 80-18000, resonance 0.05-20, envAmount 0-6 octaves, attack, decay, sustain, release}, and optional velocity {cutoffOctaves 0-6, drive 0-1, indexScale 0-1}.
+- velocity: @volume then also opens the instrument filter by cutoffOctaves and adds soft-clip drive, so accents get brighter; cutoffOctaves needs a filter; indexScale is FM-only and lowers the index as velocity falls. Absent or all zeros is neutral; sample voices reject velocity.
+- operators replaces ratio/index/indexDecay when present. Each operator has exactly one target, so a chain (target 1) or parallel pair (two operators targeting 0) is expressible; feedback and arbitrary matrices are not.
 - additive partial element: an amplitude 0-1, a negative amplitude for the mirrored wave (same as [magnitude,180]), [amplitude, phaseDegrees], or [amplitude, phaseDegrees, decaySeconds 0-8]: \`{"type":"additive","partials":[1,-0.5,[0.25,90,1.5]]}\` designs a shape.
 - stretch 0-1 runs harmonic n at n*f0*sqrt(1+stretch*(n^2-1)): the fundamental stays in tune and highs sharpen for bells. tilt 0-4 scales harmonic n by n^-tilt, so higher is darker.
 - a third partial item is its decay time constant in seconds (0 keeps it static). Static partials use the fast band-limited table; stretch or any nonzero decay renders each partial per sample, still band-limited and peak-normalised.
@@ -214,12 +217,19 @@ Samples are files, not inline data: put a 16-bit PCM WAV in the workspace and re
 | root | note the file plays at its native speed, read as A4=440 | C4 |
 | loop | repeat for the whole gate instead of stopping at the file end | false |
 | gain | linear gain 0-4 | 1 |
+| start / end | seconds; play only this region, end exclusive | 0 / file end |
+| reverse | play the selected region backwards | false |
+| loopStart / loopEnd | seconds inside the region; needs loop true; playback enters from the region head and jumps back at loopEnd | region bounds |
+| zones | [{sample, lo, hi, velLo, velHi}] key/velocity layers; references plain file entries; replaces file | none |
 
 - \`{"hit":"assets/hit.wav"}\` is shorthand for \`{"file":"assets/hit.wav"}\`; stereo is averaged to mono before pan, send and filter.
 - the app reads every declared sample before rendering, including unused ones, and caches decoded PCM until the file's size or mtime changes. A bad path fails before the render, not at the first note.
-- a sample instrument starts at the file head for every note, plays at native speed when the note equals root, and stops at the file end unless loop is true; the score's tuning still retunes playback speed.
+- a sample instrument starts at the selected region's head for every note, plays at native speed when the note equals root, and stops at the region end unless loop is true; the score's tuning still retunes playback speed.
+- slicing is one file with several named regions: two entries can share the same .wav and differ only in start/end, and the decode cache still holds one copy. There is no automatic transient slicing and no separate wavetable type; a short looped region is the wavetable.
+- zones picks the key range nearest the note, then the velocity layer nearest the hit; outside every range it falls back to the nearest zone rather than going silent. The same selection runs for drumSamples, so ~ghost/~flam/~roll velocity changes can switch layers.
+- a nonzero start or reverse adds a 2 ms fade-in; an unedited source keeps the historical render sample for sample.
 - ~slide, ~vibrato, ~arpfast and ~arpslow change playback speed; ~fadein, ~fadeout, the track envelope and a named envelope still shape gain. ~decay and per-note filter fields are not available on sample instruments.
-- drums: ~pitch retunes and ~tone low-passes the sample; ~decay (including ~ghost's decay shortening) has no sample equivalent and is ignored, while ~ghost's velocity and tone reduction still applies. A drum replacement never loops, so a looping sample used as a kick still decays.
+- drums: ~pitch retunes and ~tone low-passes the sample; ~decay (including ~ghost's decay shortening) multiplies an exponential amplitude envelope onto the one-shot, while ~ghost's velocity and tone reduction still applies. A drum replacement never loops, so a looping sample used as a kick still decays.
 {"samples":{"hit":"assets/hit.wav","vox":{"file":"assets/vox.wav","root":"A3","loop":true}},"instruments":{"choir":{"type":"sample","sample":"vox"}},"drumSamples":{"kick":"hit"},"tracks":[{"instrument":"choir","pattern":"A3:8"},{"role":"drums","pattern":"K:1 -:1 S:1 -:1"}]}
 
 ## Drums
@@ -290,8 +300,9 @@ post: [] skips the post chain (track send still applies; also set send: 0 for a 
 | Step | Parameters | Notes |
 | --- | --- | --- |
 | tape / slow | speed 0.5-1.5 | speed sets the whole tape/slow chain's total speed |
-| lowpass | cutoffHz 100-22050 | |
+| lowpass | cutoffHz 100-22050, order 1/2/4 | order 1 is the default 6 dB/oct one-pole; 2/4 are 12/24 dB/oct Butterworth |
 | highpass | highpassHz 20-500 | 12 dB/oct master high-pass; use 30-40 Hz for laptop/phone translation, higher if the mix rumbles |
+| highShelf | hz 20-20000 (default 3000), gainDb -24..24 | master high shelf; 0 dB is a no-op; use -3..-6 dB around 2500-3500 Hz to tame 2-5 kHz presence |
 | reverb | wet 0-1, room 0-0.98, damp 0-1, predelayMs 0-200, lowCutHz 20-1000, highCutHz 1000-20000, modDepth 0-1, modRateHz 0.05-5 | wet is a dry/wet mix ratio, not a wet gain; the wet path sits about 5 dB under the dry, so 0.3 is a light reverb. predelay and modulation delay only the send; the wet filters remove low cloud and metallic highs |
 | tilt | tiltDb -12..12 | |
 | saturate | drive 0-1, mix 0-1 | |
@@ -326,15 +337,59 @@ Example: \`[{"type":"tape","speed":0.8},{"type":"reverb","wet":0.4},{"type":"lou
 | out | workspace-relative path ending in .wav | pico8-music.wav |
 | detail | summary or raw; raw writes a sibling .analysis.json and returns its path | summary |
 
+### MusicXML export (p8_export arguments, outside the score JSON)
+\`p8_export\` writes the same score as uncompressed MusicXML 4.0 partwise XML: one part per track, one measure grid per bar, chords as <chord/>, notes that cross a bar line as tied notes, rests for silent slots, section rehearsal names and tempo changes, and drum tracks as percussion with GM drum instruments.
+It never renders audio, so post/preset/style/minutes do not apply. The written pitch uses sharps unless the declared key is flat; score tuning is kept as a fractional <alter> (for example A4=442 becomes +0.0785 semitones), so microtonal scores are not silently forced to 12-TET.
+The exported file is plain XML (.musicxml), never the zipped .mxl container.
+
+| Argument | Values | Default |
+| --- | --- | --- |
+| score / scoreFile | exactly one; same input contract as p8_music | required |
+| out | workspace-relative path ending in .musicxml | pico8-music.musicxml |
+
+### Timbre probe (p8_probe arguments, outside the score JSON)
+\`p8_probe\` renders one melodic track as one fixed note, dry: no post chain, no track EQ/filter/delay/duck/send, and no WAV. Use it after a render when you need to change an envelope, filter, additive shape, or FM index. Pass the same \`style\` you rendered with when the track relies on role instruments; an explicit \`track.instrument\` still wins, and \`quality\` defaults to the style's choice.
+
+| Argument | Values | Default |
+| --- | --- | --- |
+| score / scoreFile | exactly one; same input contract as p8_music | required |
+| track | melodic track name; drum tracks are rejected | first non-drum track |
+| note | note name C1-C8, e.g. A4, C3, F#2 | A4 |
+| volume | fixed velocity 0-7 | 5 |
+| seconds | gate length 0.25-4 s | 1.5 |
+| quality | pico or clean | pico or the style default |
+| style | chip, hitech, ambient, studio, lofi, soft; role instrument defaults, matching p8_music | none |
+| bypassFilter | true removes the instrument filter so the source is measured alone | false |
+| sensitivity | true renders a few parameter variants and reports measured deltas | true |
+| detail | summary or raw; raw writes a .json artifact | summary |
+| out | workspace-relative .json path for detail: raw | p8-probe.json |
+
+The probe reports spectral slope (one-third-octave regression, dB/oct), centroid, 85% rolloff, high/air share, attack (10%-90% rise) and decay (peak to -20 dB), high-band decay (2-8 kHz time constant and dB/s), and the early-to-late centroid.
+
+For periodic chip/additive sources it also reports upper odd/even harmonic energy (n >= 2; the fundamental is excluded) and harmonic share. Additive \`stretch\`, chip noise/phaser, FM, and samples do not have a stable harmonic series, so upper odd/even is omitted there; FM instead gets carrier share, significant sideband count, highest sideband, and a Carson/Nyquist alias estimate. \n\nEvery probe also echoes the authored envelope and the instrument filter state.
+
+Use the measured sensitivity line to choose a knob: it renders the same note with one changed parameter and reports the metric delta. Parameters include \`envelope.attack\`, \`additive.tilt\`, \`fm.index\`, \`fm.indexDecay\`, \`fm.operators[n].index\`, and \`filter.cutoffHz\`.
+A metric without a delta is not actionable; the probe deliberately measures the source instead of adding four global numbers to the mix report.
+
 Every render returns a report: peak, RMS, LUFS, LRA, spectrum, width, onsets, warnings, stems, and findings. LRA is the EBU Tech 3342 loudness range: 0 on a steady loop, 8-15 when an arrangement drops down and comes back. It ignores silence, so read it next to the per-section levels.
 
 Width is side/mid RMS (0 mono, 1 hard-panned); it can exceed 1 when the reverb is mostly wet, meaning out-of-phase or comb stereo, not a wider image. A render with a post chain also adds dry (the same facts before the post chain) and a post-delta line.
 
-Song renders also report each section's level, width, spectral centroid, and onset density, so an energy/space arc is visible without a second measurement pass. flat-space warns when neither the width nor the centroid moves between sections; flat-sections warns when the level range is under 2 dB. They are separate axes on purpose: a drop can open up without getting much louder.
+Song renders also report each section's level, width, spectral centroid, low-mid and 2-5k shares, and onset density, so an energy/space arc is visible without a second measurement pass. flat-space warns when neither the width nor the centroid moves between sections; flat-sections warns when the level range is under 2 dB. They are separate axes: a drop can open up without getting much louder.
 
 The spectrum also reports diagnostic low-mid (150-500 Hz) and 2-5k shares. Stems are per-track RMS, centroid, low-mid, and pan before pan/sum.
 
-Finding kinds: sub-heavy, mud, harsh, masking, alias-risk, dynamics, loudness-flat, post-mud, post-harsh, post-dynamics, target. Each has an optional attribution and a next suggestion; they are observations, not pass/fail gates.
+The report bars line is the symbolic side of the report: bar count, attacks per bar (a chord counts once; a drum ~roll or ~flam counts its real hits), melodic notes per bar, and the whole score's pitch-class entropy. The report density line gives each section's attacks/drum hits/notes per bar and its quietest-busiest bar range.
+The report structure line lists up to four melodic tracks as n notes, pc pitch classes, e pitch-class entropy in bits, s stepwise share (1-2 semitones), l leap share (5 or more), and r the share of bars that restate an earlier bar. The report register line names track pairs whose sounding ranges overlap by at least an octave inside a section.
+The report harmony line reads the bottom of the texture: one bass note per bar (the lowest sounding pitch class, so an arpeggio reads as its bottom note and a sustaining note still counts), bass changes per bar, the share of bass moves by a fourth or a fifth and by a step, and each section's bass order.
+It is not a chord analysis: no quality, inversion, or function is claimed.
+With a key it also states the share of melodic notes inside that key's diatonic major or natural minor scale, and the accidentals used.
+Without a key there is no in-key share: the key is a declaration, and an inferred tonic would be reported as a fact.
+These are score facts, so the post chain cannot change them; the full per-bar grid is in the detail: "raw" artifact.
+
+Finding kinds: sub-heavy, mud, harsh, masking, alias-risk, dynamics, loudness-flat, post-mud, post-harsh, post-dynamics, density-spike, density-flat, melody-static, melody-leapy, register-collision, key-mismatch, harmony-static, target. Each has an optional attribution and a next suggestion; they are observations, not pass/fail gates.
+density-spike is one bar with far more attacks than its section; density-flat is a long section that repeats one attack count; melody-static is a whole arrangement held to two or three pitch classes; melody-leapy is a non-bass single line that never moves by step (a chord part is skipped, because its per-voice intervals are root motion).
+register-collision is two tracks sharing two or more octaves in a section; key-mismatch is a declared key that most notes contradict; harmony-static is a section of eight or more bars that never moves its bass.
 
 loudness-flat means a song sits on one level (LRA under 4 LU, sections within 6 dB) and is louder than -16 LUFS. A target adds a report target line with passed/range checks and one target finding per missed dimension.
 
@@ -345,11 +400,12 @@ Both tools accept detail: "raw". p8_music writes the full render report (includi
 ## Rules that fail or warn
 | Mistake | Result |
 | --- | --- |
-| post, preset, style, quality, width, monoBelowHz, target, speed, wet, toneHz, minutes or out inside the score JSON | unknown-field error; pass them next to score |
+| post, preset, style, quality, width, monoBelowHz, target, speed, wet, toneHz, minutes, out, p8_probe arguments (track, note, volume, seconds, style, bypassFilter, sensitivity), or p8_export out inside the score JSON | unknown-field error; pass them next to score |
 | pan, send, duck, filter, highpassHz, lowShelf, highShelf or delay nested under "mix" | unknown-field error; they are flat track fields |
 | mode "song" without an arrangement, or an arrangement without song mode | error |
 | tail in loop mode | error; a loop must repeat seamlessly |
 | a note or chord voice outside C1-C8 | error |
+| a key that is not a tonic, e.g. "H", "Am7", "A dorian" | error; write the tonic and an optional maj/min |
 | a pitched effect or drum suffix on a rest | error |
 | a pitched effect on a drum track, or a drum suffix on a melodic track | error |
 | a chord on a drum track | error; use one hit per step |

@@ -166,6 +166,15 @@ interface UnisonVoice {
   readonly partialGains?: Float32Array;
 }
 
+/** One modulator with its decay already resolved to the score's naming. */
+interface ResolvedFmOperator {
+  readonly ratio: number;
+  readonly index: number;
+  readonly indexDecay: number;
+  /** 0 is the carrier; modulators only ever target lower indices. */
+  readonly target: number;
+}
+
 /**
  * One scheduled note's oscillator stack. Phase and filter state are per note,
  * so overlapping chord voices and legato gates never share state.
@@ -186,6 +195,14 @@ export class InstrumentVoice {
   private readonly cutoffScale: number;
   /** Effective post-filter drive after the velocity offset. */
   private readonly drive: number;
+  /** Multi-operator routing; absent keeps the classic two-operator formula. */
+  private readonly fmOperators?: readonly ResolvedFmOperator[];
+  /** Modulation accumulators indexed by operator, 0 = carrier. */
+  private readonly fmScratch?: Float64Array;
+  /** How far the FM index falls at zero velocity, 0..1. */
+  private readonly indexScale: number;
+  /** Normalised velocity, kept for the FM index mapping. */
+  private readonly normalizedVelocity: number;
 
   /**
    * `frequency` is the note's already-tuned pitch. The additive table uses it
@@ -209,12 +226,24 @@ export class InstrumentVoice {
     this.quality = quality;
     const mapping = instrument.velocity;
     const normalizedVelocity = clamp(velocity, 0, 1);
+    this.normalizedVelocity = normalizedVelocity;
+    this.indexScale = mapping?.indexScale ?? 0;
     this.cutoffScale =
       mapping === undefined ? 1 : 2 ** (mapping.cutoffOctaves * normalizedVelocity);
     this.drive =
       mapping === undefined
         ? instrument.drive
         : clamp(instrument.drive + mapping.drive * normalizedVelocity, 0, 1);
+
+    if (instrument.type === 'fm' && instrument.operators !== undefined) {
+      this.fmOperators = instrument.operators.map((operator) => ({
+        ratio: operator.ratio,
+        index: operator.index,
+        indexDecay: operator.indexDecay,
+        target: operator.target,
+      }));
+      this.fmScratch = new Float64Array(this.fmOperators.length + 1);
+    }
 
     let table: Float32Array | undefined;
     let dynamic: readonly ResolvedPartial[] | undefined;
@@ -353,9 +382,35 @@ export class InstrumentVoice {
         return first + (second - first) * fraction;
       }
       case 'fm': {
+        // 1 is exactly identity, so the historical voice stays sample-identical
+        // when the score has no `velocity.indexScale`.
+        const indexVelocityScale = 1 - this.indexScale * (1 - this.normalizedVelocity);
+        const operators = this.fmOperators;
+        if (operators !== undefined) {
+          const scratch = this.fmScratch;
+          if (scratch === undefined) return 0;
+          scratch.fill(0);
+          // Descending order guarantees every target operator is already
+          // accumulated before the operator that modulates it is evaluated.
+          for (let opIndex = operators.length; opIndex >= 1; opIndex -= 1) {
+            const operator = operators[opIndex - 1];
+            if (operator === undefined) continue;
+            let index =
+              operator.index * Math.exp(-seconds / operator.indexDecay) * indexVelocityScale;
+            if (this.quality === 'clean') {
+              const modulationHz = Math.max(1, advance * this.rate * operator.ratio);
+              index = Math.min(index, Math.max(0, 0.45 * this.rate / (2 * modulationHz) - 1));
+            }
+            scratch[operator.target] =
+              (scratch[operator.target] ?? 0) +
+              Math.sin(TAU * operator.ratio * phase + (scratch[opIndex] ?? 0)) * index;
+          }
+          return Math.sin(TAU * phase + (scratch[0] ?? 0)) * FM_PEAK;
+        }
+
         const ratio = this.instrument.ratio ?? 2;
         const decay = this.instrument.indexDecay ?? 0.3;
-        let index = (this.instrument.index ?? 3) * Math.exp(-seconds / decay);
+        let index = (this.instrument.index ?? 3) * Math.exp(-seconds / decay) * indexVelocityScale;
         if (this.quality === 'clean') {
           // Carson's rule: the highest significant sideband sits near
           // f0*ratio*(index+1). Cap the index so it stays under Nyquist

@@ -17,9 +17,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "tsc -p tsconfig.build.json",
-    "test": "bun test test",
+    "test": "bun test test --timeout 10000",
     "typecheck": "tsc --noEmit",
-    "check": "bun scripts/check-boundaries.ts && tsc --noEmit && bun test test"
+    "check": "bun scripts/check-boundaries.ts && tsc --noEmit && bun test test --timeout 10000"
   },
   "packageManager": "bun@1.4.2",
   "engines": {

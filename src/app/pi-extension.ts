@@ -1,7 +1,22 @@
 import type { ExtensionAPI, ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { SCORE_BRIEF, SCORE_HELP } from '../features/score/feature.ts';
-import { executeAnalyze, executeRender, type AnalyzeArgs, type RenderArgs } from './render-service.ts';
-import { analyzeParameters, helpParameters, musicParameters } from './tool-schemas.ts';
+import {
+  executeAnalyze,
+  executeExport,
+  executeProbe,
+  executeRender,
+  type AnalyzeArgs,
+  type ExportArgs,
+  type ProbeArgs,
+  type RenderArgs,
+} from './render-service.ts';
+import {
+  analyzeParameters,
+  exportParameters,
+  helpParameters,
+  musicParameters,
+  probeParameters,
+} from './tool-schemas.ts';
 
 // Only the surface this extension uses. Picking the real SDK signatures keeps the
 // compile-time check below meaningful without requiring the full host in tests.
@@ -48,9 +63,10 @@ export default function pico8Music(pi: PiApi): void {
       'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. The pico8-songwriter skill covers composing; p8_help covers every field and range.',
     promptSnippet: 'Render a PICO-8-style loop or song to a WAV file',
     promptGuidelines: [
-      'Follow the pico8-songwriter skill before composing; p8_help has the field ranges.',
+      'Follow the pico8-songwriter skill; p8_help has field ranges.',
       'Use post: [] for dry output.',
-      'Read findings and post-delta to attribute mud/harshness; target adds deviations, not a score.',
+      'Read findings/post-delta; target reports deviations; assert fails declared ranges.',
+      'Use p8_probe to tune source timbre.',
       'Revise dark, narrow, sparse, or low-mid-heavy mixes.',
     ],
     parameters: musicParameters,
@@ -74,10 +90,36 @@ export default function pico8Music(pi: PiApi): void {
   });
 
   pi.registerTool({
+    name: 'p8_export',
+    label: 'PICO-8 score exporter',
+    description:
+      'Export a score as uncompressed MusicXML 4.0 (.musicxml): one part per track, section tempo changes, chords, ties, rests, and drum percussion. p8_help covers every score field.',
+    promptSnippet: 'Export a score as uncompressed MusicXML',
+    parameters: exportParameters,
+    // Two exports writing the same `out` path must not overlap.
+    executionMode: 'sequential',
+    async execute(
+      _toolCallId: string,
+      args: ExportArgs,
+      signal?: AbortSignal,
+      _onUpdate?: unknown,
+      ctx?: PiToolContext,
+    ): Promise<PiToolResult> {
+      try {
+        const text = await executeExport(args, { signal, cwd: ctx?.cwd });
+        return { content: [{ type: 'text', text }], details: { text } };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message} (call p8_help for the wire format)`);
+      }
+    },
+  });
+
+  pi.registerTool({
     name: 'p8_analyze',
     label: 'PICO-8 render report',
     description:
-      'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, findings, and warnings. Optional target ranges turn misses into deviations without a score. detail:raw writes the full analysis to a sibling .analysis.json.',
+      'Measure an existing 16-bit PCM WAV: sample and true peak, RMS, LUFS/LRA, spectrum, width, L/R correlation and balance, onsets, findings, and warnings. Optional sections split the file; target ranges report deviations, assert ranges fail the call. detail:raw writes the full analysis to a sibling .analysis.json.',
     parameters: analyzeParameters,
     execute(
       _toolCallId: string,
@@ -90,6 +132,36 @@ export default function pico8Music(pi: PiApi): void {
         content: [{ type: 'text' as const, text }],
         details: { text },
       }));
+    },
+  });
+
+  pi.registerTool({
+    name: 'p8_probe',
+    label: 'PICO-8 timbre probe',
+    description:
+      'Measure one melodic track as a dry single note: spectral slope, centroid, 85% rolloff, odd/even harmonics, attack/decay, high-frequency decay, FM sidebands, and measured sensitivity to tilt/index/cutoff/attack. Use it to tune envelopes and FM; it renders no WAV and applies no post chain.',
+    promptSnippet: 'Measure a single instrument before tuning its timbre',
+    promptGuidelines: [
+      'Probe one track at a fixed note, velocity, and gate; the instrument filter is included unless bypassFilter is true.',
+      'Odd/even is only reported for periodic chip/additive sources; FM uses sidebands, and samples own their spectrum.',
+      'Use the measured sensitivity deltas to choose tilt, index, cutoff, or envelope.attack; the probe is not a score.',
+    ],
+    parameters: probeParameters,
+    executionMode: 'sequential',
+    async execute(
+      _toolCallId: string,
+      args: ProbeArgs,
+      signal?: AbortSignal,
+      _onUpdate?: unknown,
+      ctx?: PiToolContext,
+    ): Promise<PiToolResult> {
+      try {
+        const text = await executeProbe(args, { signal, cwd: ctx?.cwd });
+        return { content: [{ type: 'text', text }], details: { text } };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message} (call p8_help for the wire format)`);
+      }
     },
   });
 

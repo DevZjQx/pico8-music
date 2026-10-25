@@ -1,4 +1,4 @@
-import { secondsAtStep, stepSecondsAt } from '../score/feature.ts';
+import { secondsAtStep, stepSecondsAt, timelineOf } from '../score/feature.ts';
 import type {
   DrumName,
   Envelope,
@@ -23,7 +23,13 @@ import {
   panGains,
   sectionTrackSegments,
 } from './mix.ts';
-import { SampleVoice, renderSampleOneShot, type SampleSource } from './sample.ts';
+import {
+  SampleVoice,
+  renderSampleOneShot,
+  selectSampleSource,
+  type SampleBank,
+  type SampleSource,
+} from './sample.ts';
 import { createWaveState, sampleWaveformAt } from './waveform.ts';
 import type { Quality } from './types.ts';
 
@@ -89,27 +95,13 @@ function envelopeAt(envelope: Envelope, noteSeconds: number, noteDuration: numbe
 }
 
 /**
- * Expands the default pattern across the loop, or returns the arrangement's
- * absolute timeline in song mode. `steps` is the slot; `gateSteps` is the
- * sounding length and may be longer (legato) or shorter (staccato).
+ * The scheduling rule lives in `score` (it is symbolic, not audio), so the
+ * symbolic structure reading and the synth always agree on which events exist.
+ * The abort check stays here: expanding a long timeline is still render work.
  */
 function buildTimeline(score: Score, track: ScoreTrack, signal?: AbortSignal): readonly NoteEvent[] {
-  if (track.timeline) return track.timeline;
-  if (track.patternSteps <= 0) return [];
-
-  const events: NoteEvent[] = [];
-  for (let repeat = 0; repeat * track.patternSteps < score.totalSteps; repeat += 1) {
-    throwIfAborted(signal);
-    for (const event of track.events) {
-      const step = event.step + repeat * track.patternSteps;
-      if (step >= score.totalSteps) continue;
-      const steps = Math.min(event.steps, score.totalSteps - step);
-      if (steps <= 0) continue;
-      const gateSteps = Math.min(event.gateSteps ?? event.steps, score.totalSteps);
-      events.push({ ...event, step, steps, gateSteps });
-    }
-  }
-  return events;
+  throwIfAborted(signal);
+  return timelineOf(score, track);
 }
 
 /**
@@ -250,17 +242,24 @@ function renderMelodicNote(
   rate: number,
   loopSamples: number,
   wrap: boolean,
-  sampleBank: ReadonlyMap<string, SampleSource> | undefined,
+  sampleBank: SampleBank | undefined,
   quality: Quality,
   signal?: AbortSignal,
 ): void {
   const { track, event } = note;
   const wave = createWaveState(note.seed);
   const sampleName = note.instrument?.type === 'sample' ? note.instrument.sample : undefined;
-  const sampleSource = sampleName === undefined ? undefined : sampleBank?.get(sampleName);
-  if (sampleName !== undefined && sampleSource === undefined) {
+  const sampleEntry = sampleName === undefined ? undefined : sampleBank?.get(sampleName);
+  if (sampleName !== undefined && sampleEntry === undefined) {
     throw new Error(`sample ${JSON.stringify(sampleName)} is missing from the render bank`);
   }
+  const noteVelocity = Math.max(0, Math.min(1, (event.volume / 7) * note.humanizeGain));
+  // A zone set answers per note, so the same track can cross key or velocity
+  // boundaries; a plain source is returned unchanged.
+  const sampleSource =
+    sampleEntry === undefined
+      ? undefined
+      : selectSampleSource(sampleEntry, event.midi, noteVelocity);
   const sampleVoice =
     sampleSource === undefined ? undefined : new SampleVoice(sampleSource, rate);
   const voice =
@@ -272,7 +271,7 @@ function renderMelodicNote(
           rate,
           note.seed,
           event.frequency,
-          Math.max(0, Math.min(1, (event.volume / 7) * note.humanizeGain)),
+          noteVelocity,
           quality,
         );
   let phase = 0;
@@ -371,7 +370,7 @@ function buildDrumHits(
   rate: number,
   track: ScoreTrack,
   trackIndex: number,
-  sampleBank: ReadonlyMap<string, SampleSource> | undefined,
+  sampleBank: SampleBank | undefined,
   signal?: AbortSignal,
 ): readonly DrumHit[] {
   const hits: DrumHit[] = [];
@@ -379,8 +378,8 @@ function buildDrumHits(
     const drum = event.drum;
     if (!drum) return;
     const mappedSample = score.drumSamples.get(drum);
-    const sample = mappedSample === undefined ? undefined : sampleBank?.get(mappedSample);
-    if (mappedSample !== undefined && sample === undefined) {
+    const sampleEntry = mappedSample === undefined ? undefined : sampleBank?.get(mappedSample);
+    if (mappedSample !== undefined && sampleEntry === undefined) {
       throw new Error(`sample ${JSON.stringify(mappedSample)} for drum ${drum} is missing from the render bank`);
     }
     const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, event.step);
@@ -409,10 +408,17 @@ function buildDrumHits(
     }
 
     const pushHit = (offsetSeconds: number, hitVelocity: number, hitIndex: number): void => {
+      const level = Math.max(0, hitVelocity);
+      // Zone selection happens per hit so velocity layers also follow `~ghost`,
+      // `~flam`, and `~roll`, not just the authored volume.
+      const sample =
+        sampleEntry === undefined
+          ? undefined
+          : selectSampleSource(sampleEntry, event.midi, Math.min(1, level));
       hits.push({
         offset: Math.round((startSeconds + offsetSeconds) * rate) + timingSamples,
         drum,
-        velocity: Math.max(0, hitVelocity),
+        velocity: level,
         seed: seedFor(score, seedBase + hitIndex * 17),
         ...(decayScale === undefined ? {} : { decayScale }),
         ...(toneHz === undefined ? {} : { toneHz }),
@@ -472,6 +478,7 @@ function addDrumHits(
             hit.velocity,
             hit.pitchSemitones ?? 0,
             hit.toneHz,
+            hit.decayScale,
           );
     for (let i = 0; i < audio.length; i += 1) {
       let index = start + i;
@@ -551,7 +558,7 @@ function applySectionSend(samples: Float32Array, score: Score, rate: number): vo
 function collectKickOffsets(
   score: Score,
   rate: number,
-  sampleBank: ReadonlyMap<string, SampleSource> | undefined,
+  sampleBank: SampleBank | undefined,
   signal?: AbortSignal,
 ): readonly number[] {
   const offsets: number[] = [];
@@ -615,7 +622,7 @@ export function renderScore(
   rate: number,
   signal?: AbortSignal,
   roleInstruments?: RoleInstruments,
-  sampleBank?: ReadonlyMap<string, SampleSource>,
+  sampleBank?: SampleBank,
   quality: Quality = 'pico',
 ): SongAudio {
   const musicSamples = Math.max(1, Math.round(score.durationSeconds * rate));

@@ -1,12 +1,12 @@
 import type { Score } from '../score/feature.ts';
+import { analyseScore } from '../structure/feature.ts';
 import { throwIfAborted } from './abort.ts';
 import { analyseAudio, measureAudio, sectionReadings, type AnalysisFacts } from './analyze.ts';
-import { applyTrackEq } from './filters.ts';
+import { applyLowpass, applyTrackEq } from './filters.ts';
 import {
   copyWindow,
   dcBlock,
   limitPeak,
-  lowpass,
   repeat,
   resample,
   reverb,
@@ -26,7 +26,7 @@ import {
 import { PRESETS, isPresetName } from './presets.ts';
 import { STYLES, isStyleName } from './styles.ts';
 import { renderScore, type SongAudio } from './synth.ts';
-import type { PostStep, RenderOptions, RenderOutput, StyleName } from './types.ts';
+import type { LowpassOrder, PostStep, RenderOptions, RenderOutput, StyleName } from './types.ts';
 import { encodeWav } from './wav.ts';
 
 const RATE = 44100;
@@ -37,6 +37,9 @@ const MAX_OUTPUT_SAMPLES = MAX_OUTPUT_SECONDS * RATE;
 /** -1 dBFS: leaves the 16-bit conversion headroom so the WAV never hard-clips. */
 const PEAK_CEILING = 0.89;
 const DEFAULT_TONE_HZ = 9000;
+const DEFAULT_LOWPASS_ORDER: LowpassOrder = 1;
+const DEFAULT_HIGHSHELF_HZ = 3000;
+const DEFAULT_HIGHSHELF_GAIN_DB = 0;
 const DEFAULT_ROOM = 0.82;
 const DEFAULT_DAMP = 0.35;
 const DEFAULT_WET = 0.3;
@@ -84,6 +87,14 @@ function optionalNumberField(
   return numberField(value, path, min, min, max);
 }
 
+function lowpassOrderField(value: unknown, path: string): LowpassOrder {
+  if (value === undefined) return DEFAULT_LOWPASS_ORDER;
+  if (value !== 1 && value !== 2 && value !== 4) {
+    throw new Error(`${path}.order must be 1, 2, or 4, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 function normalisePostStep(value: unknown, index: number): PostStep {
   const path = `post[${index}]`;
   if (!isRecord(value)) {
@@ -102,6 +113,7 @@ function normalisePostStep(value: unknown, index: number): PostStep {
       return {
         type: 'lowpass',
         cutoffHz: numberField(cutoff, `${path}.cutoffHz`, DEFAULT_TONE_HZ, 100, RATE / 2),
+        order: lowpassOrderField(value.order, path),
       };
     }
     case 'highpass': {
@@ -111,6 +123,18 @@ function normalisePostStep(value: unknown, index: number): PostStep {
         highpassHz: numberField(cutoff, `${path}.highpassHz`, 35, 20, 500),
       };
     }
+    case 'highShelf':
+      return {
+        type: 'highShelf',
+        hz: numberField(value.hz, `${path}.hz`, DEFAULT_HIGHSHELF_HZ, 20, 20000),
+        gainDb: numberField(
+          value.gainDb,
+          `${path}.gainDb`,
+          DEFAULT_HIGHSHELF_GAIN_DB,
+          -24,
+          24,
+        ),
+      };
     case 'reverb': {
       const predelayMs = optionalNumberField(value.predelayMs, `${path}.predelayMs`, 0, 200);
       const lowCutHz = optionalNumberField(value.lowCutHz, `${path}.lowCutHz`, 20, 1000);
@@ -166,7 +190,7 @@ function normalisePostStep(value: unknown, index: number): PostStep {
       };
     default:
       throw new Error(
-        `${path}.type must be tape, slow, lowpass, highpass, reverb, tilt, saturate, compress, loudness, or limiter, got ${JSON.stringify(value.type)}`,
+        `${path}.type must be tape, slow, lowpass, highpass, highShelf, reverb, tilt, saturate, compress, loudness, or limiter, got ${JSON.stringify(value.type)}`,
       );
   }
 }
@@ -404,8 +428,9 @@ function applyPost(
       }
       case 'lowpass': {
         const cutoff = step.cutoffHz ?? step.toneHz ?? DEFAULT_TONE_HZ;
-        left = lowpass(left, cutoff, RATE);
-        right = lowpass(right, cutoff, RATE);
+        const order = step.order ?? DEFAULT_LOWPASS_ORDER;
+        applyLowpass(left, cutoff, order, RATE);
+        applyLowpass(right, cutoff, order, RATE);
         break;
       }
       case 'highpass': {
@@ -415,6 +440,15 @@ function applyPost(
         ensureDcBlock();
         applyTrackEq(left, { highpassHz: step.highpassHz ?? 35 }, RATE);
         applyTrackEq(right, { highpassHz: step.highpassHz ?? 35 }, RATE);
+        break;
+      }
+      case 'highShelf': {
+        const gainDb = step.gainDb ?? DEFAULT_HIGHSHELF_GAIN_DB;
+        if (gainDb === 0) break;
+        ensureDcBlock();
+        const eq = { highShelf: { hz: step.hz ?? DEFAULT_HIGHSHELF_HZ, gainDb } };
+        applyTrackEq(left, eq, RATE);
+        applyTrackEq(right, eq, RATE);
         break;
       }
       case 'reverb': {
@@ -671,8 +705,13 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
     sections,
     extraWarnings: [...score.warnings, ...trimmed],
     stems: song.stems,
+    // Symbolic facts about the score, computed once from the same timeline the
+    // synth played. They describe the arrangement, so they stay attached to the
+    // render report; a WAV alone cannot reconstruct them.
+    structure: analyseScore(score),
     ...(dry === undefined ? {} : { dry }),
     ...(options.target === undefined ? {} : { target: options.target }),
+    ...(options.assertions === undefined ? {} : { assertions: options.assertions }),
   });
 
   if (loopSamples > MAX_OUTPUT_SAMPLES) {

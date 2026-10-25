@@ -3,7 +3,13 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { executeAnalyze, executeRender } from '../src/app/render-service.ts';
-import { analyseAudio, formatReport, loudnessRange, renderLoop } from '../src/features/render/feature.ts';
+import {
+  analyseAudio,
+  formatReport,
+  loudnessRange,
+  renderLoop,
+  resolveAssertions,
+} from '../src/features/render/feature.ts';
 import { parseScore } from '../src/features/score/feature.ts';
 
 const RATE = 44100;
@@ -109,6 +115,28 @@ test('analysis findings work without stems or a dry snapshot', () => {
   assert.ok(!clean.findings.some((finding) => finding.kind === 'mud'));
   assert.ok(!clean.findings.some((finding) => finding.kind === 'harsh'));
   assert.ok(!clean.findings.some((finding) => finding.kind === 'alias-risk'));
+});
+
+test('section readings carry their own low-mid and 2-5k shares', () => {
+  const low = sine(200);
+  const high = sine(3000);
+  const left = new Float32Array(low.length + high.length);
+  left.set(low, 0);
+  left.set(high, low.length);
+
+  const analysis = analyseAudio(left, left, RATE, {
+    sectionBounds: [
+      { name: 'low', startSeconds: 0, durationSeconds: 1 },
+      { name: 'high', startSeconds: 1, durationSeconds: 1 },
+    ],
+  });
+  const [lowSection, highSection] = analysis.sections;
+  assert.ok(lowSection !== undefined && highSection !== undefined);
+  assert.equal(lowSection.name, 'low');
+  assert.ok(lowSection.lowMid > 0.9, `low-mid ${lowSection.lowMid}`);
+  assert.ok(lowSection.harsh < 0.1, `2-5k ${lowSection.harsh}`);
+  assert.ok(highSection.lowMid < 0.1, `low-mid ${highSection.lowMid}`);
+  assert.ok(highSection.harsh > 0.9, `2-5k ${highSection.harsh}`);
 });
 
 test('both tools write raw artifacts without clobbering each other', async () => {
@@ -237,6 +265,155 @@ test('an already-unsafe file is reported by analysis, not rejected', () => {
   const analysis = analyseAudio(hot, hot, RATE);
   assert.ok(analysis.lufs > -9, `LUFS ${analysis.lufs}`);
   assert.match(analysis.warnings.join(' | '), /unsafe: .*hearing-safety/);
+});
+
+
+
+test('true peak catches inter-sample peaks that sample peak misses', () => {
+  // At fs/4, samples land at 45/135/225/315 degrees, so the waveform's crest is
+  // between samples. The 0.8-amplitude sine should read -1.94 dBTP while the
+  // sample peak is about 3 dB lower.
+  const signal = Float32Array.from(
+    { length: RATE },
+    (_, i) => 0.8 * Math.sin((2 * Math.PI * (RATE / 4) * i) / RATE + Math.PI / 4),
+  );
+  const analysis = analyseAudio(signal, signal, RATE);
+  assert.ok(analysis.peakDb < -4.5, `sample peak ${analysis.peakDb}`);
+  assert.ok(
+    analysis.truePeakDb > analysis.peakDb + 1.5,
+    `true peak ${analysis.truePeakDb} vs sample peak ${analysis.peakDb}`,
+  );
+  assert.ok(
+    Math.abs(analysis.truePeakDb - 20 * Math.log10(0.8)) < 0.3,
+    `true peak ${analysis.truePeakDb}`,
+  );
+});
+
+test('correlation and channel balance make anti-phase and lopsided mixes visible', () => {
+  const left = sine(440);
+  const quieterRight = Float32Array.from(left, (value) => value * 0.5);
+  const lopsided = analyseAudio(left, quieterRight, RATE);
+  assert.ok(Math.abs(lopsided.correlation - 1) < 0.01, `correlation ${lopsided.correlation}`);
+  assert.ok(Math.abs(lopsided.balanceDb - 6.02) < 0.1, `balance ${lopsided.balanceDb}`);
+  assert.match(lopsided.warnings.join(' | '), /imbalanced: left is 6\.0 dB louder/);
+
+  const antiPhase = Float32Array.from(left, (value) => -value);
+  const anti = analyseAudio(left, antiPhase, RATE);
+  assert.ok(anti.correlation < -0.99, `correlation ${anti.correlation}`);
+  assert.ok(Math.abs(anti.balanceDb) < 0.01, `balance ${anti.balanceDb}`);
+  assert.match(anti.warnings.join(' | '), /phase: L\/R correlation -1\.00/);
+});
+
+test('p8_analyze segments an existing WAV from explicit section boundaries', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-sections-'));
+  try {
+    const target = join(directory, 'song');
+    const song = {
+      mode: 'song',
+      bpm: 120,
+      stepsPerBeat: 4,
+      tracks: [{ name: 'lead', waveform: 'triangle', pattern: 'C4:4 E4:4 G4:4 C5:4' }],
+      arrangement: [
+        { name: 'intro', bars: 1 },
+        { name: 'drop', bars: 1, gain: 0.5 },
+      ],
+    };
+    await executeRender({ score: JSON.stringify(song), out: target, detail: 'raw' });
+    const analyzed = await executeAnalyze({
+      path: `${target}.wav`,
+      sections: [
+        { name: 'intro', startSeconds: 0, durationSeconds: 2 },
+        { name: 'drop', startSeconds: 2 },
+      ],
+      detail: 'raw',
+    });
+    assert.match(analyzed, /report sections intro .* · drop /);
+    const raw = JSON.parse(await readFile(`${target}.wav.analysis.json`, 'utf8'));
+    assert.deepEqual(raw.analysis.sections.map((section: { name: string }) => section.name), [
+      'intro',
+      'drop',
+    ]);
+    for (const section of raw.analysis.sections) {
+      assert.ok(Number.isFinite(section.rmsDb));
+      assert.ok(Number.isFinite(section.correlation));
+      assert.ok(Number.isFinite(section.balanceDb));
+      assert.ok(Number.isFinite(section.lowMid));
+      assert.ok(Number.isFinite(section.harsh));
+    }
+
+    // A bad boundary is rejected before the report is assembled.
+    await assert.rejects(
+      () => executeAnalyze({ path: `${target}.wav`, sections: [{ name: 'x', startSeconds: 20 }] }),
+      /at or after the content length/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('targets and assertions can constrain true peak and the stereo image', () => {
+  const signal = sine(1000);
+  const report = analyseAudio(signal, signal, RATE, {
+    target: { truePeakMax: -1.5, correlation: [0.9, 1], balanceMax: 0.5 },
+    assertions: { truePeakMaxDb: -1, correlation: [0.9, 1], balanceMaxDb: 0.5 },
+  });
+  assert.deepEqual(report.target?.checks.map((check) => check.field), [
+    'truePeak',
+    'correlation',
+    'balance',
+  ]);
+  assert.equal(report.target?.passed, 3, formatReport(report));
+  assert.equal(report.assertions?.passed, 3, formatReport(report));
+  assert.ok(!report.findings.some((finding) => finding.kind === 'target'));
+});
+
+test('assert ranges pass into the report and fail a tool call before writing', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-assert-'));
+  try {
+    const passing = join(directory, 'passing');
+    const summary = await executeRender({
+      score: JSON.stringify(rawScore),
+      minutes: 0.05,
+      out: passing,
+      assert: {
+        peakMaxDb: -1,
+        truePeakMaxDb: 3,
+        lra: [0, 40],
+        correlation: [-1, 1],
+        balanceMaxDb: 20,
+      },
+    });
+    assert.match(summary, /report assert \d+\/\d+ checks passed/);
+    assert.doesNotMatch(summary, /failed:/);
+
+    const failing = join(directory, 'failing');
+    await assert.rejects(
+      () =>
+        executeRender({
+          score: JSON.stringify(rawScore),
+          minutes: 0.05,
+          out: failing,
+          assert: { peakMaxDb: -40 },
+        }),
+      /assert failed .*peak .*is outside max -40\.0 dBFS/,
+    );
+    await assert.rejects(() => stat(`${failing}.wav`), /ENOENT/);
+
+    await assert.rejects(
+      () =>
+        executeAnalyze({
+          path: `${passing}.wav`,
+          assert: { lufs: [-4, -3] },
+        }),
+      /assert failed .*lufs /,
+    );
+
+    assert.throws(() => resolveAssertions({ bass: 1 }), /not a known check/);
+    assert.throws(() => resolveAssertions({ correlation: [-2, 1] }), /must stay inside/);
+    assert.throws(() => resolveAssertions({}), /at least one/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('the render tool refuses to write a file above the hearing-safety ceiling', async () => {

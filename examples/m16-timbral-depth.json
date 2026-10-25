@@ -1,0 +1,103 @@
+{
+  "mode": "loop",
+  "bpm": 96,
+  "stepsPerBeat": 4,
+  "bars": 4,
+  "samples": {
+    "pluckLow": {
+      "file": "examples/assets/pluck.wav",
+      "root": "C3",
+      "end": 0.34
+    },
+    "pluckHigh": {
+      "file": "examples/assets/pluck.wav",
+      "root": "C5",
+      "start": 0.18,
+      "end": 0.6,
+      "loop": true,
+      "loopStart": 0.22,
+      "loopEnd": 0.5
+    },
+    "keys": {
+      "zones": [
+        {
+          "sample": "pluckLow",
+          "lo": "C-1",
+          "hi": "B3"
+        },
+        {
+          "sample": "pluckHigh",
+          "lo": "C4"
+        }
+      ]
+    },
+    "hit": "examples/assets/hit.wav"
+  },
+  "drumSamples": {
+    "kick": "hit"
+  },
+  "instruments": {
+    "keys": {
+      "type": "sample",
+      "sample": "keys"
+    },
+    "wireLead": {
+      "type": "fm",
+      "operators": [
+        {
+          "ratio": 2,
+          "index": 3.2,
+          "indexDecay": 0.55,
+          "target": 0
+        },
+        {
+          "ratio": 1,
+          "index": 1.8,
+          "indexDecay": 0.9,
+          "target": 1
+        },
+        {
+          "ratio": 3.5,
+          "index": 0.9,
+          "indexDecay": 0.35,
+          "target": 0
+        }
+      ],
+      "velocity": {
+        "indexScale": 0.6
+      },
+      "filter": {
+        "cutoffHz": 4800,
+        "resonance": 1.1,
+        "envAmount": 0.8,
+        "decay": 0.4,
+        "sustain": 0.35
+      }
+    }
+  },
+  "tracks": [
+    {
+      "name": "keys",
+      "role": "keys",
+      "instrument": "keys",
+      "pattern": "C3:2 E3:2 G3:2 B3:2 C4:2 E4:2 G4:2 B4:2"
+    },
+    {
+      "name": "lead",
+      "role": "lead",
+      "instrument": "wireLead",
+      "pattern": "C5:2@6 G4:2@3 E5:2@5 D5:2@2 C5:2@6 A4:2@3 G4:2@4 E4:2@2"
+    },
+    {
+      "name": "bass",
+      "role": "bass",
+      "waveform": "tilted_saw",
+      "pattern": "C2:4 G1:4 A1:4 F1:4"
+    },
+    {
+      "name": "drums",
+      "role": "drums",
+      "pattern": "K:1~decay(1.8) -:1 H:1 -:1 S:1 -:1 H:1 -:1 K:1 -:1 H:1 -:1 S:1 -:1 H:1 -:1"
+    }
+  ]
+}

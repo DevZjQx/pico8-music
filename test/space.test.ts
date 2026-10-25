@@ -282,10 +282,15 @@ test('the report text carries per-section width, centroid, and onsets', () => {
     { post: [], withWav: false },
   );
   const text = formatReport(output.report);
-  assert.match(text, /report sections intro .* w\d\.\d{2} \d+Hz \d+\.\d\/s/);
+  assert.match(
+    text,
+    /report sections intro .* w\d\.\d{2} c-?\d\.\d{2} b[+-]?\d+\.\d dB \d+Hz low-mid \d+% 2-5k \d+% \d+\.\d\/s/,
+  );
   for (const section of output.report.sections) {
     assert.ok(section.width >= 0, `${section.name} width`);
     assert.ok(section.centroidHz >= 0, `${section.name} centroid`);
+    assert.ok(section.lowMid >= 0 && section.lowMid <= 1, `${section.name} low-mid`);
+    assert.ok(section.harsh >= 0 && section.harsh <= 1, `${section.name} 2-5k`);
     assert.ok(section.onsetPerSecond >= 0, `${section.name} onsets`);
   }
 });

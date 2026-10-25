@@ -15,6 +15,20 @@ export type Effect = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /** Loop repeats one pattern; song follows an arrangement of sections. */
 export type ScoreMode = 'loop' | 'song';
 
+/**
+ * The tonic a score declares for itself. The field is opt-in and it is a
+ * claim, not a measurement: the harmony reading can only say how far the notes
+ * sit from a tonic once the score names one. Inferring a key from the notes
+ * would turn a guess into a report line, which is why `key` is never guessed.
+ */
+export interface ScoreKey {
+  /** Pitch class 0-11; C is 0. */
+  readonly tonic: number;
+  readonly mode: 'major' | 'minor';
+  /** Display form that keeps the authored spelling, e.g. `Bbm`, `F#`, `C`. */
+  readonly label: string;
+}
+
 /** Drum voices are synthesised from transients, not from the eight waveforms. */
 export type DrumName =
   | 'kick'
@@ -123,8 +137,13 @@ export type InstrumentType = 'chip' | 'fm' | 'additive' | 'sample';
  * A persisted audio asset in the workspace. The file is read by the app layer
  * on every render (with a content cache), never by the score parser, so the
  * composition remains pure JSON.
+ *
+ * The `kind` discriminant is internal: a score either names a file or a zone
+ * set, and the parser sets the tag so the renderer never has to guess which
+ * fields are present.
  */
-export interface SampleSpec {
+export interface SampleFileSpec {
+  readonly kind: 'file';
   /** Workspace-relative `.wav` path; only 16-bit PCM mono/stereo is supported. */
   readonly file: string;
   /** MIDI note the file plays at its original speed; default C4 (60). */
@@ -133,7 +152,42 @@ export interface SampleSpec {
   readonly loop: boolean;
   /** Linear gain applied before the track mix; default 1. */
   readonly gain: number;
+  /** Playback start offset in seconds; default 0. */
+  readonly startSeconds?: number;
+  /** Playback end offset in seconds, exclusive; default the file end. */
+  readonly endSeconds?: number;
+  /** Play the selected region backwards. */
+  readonly reverse?: boolean;
+  /** Loop-region start in seconds, inside the selected region; default its start. */
+  readonly loopStartSeconds?: number;
+  /** Loop-region end in seconds; default the selected region's end. */
+  readonly loopEndSeconds?: number;
 }
+
+/**
+ * One velocity/key region of a multi-sampled entry. `sample` names a plain file
+ * entry in the same `samples` table, so the region inherits that entry's
+ * offsets, loop points, and gain instead of restating them.
+ */
+export interface SampleZone {
+  readonly sample: string;
+  /** Lowest MIDI note answered by this zone, inclusive. */
+  readonly loMidi: number;
+  /** Highest MIDI note answered by this zone, inclusive. */
+  readonly hiMidi: number;
+  /** Lowest normalised velocity answered by this zone, inclusive, 0..1. */
+  readonly loVelocity: number;
+  /** Highest normalised velocity answered by this zone, inclusive, 0..1. */
+  readonly hiVelocity: number;
+}
+
+/** A multi-sampled entry: the renderer picks one zone per note. */
+export interface SampleZonesSpec {
+  readonly kind: 'zones';
+  readonly zones: readonly SampleZone[];
+}
+
+export type SampleSpec = SampleFileSpec | SampleZonesSpec;
 
 /** Per-note low-pass envelope; `envAmount` opens the cutoff in octaves. */
 export interface InstrumentFilter {
@@ -164,7 +218,7 @@ export interface Partial {
 }
 
 /**
- * Opt-in velocity-to-timbre response. Velocity already scales gain; these two
+ * Opt-in velocity-to-timbre response. Velocity already scales gain; these
  * offsets make a harder note brighter as well. Absent or all-zero leaves the
  * historical render sample-identical.
  */
@@ -173,6 +227,28 @@ export interface VelocityMapping {
   readonly cutoffOctaves: number;
   /** Extra post-filter soft-clip drive at full velocity, 0-1. */
   readonly drive: number;
+  /**
+   * How far the FM index falls at zero velocity, 0..1. 0 keeps the index fixed;
+   * 1 removes every sideband at zero velocity. FM instruments only.
+   */
+  readonly indexScale: number;
+}
+
+/**
+ * One modulator in a fixed-routing FM voice. Operator 0 is the carrier; each
+ * modulator targets a lower operator index, so the graph is always acyclic and
+ * evaluates in one descending pass. Feedback and arbitrary matrices are out of
+ * scope.
+ */
+export interface FmOperator {
+  /** Modulator frequency as a multiple of the note, 0.25-8. */
+  readonly ratio: number;
+  /** Peak phase-modulation depth, 0-12 radians. */
+  readonly index: number;
+  /** Exponential index decay time constant in seconds, 0.01-4. */
+  readonly indexDecay: number;
+  /** Operator this one modulates: 0 is the carrier, 1.. are earlier modulators. */
+  readonly target: number;
 }
 
 /**
@@ -199,6 +275,11 @@ export interface Instrument {
   readonly ratio?: number;
   readonly index?: number;
   readonly indexDecay?: number;
+  /**
+   * Multi-operator FM routing, 1-3 modulators. Present replaces `ratio`,
+   * `index`, and `indexDecay`; absent keeps the historical two-operator voice.
+   */
+  readonly operators?: readonly FmOperator[];
   /** Stacked detuned copies, 1-4. */
   readonly unison: number;
   /** Cent spacing between unison voices, 0-50. */
@@ -493,6 +574,12 @@ export interface Score {
   readonly humanize: Humanize;
   /** Pitch reference, temperament, and per-note corrections; 440 equal by default. */
   readonly tuning: Tuning;
+  /**
+   * Declared tonic, from the score's `key` field. Absent means the score claims
+   * no key, so the report has no in-key share and no chromatic list; the
+   * key-independent harmony readings (roots, change rate) still exist.
+   */
+  readonly key?: ScoreKey;
   readonly tracks: readonly ScoreTrack[];
   /** Named subgroups, in declaration order; empty when no track uses one. */
   readonly groups: ReadonlyMap<string, ScoreGroup>;

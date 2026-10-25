@@ -29,12 +29,14 @@
 | `rmsDb` | 该段电平 |
 | `width` | 该段 side/mid RMS 比（0 为单声道，与全局宽度同口径） |
 | `centroidHz` | 该段频谱质心（亮度/远近的代理） |
+| `lowMid` | 该段 150-500 Hz 占比（与全局 `lowMid` 同口径） |
+| `harsh` | 该段 2-5 kHz 占比（与全局 `harsh` 同口径） |
 | `onsetPerSecond` | 该段瞬态密度（疏密的代理） |
 
 实现要点：
 
-- `sectionEnergies` 改名为 `sectionReadings`，电平与 mid/side 在一次遍历里完成；质心复用 `readSpectrum`，但每段帧数上限降到 8 帧（`SECTION_SPECTRUM_FRAMES`），避免 256 个段落把报告变成第二次渲染。
-- 摘要行扩展为 `report sections intro -18.0 dBFS w0.12 780Hz 3.2/s · drop ...`；raw artifact 自动带完整字段。
+- `sectionEnergies` 改名为 `sectionReadings`，电平与 mid/side 在一次遍历里完成；质心、low-mid 和 2-5 kHz 占比复用 `readSpectrum`，但每段帧数上限降到 8 帧（`SECTION_SPECTRUM_FRAMES`），避免 256 个段落把报告变成第二次渲染。
+- 摘要行扩展为 `report sections intro -18.0 dBFS w0.12 780Hz low-mid 28% 2-5k 12% 3.2/s · drop ...`；raw artifact 自动带完整字段。
 - 新增警告 `flat-space`：段落数 ≥ 2，且 **width 跨度 < 0.08 同时 centroid 跨度 < 400 Hz** 时提示。只平一项不算平：亮度和宽度任一条弧线在动，空间就有对比。
 - 电平对比仍由 `flat-sections`（RMS 差 < 2 dB）负责，两者独立。
 
@@ -130,7 +132,7 @@
 - 不做 DAW 式自动化曲线、任意时间点的包络编辑。
 - 不自动决定“drop 应该更干”：这仍是风格选择。
 - 不新增总分；`flat-space` 只是与 `flat-sections` 并列的观察。
-- 暂时不引入 L/R 相关性数值。段落 `width` 仍可能被高湿混响推到 > 1，解释规则与全局宽度相同（见 `docs/evaluation.md`）。
+- 报告已补 L/R 波形相关与左右平衡（`correlation` / `balance`），段落读数也带这两个字段；段落 `width` 仍可能被高湿混响推到 > 1，解释规则与全局宽度相同（见 `docs/evaluation.md`）。
 
 ## 风险与取舍
 

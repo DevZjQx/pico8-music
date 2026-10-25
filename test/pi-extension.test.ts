@@ -69,6 +69,21 @@ test('registers a TypeBox-validated p8_music tool', () => {
   const analyze = tools.get('p8_analyze');
   assert.deepEqual(analyze?.parameters?.required, ['path']);
   assert.match(analyze?.label ?? '', /report/i);
+
+  const exportTool = tools.get('p8_export');
+  assert.equal(exportTool?.label, 'PICO-8 score exporter');
+  assert.ok(exportTool?.parameters?.properties?.score);
+  assert.ok(exportTool?.parameters?.properties?.out);
+  assert.equal(exportTool?.executionMode, 'sequential');
+  assert.match(exportTool?.description ?? '', /MusicXML/);
+
+  const probe = tools.get('p8_probe');
+  assert.equal(probe?.parameters?.required, undefined);
+  assert.ok(probe?.parameters?.properties?.track);
+  assert.ok(probe?.parameters?.properties?.note);
+  assert.ok(probe?.parameters?.properties?.sensitivity);
+  assert.equal(probe?.executionMode, 'sequential');
+  assert.match(probe?.description ?? '', /odd\/even/);
 });
 
 test('the p8_music declaration stays small and points at p8_help', () => {
@@ -142,6 +157,26 @@ test('the Pi tool renders a scoreFile relative to ctx.cwd', async () => {
       (await readFile(join(directory, 'pi-file.wav'))).subarray(0, 4).toString('ascii'),
       'RIFF',
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the Pi tool exports uncompressed MusicXML relative to ctx.cwd', async () => {
+  const directory = await mkdtemp(join(process.cwd(), 'test-tmp-p8-pi-export-'));
+  try {
+    const tool = load().tools.get('p8_export');
+    const result = await tool?.execute?.(
+      'call-export',
+      { score, out: 'pi-score' },
+      undefined,
+      undefined,
+      { cwd: directory },
+    );
+    assert.match(result?.content[0]?.text ?? '', /Exported/);
+    const written = await readFile(join(directory, 'pi-score.musicxml'), 'utf8');
+    assert.match(written, /<score-partwise version="4.0">/);
+    assert.match(written, /<step>G<\/step>/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

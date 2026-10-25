@@ -7,25 +7,64 @@
 | 维度 | 指标 | 用途 |
 | --- | --- | --- |
 | 频谱平衡 | 质心、sub/low/mid/high 占比 | 检查是否又变成 287 Hz 一团 |
-| 瞬态/节奏 | onset/s、crest、每小节 hit 数 | 检查鼓和 groove |
-| 空间 | side/mid、L/R 相关、尾音长度 | 检查干声宽度和 send |
-| 和声/旋律 | pitch-class entropy、音程分布、重复率 | 检查是否随机游走或过度重复 |
-| 结构 | 每段 RMS/质心/宽度/onset 密度 | 检查段落是否有起伏 |
-| 响度/听感 | LUFS-I、LRA、sample peak（报告不做 true peak） | 检查成品度与长时间聆听的舒适度 |
+| 瞬态/节奏 | onset/s、crest、每小节 attack/鼓击/音符数 | 检查鼓和 groove |
+| 空间 | side/mid、L/R 波形相关、左右平衡、尾音长度 | 检查干声宽度、反相和 send |
+| 和声/旋律 | pitch-class entropy（全曲与逐轨）、级进/跳进/重复音程占比、小节重复率 | 检查是否随机游走或过度重复 |
+| 和声走向（符号） | 每小节低音、低音变化率、四/五度与级进移动占比、在调内占比、实际变化音 | 检查低音是否在走、调是声明还是摆设 |
+| 结构 | 每段 RMS/质心/宽度/onset 密度，以及符号层的每段 attack/鼓击/音符密度与最静–最满小节 | 检查段落是否有起伏、哪一小节突然塞满 |
+| 音区 | 轨对音域重叠八度数、共用音级数 | 检查两条轨是否挤在同一八度 |
+| 响度/听感 | LUFS-I、LRA、sample peak、4× true peak | 检查成品度、削波余量与长时间聆听的舒适度 |
+| 音色（源级） | 频谱斜率、奇偶谐波比、attack/decay、HF 衰减、FM 边带 | `p8_probe` 在单音干声上测量，不混入成品报告 |
 
 频谱/质心来自最多 48 个 2048 样本帧（约 46 ms/帧）的抽样；宽度、峰值、RMS、LUFS 和 onset 密度使用全部样本。所有测量都包含母带和效果，不能直接等同干声编曲。
 
-宽度是 side/mid RMS 比：0 是单声道，1 是硬声像。它没有上限，混响 `wet` 很高时可能超过 1；那说明左右声道之间存在反相或梳状关系，属于“相位上的宽”，不代表声场更稳定。看到 > 1 时应同时看 L/R 相关性和单声道兼容性。
+宽度是 side/mid RMS 比：0 是单声道，1 是硬声像。它没有上限，混响 `wet` 很高时可能超过 1。`correlation` 是逐样本 L/R 波形相关（-1 反相，0 不相关，1 相同），`balance` 是左右 RMS 差（正数表示左声道更响）；两者和宽度一起看，才能区分“更宽”与“相位有问题”。纯反相时 mid 接近 0，宽度读数会失去意义，报告会改用 `phase` 警告。
 
-M4 之后这些指标由 `p8_music` 的渲染报告自动给出（peak/RMS/LUFS/LRA、质心与五个频带、宽度、onset 密度、分段 RMS、警告），`p8_analyze` 可以对已有 WAV 重测；报告是测量，不是评分，主观判断仍然以上面的维度和盲听为准。
+M4 之后这些指标由 `p8_music` 的渲染报告自动给出（peak/true-peak/RMS/LUFS/LRA、质心与五个频带、宽度/相关/平衡、onset 密度、分段 RMS、警告），`p8_analyze` 可以对已有 WAV 重测，并可用 `sections` 传入输出时间轴上的段落边界；报告是测量，不是评分，主观判断仍然以上面的维度和盲听为准。`assert` 则把选定的范围变成硬失败，适合 CI 或批量验收；它仍然不是总分。
 
 LRA（loudness range，EBU Tech 3342）用 3 秒短时响度、1 秒步进，经绝对 -70 LUFS 和相对 -20 LU 门限后取 10%–95% 分位差。它衡量“整首有没有强弱起伏”，不衡量“有没有留白”：静音段被绝对门限丢掉，所以有长休止的曲子 LRA 可以很小。报告因此同时保留分段 RMS，并在 `loudness-flat` 里要求段落电平差也小于 6 dB。
 
-song 模式的每段读数现在同时给出 RMS、side/mid 宽度、频谱质心和 onset 密度（见 `space-energy-plan.md` 的 P0）。结构维度因此有两条独立的弧线：`flat-sections` 只看电平差（< 2 dB），`flat-space` 只在宽度跨度 < 0.08 且质心跨度 < 400 Hz 时提示。一段靠变宽/变亮而不靠变响的 drop 是合法写法，不应被当成“没有起伏”。
+song 模式的每段读数现在同时给出 RMS、side/mid 宽度、L/R 相关、左右平衡、频谱质心、low-mid / 2-5k 占比和 onset 密度（见 `space-energy-plan.md` 的 P0）。结构维度因此有两条独立的弧线：`flat-sections` 只看电平差（< 2 dB），`flat-space` 只在宽度跨度 < 0.08 且质心跨度 < 400 Hz 时提示。一段靠变宽/变亮而不靠变响的 drop 是合法写法，不应被当成“没有起伏”。
 
 M2 之后可以用 `target` 声明一个 profile 或内联范围。报告不会给总分，只增加一条 `report target <name>: n/m checks in range`，并对每个越界维度给一条 `target` finding。目标仍然基于下面这些已有维度，所以偏差可以被解释；`soft` style 自带一组低阶 additive 乐器、clean 振荡器和较慢 attack，用来演示 profile 落在范围内。
 
-M1 之后报告还包含可归因的诊断：`stems`（每条轨的 RMS/质心/频带/low-mid/pan/alias-risk）、`dry`（post 链之前的同口径测量）、`findings`（sub-heavy/mud/harsh/masking/alias-risk/dynamics 及 post 增量）。`p8_analyze` 的 `detail: "raw"` 会把完整分析写成同目录的 `*.analysis.json`，避免把逐项数据塞进上下文。设计与后续 M2/M3 见 [`analysis-roadmap.md`](./analysis-roadmap.md)。
+M1 之后报告还包含可归因的诊断：`stems`（每条轨的 RMS/质心/频带/low-mid/pan/alias-risk）、`dry`（post 链之前的同口径测量）、`structure`（符号结构读数：逐小节 attack/鼓击/音符数、逐轨音级熵与音程/重复、逐段密度、音区重叠）、`findings`（sub-heavy/mud/harsh/masking/alias-risk/dynamics、density-spike/density-flat、melody-static/melody-leapy、register-collision 及 post 增量）。`p8_analyze` 的 `detail: "raw"` 会把完整分析写成同目录的 `*.analysis.json`，避免把逐项数据塞进上下文；符号结构只存在于渲染报告，因为成品 WAV 无法反推“这个音写在第几小节”。设计与后续 M2/M3 见 [`analysis-roadmap.md`](./analysis-roadmap.md)。
+
+## 符号结构读数（structure）
+
+瞬态/节奏、和声/旋律、结构、音区这四个维度里，有一部分完全不需要听音频：插件本来就持有 score 的时间线。`structure` 因此直接从音符算，得到精确、可归因到小节和轨道、零 FFT 的读数：
+
+- `bars`：小节数、每小节平均 attack（和弦算 1 次；`~roll`/`~flam` 按真实击数展开）、旋律音符数、全曲音级数与音级熵。
+- `density`：每段的 attack/鼓击/音符每小节均值，以及最静和最满的小节。
+- `structure`：最多 4 条旋律轨的 `n` 音符数、`pc` 音级数、`e` 音级熵（bit）、`s` 级进占比（1–2 半音）、`l` 跳进占比（≥5 半音）、`r` 小节重复率（与更早某小节完全相同）。音程按 voice 分组计算，所以和弦不会凭空产生跳进。
+- `register`：同一段内两条旋律轨发声音域重叠 ≥1 个八度的轨对，以及共用音级数。
+
+这些数字**不是**音频热力图：loop 只测量写出来的那一圈，post 链不能改变它们；它们也看不到混响抹掉音头、限幅压平瞬态这类只有音频才知道的事。逐小节网格只写进 `detail: "raw"` artifact，默认报告只给摘要和越界的 finding，避免用一屏矩阵挤占上下文。判决阈值（2 倍 attack 的尖峰、≥8 小节的平密度、全曲 ≤2–3 个音级、非 bass 单声部轨 40% 以上跳进（和弦轨按 voice 算音程，测到的是根音移动，因此跳过）、≥2 个八度重叠）写在 `render/analyze.ts`，是观察而不是通过条件。
+
+### 低音与调性读数（harmony）
+
+`structure.harmony` 回答的是“低音在不在走、调号是不是摆设”，它同样只读 score 的时间线：
+
+- **每小节低音**：该小节最低的发声音级。琶音因此读作它的最低音，跨小节的延音仍算在响着的小节里。这是织体事实，不是和弦识别：不写和弦质量、转位或功能，因为 score 存的是音符而不是符号。
+- **变化率与移动方向**：`changes` 数小节之间的低音变化（空小节跳过，段边界不算），`fifths` 是四/五度移动占比，`seconds` 是 1–2 半音占比，`largest` 是最宽移动（折到 0–6 半音）。
+- **调性**：只有 score 显式写了 `key`（`"Am"`、`"C major"`）才有 `inKey` 与 `chromatic`。`inKey` 是落在该调自然大调/自然小调音阶内的旋律音符占比，和声/旋律小调算变化音。没有 `key` 就不报这一项：调是作者声明，从音符反推出来的主音会把猜测写成测量。
+
+对应的 finding 只有两条，都是观察：`key-mismatch`（≥32 个旋律音符里在调内不足 75%）说的是“声明与音符不一致”，修哪边由作者定；`harmony-static`（≥8 小节的段落低音最多动过一次）说的是低音停在一个音上，持续音本身可以是写法。
+
+`docs/expectation-theory.md` 记录了这个 feature 拒绝实现的东西（张力总分、意外度曲线、和弦识别、自动调性估计）以及理由。
+
+## 音色探针（p8_probe）
+
+音色不能只靠成品混音的质心和五个频带判断：和弦、鼓、EQ 和母带都会混进同一个频谱。`p8_probe` 因此把单条旋律轨渲染成一个固定音符的干声（无 post、无轨道 EQ/滤波/延迟/duck/send），再测：
+
+- **频谱斜率**：周期性的 chip/additive 用谐波回归（dB/oct）；FM/采样/噪声这类密集或非谐频谱用 1/3 倍频程带功率回归。
+- **奇偶谐波比**：只在存在稳定谐波列时报告，且只统计 n>=2 的上方谐波（基频不计入）；FM、采样、chip noise/phaser、additive `stretch` 都标记为不适用。
+- **攻击/衰减**：攻击是 10%-90% 上升时间，衰减是峰值到 -20 dB；同时回显作者写的 ADSR，便于对照“参数”和“实际听到的包络”。
+- **高频衰减**：2-8 kHz 能量的时间常数和 dB/s。`indexDecay`、滤波包络、逐谐波衰减改变的是这条曲线，而不是整段平均频谱。
+- **FM 边带**：carrier share、显著边带数、最高边带、Carson/Nyquist 混叠估计。
+- **敏感度**：用同一个音符分别改 `envelope.attack`、`additive.tilt`、`fm.index`、`fm.indexDecay` 或 `filter.cutoffHz`，报告指标实际变化量。没有参数敏感度的数字不可操作。
+
+这些指标**不**进入每次混音报告，只在 `p8_probe` 的摘要和 `detail: "raw"` artifact 中出现。原因是归因：成品里的一个“奇偶谐波比”无法说明是哪个乐器、滤波器还是母带造成的；而且它们与现有质心/频带高度相关，容易变成被刷的分数。
 
 ## 测试策略
 
@@ -45,11 +84,14 @@ M1 之后报告还包含可归因的诊断：`stems`（每条轨的 RMS/质心/�
 
 各里程碑的硬性验收标准（如 kick 的 body 基频 < 200 Hz、宽度 > 0.6、LUFS 在目标 ±1）写在 [`expressiveness-review.md`](./expressiveness-review.md) 的「里程碑与实现状态」一节；本文只定义看哪些维度、怎么测。
 
-## 听感边界：提示与硬错误
+## 听感边界：提示、硬错误与调用方断言
 
-报告分两层，故意不混在一起：
+报告默认分两层，另外 `assert` 可由调用方加一层显式合同：
 
 - **软提示**（`warnings`、`findings`）是建议，模型可以基于审美选择忽略。例如 `loud`（> -12 LUFS）、`loudness-flat`（LRA < 4 LU）、`harsh`、`mud`。它们回答“这样写会让人觉得怎样”，不是“这样写错了”。
+- **调用方断言**（`assert`）是可选合同：调用方声明 peak/true-peak、RMS、LUFS、LRA、crest、width、correlation、balance 或分段 RMS 的范围，任一不满足就让工具失败。它不是审美建议，也不会出现在默认工作流里；只有显式传入时才生效。`target` 仍然是软性的意图声明，不会失败。
 - **硬错误**是安全边界，渲染直接失败。成品积分响度超过 -9 LUFS（`MAX_SAFE_LUFS`）时 `p8_music` 拒绝写文件。这个数字来自可审计的换算：在 K 系统校准的房间里，-20 dBFS 参考刻度约等于 83 dB SPL，立体声成品在参考音量下大致按 `SPL ≈ LUFS + 100` 播放；NIOSH 的 3 dB 等能量规则让 -9 LUFS 落在约 1 小时安全暴露附近。超过它的作品既没有动态余量，正常音量下的长时间聆听也不再安全。
 
 `p8_analyze` 不执行这条硬错误：已有 WAV 无法通过分析变安静，能做的只有把 `unsafe` 报出来并给出可执行的下一步。安全上限只在“我们要生成一个文件”时生效。
+
+这些阈值和参数表的经验来源大多是**平均听众**的评分与聚合统计：它不描述个体差异（受训程度、文化），也不描述“故意破格”这一层。所以 findings 永远只是观察，只有客观合同才失败；完整的取舍与撤销条件见 [`expectation-theory.md`](./expectation-theory.md) 的第六节。

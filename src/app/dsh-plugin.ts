@@ -1,11 +1,22 @@
 import type { ToolDefinition as DshToolDefinition } from '@deepseek-ai/dsh-tools';
 import { SCORE_HELP } from '../features/score/feature.ts';
 import { readSongwriterSkill } from './skill.ts';
-import { analyzeParameters, dshParameters, helpParameters, musicParameters } from './tool-schemas.ts';
+import {
+  analyzeParameters,
+  dshParameters,
+  exportParameters,
+  helpParameters,
+  musicParameters,
+  probeParameters,
+} from './tool-schemas.ts';
 import {
   executeAnalyze,
+  executeExport,
+  executeProbe,
   executeRender,
   type AnalyzeArgs,
+  type ExportArgs,
+  type ProbeArgs,
   type RenderArgs,
   type ToolExecution,
 } from './render-service.ts';
@@ -105,9 +116,39 @@ function registerTools(tools: ToolRuntime): void {
   });
 
   register({
+    name: 'p8_export',
+    description:
+      'Export a score as uncompressed MusicXML 4.0 (.musicxml): one part per track, section tempo changes, chords, ties, rests, and drum percussion. p8_help covers every score field.',
+    parameters: exportParameters,
+    output,
+    // Two exports writing the same `out` path must not overlap.
+    isConcurrencySafe: () => false,
+    async execute(args: ExportArgs, exec: ToolExecution) {
+      try {
+        return await executeExport(args, exec);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message} (call p8_help for the wire format)`);
+      }
+    },
+  });
+
+  register({
+    name: 'p8_probe',
+    description:
+      'Measure one melodic track as a dry single note: spectral slope, centroid, 85% rolloff, odd/even harmonics, attack/decay, high-frequency decay, FM sidebands, and measured sensitivity to tilt/index/cutoff/attack. Use it to tune envelopes and FM; it renders no WAV and applies no post chain.',
+    parameters: probeParameters,
+    output,
+    isConcurrencySafe: () => false,
+    async execute(args: ProbeArgs, exec: ToolExecution) {
+      return executeProbe(args, exec);
+    },
+  });
+
+  register({
     name: 'p8_analyze',
     description:
-      'Measure an existing 16-bit PCM WAV: peak, RMS, LUFS, spectrum, width, onsets, findings, and warnings. Optional target ranges turn misses into deviations without a score. detail:raw writes the full analysis to a sibling .analysis.json.',
+      'Measure an existing 16-bit PCM WAV: sample and true peak, RMS, LUFS/LRA, spectrum, width, L/R correlation and balance, onsets, findings, and warnings. Optional sections split the file; target ranges report deviations, assert ranges fail the call. detail:raw writes the full analysis to a sibling .analysis.json.',
     parameters: analyzeParameters,
     output,
     async execute(args: AnalyzeArgs, exec: ToolExecution) {

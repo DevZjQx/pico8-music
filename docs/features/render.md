@@ -6,10 +6,11 @@ measures.
 
 **Owns.** PICO-8-flavoured synthesis (eight timbres, per-note volume, track or
 named ADSR envelopes, note effects and their parameters), the instrument layer
-(`chip` / band-limited `additive` / two-operator `fm` / persisted `sample`,
-unison detune, drive, per-note filter envelopes, opt-in velocity-to-timbre
-(filter opening and drive), sample pitch/loop/gain, and
-drum sample replacement), polyphonic event scheduling (chords and legato
+(`chip` / band-limited `additive` / `fm` with the classic two-operator voice or
+1-3 fixed-routing modulators / persisted `sample`, unison detune, drive,
+per-note filter envelopes, opt-in velocity-to-timbre (filter opening, drive,
+and FM index), sample pitch/region/loop/gain, key and velocity zone selection,
+and drum sample replacement), polyphonic event scheduling (chords and legato
 gates overlap without voice stealing), swing offsets, deterministic
 `humanize` timing/velocity, the score's per-section tempo map (events, gates,
 swing, slides, arps, section filters, and risers resolve through absolute
@@ -28,15 +29,20 @@ and filter sweeps, resampling for the slowed pitch drop, tone shaping,
 Freeverb-style reverb with optional send predelay, wet low/high cut, and slow
 delay modulation, master width/low-band mono, steady-state loop extraction, a shared peak ceiling
 instead of per-sample clipping, repetition to the requested length, and WAV
-encoding. It also owns the post-chain contract: `tape`/`slow`, `lowpass`,
-`highpass`, `reverb`, the master steps `tilt` / `saturate` / `compress` / `loudness` /
-`limiter`, the `[]` dry path, the `chip` / `hitech` / `ambient` / `studio` /
+encoding. It also owns the post-chain contract: `tape`/`slow`, `lowpass`
+(with an optional 12/24 dB/oct slope), `highpass`, `highShelf`, `reverb`, the
+master steps `tilt` / `saturate` / `compress` / `loudness` / `limiter`, the
+`[]` dry path, the `chip` / `hitech` / `ambient` / `studio` /
 `lofi` / `soft` style templates (including role-based instrument defaults and
 style-level quality/master defaults), optional target profiles and their
-range checks, BS.1770 integrated loudness, the render report (peak, RMS,
-spectrum, width, onsets, per-section level/width/centroid/onsets, warnings, per-stem summaries, a
-pre-post snapshot, and attributed findings), cooperative abort checks, and WAV
-decoding for `p8_analyze`.
+range checks, optional `assert` ranges, BS.1770 integrated loudness, the render
+report (sample peak, 4x true peak, RMS, spectrum, width, L/R correlation and
+balance, onsets, per-section level/width/correlation/balance/centroid/low-mid/2-5k/onsets,
+warnings, per-stem summaries, a pre-post snapshot, the symbolic structure
+reading, and attributed findings),
+the dry single-note timbre probe (spectral slope, odd/even harmonics,
+attack/decay, high-frequency decay, FM sidebands, and measured parameter
+sensitivity), cooperative abort checks, and WAV decoding for `p8_analyze`.
 
 **Does not own.** Score validation, note/drum naming, or arrangement
 resolution — that is `score`'s contract. Reading or decoding sample files is
@@ -47,7 +53,9 @@ the report as tool text belong to `app/render-service.ts` /
 normalisation is, as an explicit `loudness` post step.
 
 **Depends on.** `score` through its single public entry, for the `Score` type
-and the tempo-map helpers that resolve a step to seconds.
+and the tempo-map helpers that resolve a step to seconds, and `structure` for
+the symbolic reading that the report attaches. The audio path never reads the
+structure result; only `analyseAudio` and `formatReport` do.
 
 **Public surface.** `feature.ts` only; the export list is not repeated here.
 
@@ -75,9 +83,11 @@ palette. A note's `velocity` mapping is opt-in: when absent, `InstrumentVoice` k
 historical fixed filter cutoff and drive, sample for sample. When present, the
 normalised velocity (authored `@volume` times humanize gain, clamped to 0..1)
 opens the instrument filter by up to `cutoffOctaves` and adds up to `drive` on
-top of the base soft clip; the parser rejects `cutoffOctaves` without a filter
-and rejects the field on sample voices, where playback rate and the sample table
-own the timbre. Velocity still scales amplitude as before, so the mapping only
+top of the base soft clip; on FM, `indexScale` additionally scales the index
+down as velocity falls. Multipliers of exactly 1 are the identity, so a zero
+mapping stays sample-identical. The parser rejects `cutoffOctaves` without a
+filter and rejects the field on sample voices, where playback rate and the
+sample table own the timbre. Velocity still scales amplitude as before, so the mapping only
 adds the brightness half of the response. `stretch` (0-1) sharpens upper harmonics
 without detuning the fundamental, and a third partial item is an exponential
 decay time constant. Either one switches the note to per-partial synthesis with
@@ -152,14 +162,24 @@ sees the final signal rather than a high-pass overshoot of it.
 Clean quality is an oscillator switch, not a master step. Chip saw and pulse
 use PolyBLEP at their jump edges; triangle, tilted saw, organ, noise, and
 phaser are continuous and keep the historical formula, so clean is
-sample-identical there. FM stays two-operator but caps its modulation index
-with Carson's rule so the highest significant sideband stays under Nyquist at
-high pitches. `quality: "pico"` and an omitted `quality` are the same path, so
+sample-identical there. FM evaluates the classic two-operator formula or the
+multi-operator tree and caps each modulator index with Carson's rule so the
+highest significant sideband stays under Nyquist at high pitches. The
+multi-operator path accumulates modulation into one scratch slot per operator
+and evaluates in descending index order, which is why a target only needs to be
+lower than its own index. Its first sample-identical test is that a single
+operator equals the classic voice, arithmetic included. `quality: "pico"` and an omitted `quality` are the same path, so
 old scores remain sample-exact; a style may choose `clean` as its default and
 an explicit `quality` always wins. The per-track high-pass and shelves are RBJ
 biquads applied after the instrument/track filter and before delay/duck, so
 one part can lose its 150-500 Hz overlap without a global lowpass; a zero-gain
-shelf is skipped. Master `width` and `monoBelowHz` run after the ordered post
+shelf is skipped. The post lowpass keeps the historical one-pole 6 dB/oct path
+for `order: 1`; `order: 2` and `4` cascade Butterworth biquads at 12/24 dB/oct.
+`highShelf` is a master RBJ high shelf with a 3000 Hz default corner; a zero
+gain returns before the DC block, so it stays sample-identical to omitting the
+step. The shelf is the targeted control for 2-5 kHz presence: steepening a
+lowpass whose corner is already at 7-9 kHz cannot remove content well below
+that corner. Master `width` and `monoBelowHz` run after the ordered post
 chain: width scales the side signal, and the mono fold removes only the
 low-passed side band, leaving the mid and the rest of the image intact. Both
 are absent by default and therefore do not change an old render. Reverb
@@ -170,14 +190,22 @@ set of ranges (`lowMidMax`, `harshMax`, `crestMin`, `width`, `lufs`,
 summary line; it never collapses to a single score or changes the render.
 
 A sample voice advances a read position by `frequency / rootFrequency`, so the
-existing slide/vibrato/arp paths work unchanged; a one-shot stops at the file
-end and a loop wraps at the sample's length. Drum samples force one-shot
-playback (a looping kick must still decay), honor `~pitch`/`~tone`, and ignore
-`~decay`, which has no sample equivalent; `~ghost` still lowers velocity and
-tone, but its shortened decay is synthetic-only. Linear interpolation is deliberate:
-the feature is asset playback, not a resampling library. Sample playback is
-deterministic from the file bytes and score, like every other voice.
+existing slide/vibrato/arp paths work unchanged; a one-shot stops at the
+selected region's end and a loop wraps from `loopEnd` back to `loopStart`,
+playing the region head as a one-shot intro first. Regions are cut in `app`,
+which also reverses the PCM and mirrors the loop window, so `render` only ever
+sees one forward buffer; the decoded-PCM cache is still keyed by file, so
+several named slices of one WAV cost one decode. A zone set is resolved per
+note by nearest key range, then nearest velocity layer, with a nearest-zone
+fallback instead of silence; drums run the same selection per hit, so ghost,
+flam, and roll velocities can cross a layer boundary. Drum samples force
+one-shot playback (a looping kick must still decay), honor `~pitch`/`~tone`,
+and multiply `~decay` into an exponential amplitude envelope; `~ghost` still
+lowers velocity and tone. Linear interpolation is deliberate: the feature is
+asset playback, not a resampling library. Sample playback is deterministic from
+the file bytes and score, like every other voice.
 
 **Boundary evidence.** Deleting this folder breaks `app/render-service.ts`, `app/dsh-plugin.ts`, and `app/pi-extension.ts`; the app adapters reach it through `render-service.ts`.
-A second output format (FLAC, MP3) belongs here, next to `wav.ts`, not in the
-app layer.
+A second audio output format (FLAC, MP3) belongs here, next to `wav.ts`, not in
+the app layer. Symbolic notation export (MusicXML) is not an audio format and
+belongs to the separate `musicxml` feature.

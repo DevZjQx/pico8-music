@@ -12,12 +12,14 @@ plus track sound defaults), slot vs gate (`C4:4g2`), explicit and named chords (
 score-level `swing` and `seed`, the grid (`stepsPerBeat`, `beatsPerBar`, and
 whole-bar patterns), deterministic `humanize` timing/velocity
 depths, the top-level `tuning` reference (`a4`, built-in temperament, and
-per-note cents), motif definitions and transforms
+per-note cents), the opt-in `key` declaration (a tonic and a mode, normalised
+to a pitch class plus its authored spelling), motif definitions and transforms
 (`@A.transpose(2).retrograde`), drum articulations (`~ghost`, `~flam(ms)`,
 `~roll(hits)`) and per-hit drum parameters (`~pitch`, `~decay`, `~tone`), the
 top-level `instruments` table (including the opt-in `velocity` cutoff/drive
 mapping) and per-track `instrument` references, the
-top-level `samples` table (workspace WAV paths with root/loop/gain) and
+top-level `samples` table (workspace WAV paths with root/loop/gain plus
+optional region, reverse, loop-point, and key/velocity zone fields) and
 `drumSamples` replacements, the top-level `groups`/`buses` table and track
 `group`/`bus` routing (named stereo submixes, each with its own send return),
 loop vs song mode, named patterns, arrangement
@@ -27,8 +29,9 @@ opt-in section inheritance, and per-section `bpm` with a resolved
 step-to-seconds tempo map), the song-end `tail`, the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `highpassHz`,
 `lowShelf`, `highShelf`, `delay`, `group`), the
-model-facing wire-format reference (`help.ts`), and the normalised `Score` the renderer
-consumes.
+model-facing wire-format reference (`help.ts`), the absolute timeline expansion
+(`timelineOf`: one rule shared by the renderer and the symbolic structure
+reading), and the normalised `Score` the renderer consumes.
 
 **Does not own.** Reading sample WAV files: `score` validates the reference,
 path shape, and playback metadata, while `app` resolves and decodes files and
@@ -44,7 +47,10 @@ back to `help.ts`; neither document restates the other. How that skill reaches
 Pi and DSH is an `app` concern. Reading `.p8` cartridges is out of scope: the composition is
 authored by the model, not extracted from an existing cart.
 
-**Depends on.** Nothing — this is the bottom of the import graph.
+**Depends on.** Nothing — this is the bottom of the import graph. Symbolic
+statistics over the timeline (per-bar density, melodic motion, register
+overlaps, and the harmony reading built on the declared `key`) belong to
+`structure`, which reads this feature's public entry.
 
 **Public surface.** `feature.ts` only; the export list is not repeated here.
 

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { executeAnalyze, executeRender } from '../src/app/render-service.ts';
-import { analyseAudio, decodeWav, renderLoop } from '../src/features/render/feature.ts';
+import { analyseAudio, decodeWav, renderLoop, type PostStep } from '../src/features/render/feature.ts';
 import { dbToGain } from '../src/features/render/master.ts';
 import { parseScore } from '../src/features/score/feature.ts';
 
@@ -107,6 +107,53 @@ test('saturation lowers the crest factor and tilt moves the spectral centroid', 
   assert.ok(bright.report.centroidHz > dry.report.centroidHz, 'tilt +12 must brighten');
   assert.ok(dark.report.centroidHz < dry.report.centroidHz, 'tilt -12 must darken');
   assert.ok(bright.report.bands.air > dark.report.bands.air);
+});
+
+test('steeper lowpass orders and a master high shelf shape the top end', () => {
+  const bright = parseScore({
+    bpm: 120,
+    stepsPerBeat: 4,
+    bars: 1,
+    tracks: [{ waveform: 'saw', pattern: 'C6:16', volume: 5 }],
+  });
+  const render = (post: readonly PostStep[]) =>
+    renderLoop(bright, { post, quality: 'clean', minutes: 0.05, withWav: false });
+
+  const dry = render([]);
+  const first = render([{ type: 'lowpass', cutoffHz: 6000 }]);
+  const explicitFirst = render([{ type: 'lowpass', cutoffHz: 6000, order: 1 }]);
+  const second = render([{ type: 'lowpass', cutoffHz: 6000, order: 2 }]);
+  const fourth = render([{ type: 'lowpass', cutoffHz: 6000, order: 4 }]);
+
+  assert.deepEqual(Array.from(first.left), Array.from(explicitFirst.left));
+  assert.ok(
+    second.report.bands.air < first.report.bands.air,
+    `order 2 air ${second.report.bands.air} vs order 1 ${first.report.bands.air}`,
+  );
+  assert.ok(
+    fourth.report.bands.air < second.report.bands.air,
+    `order 4 air ${fourth.report.bands.air} vs order 2 ${second.report.bands.air}`,
+  );
+  assert.ok(fourth.report.centroidHz < second.report.centroidHz);
+  assert.ok(second.report.centroidHz < first.report.centroidHz);
+
+  const noop = render([{ type: 'highShelf', hz: 2500, gainDb: 0 }]);
+  const cut = render([{ type: 'highShelf', hz: 2500, gainDb: -9 }]);
+  const boost = render([{ type: 'highShelf', hz: 2500, gainDb: 9 }]);
+  assert.deepEqual(Array.from(noop.left), Array.from(dry.left));
+  assert.ok(cut.report.bands.high < dry.report.bands.high);
+  assert.ok(cut.report.centroidHz < dry.report.centroidHz);
+  assert.ok(boost.report.bands.high > dry.report.bands.high);
+  assert.ok(boost.report.centroidHz > dry.report.centroidHz);
+
+  assert.throws(
+    () =>
+      renderLoop(bright, {
+        post: [{ type: 'lowpass', order: 3 } as never],
+        minutes: 0.05,
+      }),
+    /order must be 1, 2, or 4/,
+  );
 });
 
 test('bus compression shrinks the energy range between sections', () => {
@@ -407,7 +454,7 @@ test('the render service validates style names and post types', async () => {
   );
   await assert.rejects(
     () => executeRender({ score: JSON.stringify(rawScore), post: [{ type: 'flanger' }] as never }),
-    /must be tape, slow, lowpass, highpass, reverb/,
+    /must be tape, slow, lowpass, highpass, highShelf, reverb/,
   );
 });
 

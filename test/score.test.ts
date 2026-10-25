@@ -557,7 +557,7 @@ test('parses velocity-to-timbre offsets and rejects them without a filter or on 
     filter: 1200,
     velocity: { cutoffOctaves: 2, drive: 0.4 },
   });
-  assert.deepEqual(mapped?.velocity, { cutoffOctaves: 2, drive: 0.4 });
+  assert.deepEqual(mapped?.velocity, { cutoffOctaves: 2, drive: 0.4, indexScale: 0 });
 
   assert.throws(
     () => instrumentOf({ type: 'chip', velocity: { cutoffOctaves: 2 } }),
@@ -570,6 +570,10 @@ test('parses velocity-to-timbre offsets and rejects them without a filter or on 
   assert.throws(
     () => instrumentOf({ type: 'chip', velocity: { drive: 2 } }),
     /drive must be between 0 and 1/,
+  );
+  assert.throws(
+    () => instrumentOf({ type: 'chip', velocity: { indexScale: 0.5 } }),
+    /indexScale only applies to fm instruments/,
   );
   assert.throws(
     () =>
@@ -1745,12 +1749,16 @@ test('resolves persisted sample instruments and drum replacements', () => {
     ],
   });
 
-  assert.equal(parsed.samples.get('hit')?.file, 'assets/hit.wav');
-  assert.equal(parsed.samples.get('hit')?.rootMidi, 60);
-  assert.equal(parsed.samples.get('hit')?.loop, false);
-  assert.equal(parsed.samples.get('vox')?.rootMidi, 57);
-  assert.equal(parsed.samples.get('vox')?.loop, true);
-  assert.equal(parsed.samples.get('vox')?.gain, 0.5);
+  const hit = parsed.samples.get('hit');
+  const vox = parsed.samples.get('vox');
+  assert.equal(hit?.kind, 'file');
+  assert.equal(vox?.kind, 'file');
+  assert.equal(hit?.kind === 'file' ? hit.file : undefined, 'assets/hit.wav');
+  assert.equal(hit?.kind === 'file' ? hit.rootMidi : undefined, 60);
+  assert.equal(hit?.kind === 'file' ? hit.loop : undefined, false);
+  assert.equal(vox?.kind === 'file' ? vox.rootMidi : undefined, 57);
+  assert.equal(vox?.kind === 'file' ? vox.loop : undefined, true);
+  assert.equal(vox?.kind === 'file' ? vox.gain : undefined, 0.5);
   assert.equal(parsed.tracks[0]?.instrument?.type, 'sample');
   assert.equal(parsed.tracks[0]?.instrument?.sample, 'vox');
   assert.equal(parsed.drumSamples.get('kick'), 'hit');
@@ -1879,4 +1887,22 @@ test('rejects illegal tuning fields and values', () => {
   assert.throws(() => parse({ cents: { C4: 101 } }), /tuning\.cents\.C4 must be between -100 and 100/);
   assert.throws(() => parse({ cents: { C4: 2, 'B#3': 3 } }), /enharmonic spelling already tunes MIDI note 60/);
   assert.throws(() => parse({ cents: { C4: undefined } }), /tuning\.cents\.C4 is required/);
+});
+
+test('key is an optional tonic declaration with a preserved spelling', () => {
+  const withKey = (key: string) =>
+    parseScore({ ...score, key });
+
+  assert.deepEqual(withKey('Am').key, { tonic: 9, mode: 'minor', label: 'Am' });
+  assert.deepEqual(withKey('C major').key, { tonic: 0, mode: 'major', label: 'C' });
+  assert.deepEqual(withKey('F# min').key, { tonic: 6, mode: 'minor', label: 'F#m' });
+  assert.deepEqual(withKey('Bbm').key, { tonic: 10, mode: 'minor', label: 'Bbm' });
+  assert.deepEqual(withKey('eb').key, { tonic: 3, mode: 'major', label: 'Eb' });
+  // No key is not an error: the report then has no diatonic share to state.
+  assert.equal(parseScore(score).key, undefined);
+
+  assert.throws(() => withKey('H'), /key must be a tonic/);
+  assert.throws(() => withKey('A dorian'), /key must be a tonic/);
+  assert.throws(() => withKey('Am7'), /key must be a tonic/);
+  assert.throws(() => parseScore({ ...score, key: 7 }), /key must be a string/);
 });

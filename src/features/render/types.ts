@@ -1,17 +1,34 @@
 import type { Analysis } from './analyze.ts';
+import type { AssertionProfile } from './assert.ts';
 import type { PresetName } from './presets.ts';
-import type { SampleSource } from './sample.ts';
+import type { SampleBank } from './sample.ts';
 import type { TargetInput } from './target.ts';
+
+/** 1 = one-pole 6 dB/oct, 2/4 = Butterworth 12/24 dB/oct. */
+export type LowpassOrder = 1 | 2 | 4;
 
 /** One step in the post chain. An empty chain means a dry render. */
 export type PostStep =
   | { readonly type: 'tape'; readonly speed?: number }
   | { readonly type: 'slow'; readonly speed?: number }
-  | { readonly type: 'lowpass'; readonly cutoffHz?: number; readonly toneHz?: number }
+  | {
+      readonly type: 'lowpass';
+      readonly cutoffHz?: number;
+      readonly toneHz?: number;
+      /** Slope; defaults to 1 (6 dB/oct). */
+      readonly order?: LowpassOrder;
+    }
   | {
       readonly type: 'highpass';
       /** Master high-pass cutoff, 20-500 Hz; removes sub-bass a small speaker cannot play. */
       readonly highpassHz?: number;
+    }
+  | {
+      readonly type: 'highShelf';
+      /** Shelf corner in Hz, 20-20000; defaults to 3000. */
+      readonly hz?: number;
+      /** Shelf gain in dB, -24..24; 0 is a no-op. */
+      readonly gainDb?: number;
     }
   | {
       readonly type: 'reverb';
@@ -74,6 +91,8 @@ export interface RenderOptions {
   readonly monoBelowHz?: number;
   /** Optional target profile; findings then name deviations without scoring. */
   readonly target?: TargetInput;
+  /** Optional hard ranges; direct renderLoop callers inspect the report, tools throw. */
+  readonly assertions?: AssertionProfile;
   /** When present, replaces the preset/style chain entirely. `[]` renders dry. */
   readonly post?: readonly PostStep[];
   /** 0.5-1.5; shorthand for a tape/slow step. */
@@ -89,7 +108,7 @@ export interface RenderOptions {
   /** Requested output length in minutes for loop mode. */
   readonly minutes?: number;
   /** Decoded workspace WAVs keyed by the score's `samples` names. */
-  readonly samples?: ReadonlyMap<string, SampleSource>;
+  readonly samples?: SampleBank;
   /** Cooperative cancellation checked between render stages and inner loops. */
   readonly signal?: AbortSignal;
   /**

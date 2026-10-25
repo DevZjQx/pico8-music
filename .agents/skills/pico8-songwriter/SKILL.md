@@ -9,7 +9,8 @@ This file is **how to compose**: form, grid, track layout, arrangement, mix
 decisions, and the revise loop. `p8_help` is the **wire format**: fields, tokens,
 ranges, defaults, and every error. Read `p8_help` before writing a field this
 file does not name; where they disagree, `p8_help` wins. `p8_analyze` measures a
-WAV that already exists.
+WAV that already exists. `p8_export` writes the score as uncompressed MusicXML
+for notation software; it does not render audio.
 
 ## Workflow
 
@@ -116,6 +117,47 @@ K:2 -:2 S:2 -:2 H:1 H:1 H:2 K:2 H:2
 - One or two chords per bar; change faster only at a section edge.
 - Write a phrase once in `motifs`, then transform it per section:
   `@name.transpose(2)`, `.retrograde`, `.invert`, `.augment(2)`.
+- Declare `"key":"Am"` when the piece has one. The report then says what share
+  of the notes sit inside that scale and which accidentals you used. The key is
+  never inferred from the notes: an undeclared key is not guessed, so a score
+  without it gets the key-independent readings only.
+- `report harmony` gives the bass note of each bar (the lowest sounding pitch
+  class), how often it moves, and whether moves are fourths/fifths or steps. It
+  measures the bottom of the texture, not chord symbols: an arpeggio reads as its
+  bottom note, and a bass line reads as the notes it plays.
+
+## Emotion targets
+
+Three knobs carry most of the perceived emotion. Set them before choosing any
+sound, and set them one at a time: listener ratings mostly add up rather than
+interact, so they can be dialled independently.
+
+| Target | Mode | Tempo | Register |
+| --- | --- | --- | --- |
+| happy | major | fast | high |
+| sad | minor | slow | low |
+| tense | minor | — | low and close |
+| calm | major | slow | high |
+
+- Mode decides valence and tempo decides arousal; those two do most of the work.
+  Dynamics, articulation, and timbre are the trim. Textures follow the same
+  logic: a fast, high, detached line reads bright, a slow low legato line reads
+  heavy, before any instrument is chosen.
+- The ordering (mode > tempo > register > dynamics > articulation > timbre) is a
+  prior over average listener ratings, not a recipe for one good track. It comes
+  from measured synthesized performances, and chip timbres are nothing like the
+  sampled instruments in that study, so treat the timbre column as the weakest.
+- Average is the operative word. Listeners differ in training and culture — the
+  same study line found musicians and non-musicians weighting different cues —
+  so the table predicts the mean, not your listener. Breaking it on purpose is a
+  choice, not a bug; a finding is an observation, never a pass condition. On a
+  non-Western palette the whole table needs re-tuning rather than reuse.
+- Tension exists without functional harmony: register crowding, how far the
+  outer voices move, and two takes detuned against each other all read as
+  tension. On a chip palette those are often stronger than a chord choice.
+- The report does not score tension or surprise. Both are easy to optimise
+  directly and stop meaning anything once you do — the same reason there is no
+  density score. Read the numbers as observations; the judgement is yours.
 
 ## Arrangement
 
@@ -155,8 +197,11 @@ register.
 | echo as rhythm | `delay` with `steps` on the grid |
 
 Then the post chain, in this order unless you have a reason: tape/slow →
-lowpass → reverb → tilt → saturate → compress → loudness → limiter. `post: []`
-runs no chain, though a track's `send` still applies.
+lowpass → highShelf → reverb → tilt → saturate → compress → loudness → limiter.
+`post: []` runs no chain, though a track's `send` still applies. A `lowpass`
+`order` of 1 is 6 dB/oct; use 2 or 4 when near-Nyquist fizz is the problem. If
+2–5 kHz is harsh, a master `highShelf` around 3 kHz is more targeted than
+lowering the lowpass cutoff, because it leaves the air above the corner alone.
 
 For laptop/phone translation, put a `{"type":"highpass","highpassHz":35}`
 step early in the chain (30–40 Hz is enough; 60–80 only when the bass itself is
@@ -174,11 +219,38 @@ Listening comfort is part of the brief, not a finishing touch:
 | `unsafe: -8.9 LUFS` | above the -9 LUFS hearing-safety ceiling | **the render fails**; lower track volumes or the loudness target |
 | `loudness-flat` | song holds one level (LRA < 4 LU) and every section is within 6 dB | leave one section quieter, or mute a part for a bar |
 | `dynamics` | crest < 9 dB, transients are gone | less saturation/compression |
-| `harsh` | 2–5 kHz builds up | softer waveform, tilt down, less drive |
+| `harsh` | 2–5 kHz builds up | softer waveform, master `highShelf` at ~3 kHz, tilt down, less drive |
+| `phase` | L/R correlation below -0.2; mono fold-down cancels | shorten or filter the reverb/delay return, check the send |
+| `imbalanced` | one channel is more than 6 dB louder | recentre a pan or a one-sided send |
+| `true-peak` | dBTP is close to 0 | lower master gain or the limiter ceiling |
 
-`LRA` in the first report line is the loudness range: 0 means one level, 8-15 is
-a healthy arrangement arc. It ignores silence (the absolute gate drops it), so
-use the per-section `dBFS` alongside it. Above -9 LUFS the renderer refuses to
+The `report bars`, `density`, `structure`, and `register` lines describe the
+score, not the mix: changing `post` or `style` does not move them. Read them
+before the mix, because arrangement comes first.
+
+| Signal | Meaning | Move |
+| --- | --- | --- |
+| `density-spike` | one bar has about twice the attacks of its section | keep it only if it is the fill; otherwise thin that bar |
+| `density-flat` | a long section repeats one attack count | add a fill, ghost notes, or rest one part |
+| `melody-static` | the whole arrangement uses 2–3 pitch classes | add a chord tone, transpose one repeat, or change harmony under the same line |
+| `melody-leapy` | a non-bass single line never moves by step (chord parts are skipped) | connect leaps with scale steps |
+| `register-collision` | two tracks share 2+ octaves in a section | move one up or down an octave |
+| `key-mismatch` | most notes are outside the key the score declares | fix `key` if the notes are the piece, fix the notes if the key is the intent |
+| `harmony-static` | a section of 8+ bars never moves its bass | move the bass root once or twice, or keep the pedal deliberately |
+| `report harmony … bass A F C G` | the bass note of each bar, in order | read it as the harmony arc: repeats, or one note for eight bars |
+| `report structure … r0.9` | most bars restate an earlier bar | fine for a hook; vary the last bar of a long section |
+
+A chord counts as one attack and `~roll`/`~flam` expand to their real hits, so
+a rolled bar is not "sparser". In loop mode the bars are the authored loop, not
+the rendered repeats. `n` is notes, `pc` pitch classes, `e` entropy in bits,
+`s` stepwise (1–2 semitones), `l` leaps (5+), `r` the repeat rate.
+
+`peak` is the sample peak in dBFS; `true-peak` is the 4× oversampled dBTP. Both
+sit in the first report line. `LRA` is the loudness range: 0 means one level,
+8-15 is a healthy arrangement arc. It ignores silence (the absolute gate drops
+it), so use the per-section `dBFS` alongside it. `correlation` (1 same, 0
+unrelated, -1 anti-phase) and `balance` (positive means left is louder) sit on
+the `report space` line. Above -9 LUFS the renderer refuses to
 write the file; that is a safety limit, not an aesthetic one, so do not try to
 route around it.
 
@@ -186,7 +258,7 @@ route around it.
 - `style` is the fast path to a chain plus role instruments (`chip`, `hitech`,
   `ambient`, `studio`, `lofi`, `soft`); `preset` is a shorter shortcut. One, not
   both.
-- `width` above ~1 is mostly reverb, not size; check the report first.
+- `width` above ~1 is mostly reverb, not size; check `correlation` first (near 0 or negative means phase width, not a stable image).
 - Harshness usually comes from static chip harmonics and 2–5 kHz buildup, not
   from a missing layer: use `quality: "clean"`, a darker waveform or `tilt`,
   `highShelf`, and a reverb `highCutHz` before considering any noise.
@@ -200,8 +272,25 @@ route around it.
   decay is plucks. `fm` gets bells, e-bass, metallic leads.
 - `sample` plays a workspace WAV: a real voice, a field recording, a drum
   replacement. Paths are workspace-relative, never relative to the score file.
-- `velocity: {cutoffOctaves, drive}` makes accents brighter; it needs an
-  instrument `filter` and is rejected on sample voices.
+  `start`/`end`/`reverse`/`loopStart`/`loopEnd` cut a region; a named entry per
+  region is how you slice one file. `zones` maps key ranges and velocity layers
+  to those entries, so one sample instrument can cover the keyboard.
+- `fm.operators` (1–3 entries, each `{ratio, index, indexDecay, target}`) is a
+  fixed routing tree: `target: 0` modulates the carrier, `target: 1` modulates
+  the first modulator. It replaces `ratio`/`index`/`indexDecay`; one operator
+  is sample-identical to the classic voice.
+- `velocity: {cutoffOctaves, drive, indexScale}` makes accents brighter, and
+  `indexScale` (FM only) makes quiet notes darker. `cutoffOctaves` needs an
+  instrument `filter`; the whole field is rejected on sample voices.
+- Sampled drums accept `~decay`, which applies an exponential amplitude
+  envelope instead of being ignored.
+- Before changing an envelope, instrument filter, additive shape, or FM index,
+  call `p8_probe` on that track. It renders one dry note (fixed note/velocity/
+  gate) and reports spectral slope, odd/even harmonics, attack/decay, HF decay,
+  FM sidebands, and measured deltas for `attack`, `tilt`, `index`, `indexDecay`,
+  and `cutoffHz`. Odd/even is only meaningful for periodic chip/additive
+  sources; use FM sidebands for FM and a different source for samples/noise.
+  `bypassFilter: true` measures the source without the instrument filter.
 
 ### Reusable sounds
 
@@ -222,17 +311,30 @@ route around it.
 
 1. Fix `warnings` first (`pattern-misaligned`, `fill-misaligned`,
    `delay-base-tempo`); they are arrangement bugs, not mix bugs.
-2. Read `findings` as measurements: `mud` is 150–500 Hz buildup, `harsh` is
-   2–5 kHz, `masking` is two stems in one band, `dynamics` is crest factor,
-   `loudness-flat` is "one level all the way through"; `post-*` means the chain
-   caused it.
-3. `post-delta` shows what the chain did to the dry render; when a finding
+2. Read the symbolic lines next: `report density` is the section shape,
+   `report structure` the per-track motion, `report harmony` the bass arc, and
+   `register` the crowded pairs.
+   `density-spike` / `density-flat` / `melody-*` / `register-collision` /
+   `key-mismatch` / `harmony-static` are composition findings; fix them in the
+   score, not with EQ. `key-mismatch` is a disagreement, not a verdict: fix
+   whichever of the two — the key field or the notes — you actually meant.
+3. Read the audio `findings` as measurements: `mud` is 150–500 Hz buildup,
+   `harsh` is 2–5 kHz, `masking` is two stems in one band, `dynamics` is crest
+   factor, `loudness-flat` is "one level all the way through"; `post-*` means
+   the chain caused it.
+4. `post-delta` shows what the chain did to the dry render; when a finding
    appears only there, fix the chain, not the score.
-4. For a song, read the per-section `w` and `Hz` in `report sections`: if
+5. When the fix is a timbre parameter, run `p8_probe` on that track first: read
+   the source metrics and the measured sensitivity, then change one knob and
+   probe again. Do not tune FM or an envelope from the mix report alone.
+6. For a song, read the per-section `w` (width), `c` (correlation), `b`
+   (balance), `low-mid`, `2-5k`, and `Hz` in `report sections`: if
    `flat-space` fires, neither width nor brightness moves between sections.
-4. Fix in order: arrangement → levels and pan → filters → reverb/delay → master.
-5. `target` adds profile range checks; it reports, it is never a score to
-   maximise.
+7. Fix in order: arrangement → levels and pan → filters → reverb/delay → master.
+8. `target` adds profile range checks; it reports, it is never a score to
+   maximise. `assert` is stricter: a declared range miss fails the tool call,
+   so use it only when the requirement is objective (peak/true-peak, LUFS,
+   sections, correlation).
 
 ## Before you render
 
