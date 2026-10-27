@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseScore, ScoreError, secondsAtStep } from '../src/features/score/feature.ts';
+import { excerptOf, parseScore, ScoreError, secondsAtStep } from '../src/features/score/feature.ts';
 
 const score = {
   bpm: 120,
@@ -147,7 +147,7 @@ test('reports the failing field for bad input', () => {
     /at most 32/,
   );
   assert.throws(() => parseScore({ tracks: [{ pattern: 'H3:4' }] }), /unknown note "H3"/);
-  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:0' }] }), /between 1 and 64/);
+  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:0' }] }), /between 1 and 2048/);
   assert.throws(() => parseScore({ tracks: [{ pattern: 'C4~swing' }] }), ScoreError);
   assert.throws(() => parseScore({ tracks: [{ waveform: 'violin', pattern: 'C4' }] }), /waveform/);
 });
@@ -163,10 +163,10 @@ test('lets long rests pad a pattern while sounding notes stay capped', () => {
     parsed.tracks[0]?.events.map((event) => event.drum),
     ['crash'],
   );
-  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:65' }] }), /between 1 and 64/);
+  assert.throws(() => parseScore({ tracks: [{ pattern: 'C4:2049' }] }), /between 1 and 2048/);
   assert.throws(
-    () => parseScore({ tracks: [{ role: 'drums', pattern: 'X:1 -:257' }] }),
-    /between 1 and 256/,
+    () => parseScore({ tracks: [{ role: 'drums', pattern: 'X:1 -:4097' }] }),
+    /between 1 and 4096/,
   );
 });
 
@@ -836,7 +836,7 @@ test('rejects invalid chords, drum chords, and swing values', () => {
   );
   assert.throws(
     () => parseScore({ tracks: [{ pattern: 'C4:4g0' }] }),
-    /gate must be between 1 and 256/,
+    /gate must be between 1 and 4096/,
   );
 });
 
@@ -1119,6 +1119,121 @@ test('parses parameterised vibrato and slide effects', () => {
   assert.throws(
     () => parseScore({ tracks: [{ pattern: 'C4:4~slide(a)' }] }),
     /is not a number/,
+  );
+});
+
+test('parses micro-timing fields, timing suffixes, and a swing unit', () => {
+  const parsed = parseScore({
+    bpm: 120,
+    stepsPerBeat: 24,
+    swing: 0.2,
+    swingUnit: 12,
+    tracks: [
+      {
+        name: 'snare',
+        role: 'drums',
+        offsetMs: 12,
+        swing: 0,
+        humanize: { timingMs: 6 },
+        pattern: 'S:1~drag(15) -:23',
+      },
+      { name: 'bass', humanize: { velocity: 0.4 }, pattern: 'C2:4~push(10) C2:4' },
+    ],
+  });
+  assert.equal(parsed.stepsPerBeat, 24);
+  assert.equal(parsed.swingUnit, 12);
+  const snare = parsed.tracks[0];
+  assert.equal(snare?.offsetMs, 12);
+  assert.equal(snare?.swing, 0);
+  assert.deepEqual(snare?.humanize, { timingMs: 6 });
+  assert.equal(snare?.events[0]?.offsetMs, 15);
+  assert.equal(parsed.tracks[1]?.events[0]?.offsetMs, -10);
+  assert.deepEqual(parsed.tracks[1]?.humanize, { velocity: 0.4 });
+
+  const plain = parseScore({ tracks: [{ pattern: 'C4:4' }] });
+  assert.equal(plain.swingUnit, 1);
+  assert.equal(plain.tracks[0]?.offsetMs, undefined);
+  assert.equal(plain.tracks[0]?.swing, undefined);
+  assert.equal(plain.tracks[0]?.humanize, undefined);
+
+  // A motif's timing suffix survives formatting and retrograde.
+  const motif = parseScore({
+    motifs: { A: 'C4:4~drag(12)' },
+    tracks: [{ pattern: '@A.retrograde' }],
+  });
+  assert.equal(motif.tracks[0]?.events[0]?.offsetMs, 12);
+
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', offsetMs: 201 }] }),
+    /offsetMs must be between -200 and 200/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', swing: 0.6 }] }),
+    /swing must be between -0.5 and 0.5/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4', humanize: { timingMs: 151 } }] }),
+    /humanize.timingMs must be between 0 and 150/,
+  );
+  assert.throws(
+    () => parseScore({ stepsPerBeat: 6, swingUnit: 4, tracks: [{ pattern: 'C4:4' }] }),
+    /swingUnit must divide stepsPerBeat/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~drag(-10)' }] }),
+    /write ~push\(10\)/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~drag(201)' }] }),
+    /between 0 and 200 ms/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~drag(10)~push(10)' }] }),
+    /at most one timing suffix/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: '-:4~drag(10)' }] }),
+    /a rest cannot carry ~drag or ~push/,
+  );
+  const stacked = parseScore({
+    tracks: [{ pattern: 'C4:4@6~vib(0.2)~drag(10)' }],
+  });
+  assert.equal(stacked.tracks[0]?.events.length, 1);
+});
+
+test('parses parameterised arpeggios and rejects malformed ones', () => {
+  const parsed = parseScore({
+    tracks: [
+      { pattern: 'C4:8~arpfast(0,4,7,11;0.25)' },
+      { pattern: 'C4:8~arpslow(0,3,7,10;0.5)' },
+      { pattern: 'C4:8~arpfast' },
+    ],
+  });
+  assert.deepEqual(parsed.tracks[0]?.events[0]?.effectParams, {
+    arpSemitones: [0, 4, 7, 11],
+    arpSteps: 0.25,
+  });
+  assert.deepEqual(parsed.tracks[1]?.events[0]?.effectParams, {
+    arpSemitones: [0, 3, 7, 10],
+    arpSteps: 0.5,
+  });
+  assert.equal(parsed.tracks[2]?.events[0]?.effectParams, undefined);
+
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~arpfast(0,1,2,3,4,5,6,7,8)' }] }),
+    /1-8 semitone offsets/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~arpfast(0,4,7;0.01)' }] }),
+    /arp period must be between 0.05 and 8/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~arpfast(0,25)' }] }),
+    /arp semitones must be between -24 and 24/,
+  );
+  assert.throws(
+    () => parseScore({ tracks: [{ pattern: 'C4:4~arpfast()' }] }),
+    /at least one semitone offset/,
   );
 });
 
@@ -1905,4 +2020,60 @@ test('key is an optional tonic declaration with a preserved spelling', () => {
   assert.throws(() => withKey('A dorian'), /key must be a tonic/);
   assert.throws(() => withKey('Am7'), /key must be a tonic/);
   assert.throws(() => parseScore({ ...score, key: 7 }), /key must be a string/);
+});
+
+const excerptSong = {
+  mode: 'song' as const,
+  bpm: 120,
+  stepsPerBeat: 4,
+  beatsPerBar: 4,
+  patterns: {
+    drums: 'K:1 -:1 S:1 -:1',
+    bass: 'C2:4 E2:4 G2:4 A2:4',
+  },
+  tracks: [
+    { name: 'drums', role: 'drums', pattern: 'drums' },
+    { name: 'bass', role: 'bass', pattern: 'bass' },
+  ],
+  arrangement: [
+    { name: 'intro', bars: 1, mute: ['drums'], patterns: { bass: 'bass' } },
+    { name: 'drop', bars: 1, patterns: { drums: 'drums', bass: 'bass' } },
+    { name: 'break', bars: 1, mute: ['bass'], patterns: { drums: 'drums' } },
+  ],
+};
+
+test('excerptOf rebases section bounds and track events', () => {
+  const full = parseScore(excerptSong);
+  const excerpt = excerptOf(full, ['drop', 'break']);
+  assert.equal(excerpt.label, 'drop+break');
+  assert.equal(excerpt.startStep, 16);
+  assert.equal(excerpt.endStep, 48);
+  assert.equal(excerpt.startSeconds, 2);
+  assert.equal(excerpt.endSeconds, 6);
+  assert.equal(excerpt.score.bars, 2);
+  assert.equal(excerpt.score.totalSteps, 32);
+  assert.equal(excerpt.score.durationSeconds, 4);
+  assert.deepEqual(
+    excerpt.score.sections.map((section) => [section.name, section.startStep, section.startSeconds]),
+    [
+      ['drop', 0, 0],
+      ['break', 16, 2],
+    ],
+  );
+  const bass = excerpt.score.tracks.find((track) => track.name === 'bass');
+  assert.equal(bass?.timeline?.[0]?.step, 0);
+  assert.equal(bass?.timeline?.[0]?.sourceIndex, 4);
+  assert.ok(bass?.timeline?.every((event) => event.step >= 0 && event.step < 32));
+});
+
+test('excerptOf rejects loop mode, unknown, duplicate, and non-contiguous sections', () => {
+  assert.throws(
+    () => excerptOf(parseScore({ bars: 1, tracks: [{ pattern: 'C4:4' }] }), ['drop']),
+    /needs song mode/,
+  );
+  const full = parseScore(excerptSong);
+  assert.throws(() => excerptOf(full, []), /at least one section/);
+  assert.throws(() => excerptOf(full, ['nope']), /unknown section/);
+  assert.throws(() => excerptOf(full, ['drop', 'drop']), /duplicate name/);
+  assert.throws(() => excerptOf(full, ['intro', 'break']), /contiguous/);
 });

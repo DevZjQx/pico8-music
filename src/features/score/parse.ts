@@ -19,6 +19,8 @@ import type {
   EffectParams,
   Envelope,
   FmOperator,
+  GroupCompressor,
+  GroupSaturation,
   Humanize,
   Instrument,
   InstrumentFilter,
@@ -41,6 +43,7 @@ import type {
   TrackDelay,
   TrackFilter,
   TrackPattern,
+  TrackHumanize,
   TrackShelf,
   Tuning,
   VelocityMapping,
@@ -71,8 +74,8 @@ export const DEFAULT_ENVELOPE: Envelope = {
   release: 0.008,
 };
 
-const MAX_STEPS_PER_NOTE = 64;
-const MAX_GATE_STEPS = 256;
+const MAX_STEPS_PER_NOTE = 2048;
+const MAX_GATE_STEPS = 4096;
 /**
  * Explicit voicings can fill a two-hand pad chord. Named chord qualities stay
  * capped at four notes in chords.ts so their expansions, including the slash
@@ -767,6 +770,51 @@ function parseDrumSamples(
   return output;
 }
 
+/**
+ * Optional drum choke map: a trigger voice fades still-ringing target voices.
+ * The map is empty by default, so old scores keep every overlapping tail.
+ */
+function parseDrumChoke(value: unknown): ReadonlyMap<DrumName, readonly DrumName[]> {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new ScoreError(
+      'drumChoke must be an object mapping a trigger drum voice to an array of choked voices',
+    );
+  }
+  const output = new Map<DrumName, readonly DrumName[]>();
+  for (const [rawName, rawTargets] of Object.entries(value)) {
+    const trigger = parseDrumName(rawName);
+    if (trigger === undefined) {
+      throw new ScoreError(
+        `drumChoke.${rawName}: unknown trigger voice; use kick, snare, hat, openhat, clap, tom, rim, or crash`,
+      );
+    }
+    if (output.has(trigger)) {
+      throw new ScoreError(`drumChoke.${rawName}: ${trigger} is mapped more than once`);
+    }
+    if (!Array.isArray(rawTargets) || rawTargets.length === 0) {
+      throw new ScoreError(
+        `drumChoke.${rawName} must be a non-empty array of drum voices`,
+      );
+    }
+    const targets: DrumName[] = [];
+    for (const rawTarget of rawTargets) {
+      if (typeof rawTarget !== 'string') {
+        throw new ScoreError(`drumChoke.${rawName}: targets must be drum voice names`);
+      }
+      const target = parseDrumName(rawTarget.trim());
+      if (target === undefined) {
+        throw new ScoreError(
+          `drumChoke.${rawName}: unknown target voice ${JSON.stringify(rawTarget)}; use kick, snare, hat, openhat, clap, tom, rim, or crash`,
+        );
+      }
+      if (!targets.includes(target)) targets.push(target);
+    }
+    output.set(trigger, targets);
+  }
+  return output;
+}
+
 function parseInstruments(
   value: unknown,
   samples: ReadonlyMap<string, SampleSpec>,
@@ -860,6 +908,11 @@ interface PatternToken {
   readonly effectParams?: EffectParams;
   readonly drumEffect?: DrumEffect;
   readonly drumParams?: DrumParams;
+  /** Authored token offset in milliseconds; positive is late. */
+  readonly offsetMs?: number;
+  /** Per-note spatial overrides; absent keeps the track value. */
+  readonly pan?: number;
+  readonly send?: number;
   /** Resolved later against the envelopes and articulations tables. */
   readonly namedSuffix?: string;
 }
@@ -868,6 +921,8 @@ type EffectSuffix =
   | { readonly kind: 'effect'; readonly effect: Effect; readonly params?: EffectParams }
   | { readonly kind: 'drum'; readonly drum: DrumEffect }
   | { readonly kind: 'drumParam'; readonly drumParams: DrumParams }
+  | { readonly kind: 'timing'; readonly offsetMs: number }
+  | { readonly kind: 'spatial'; readonly pan?: number; readonly send?: number }
   | { readonly kind: 'name'; readonly name: string };
 
 const SUFFIX_RE = /^([A-Za-z_][A-Za-z0-9_-]*)(?:\(([^)]*)\))?$/;
@@ -890,12 +945,68 @@ function parseNumberArguments(text: string, where: string, count: number): numbe
   });
 }
 
+function parseArpParams(
+  argsText: string | undefined,
+  where: string,
+): EffectParams | undefined {
+  if (argsText === undefined) return undefined;
+  if (argsText.trim() === '') {
+    throw new ScoreError(`${where}: arp takes at least one semitone offset`);
+  }
+  const parts = argsText.split(';');
+  if (parts.length > 2) {
+    throw new ScoreError(
+      `${where}: arp takes a semitone list and an optional period, e.g. ~arpfast(0,4,7,11;0.25)`,
+    );
+  }
+  const semitonesText = (parts[0] ?? '').trim();
+  const periodText = parts[1]?.trim() ?? '';
+
+  if (semitonesText === '') {
+    throw new ScoreError(`${where}: arp takes at least one semitone offset`);
+  }
+  const items = semitonesText.split(',').map((item) => item.trim());
+  if (items.length < 1 || items.length > 8) {
+    throw new ScoreError(`${where}: arp takes 1-8 semitone offsets, got ${items.length}`);
+  }
+  const arpSemitones = items.map((item) => {
+    if (!/^-?\d+$/.test(item)) {
+      throw new ScoreError(`${where}: ${JSON.stringify(item)} is not an integer semitone offset`);
+    }
+    const value = Number.parseInt(item, 10);
+    if (value < -24 || value > 24) {
+      throw new ScoreError(`${where}: arp semitones must be between -24 and 24, got ${value}`);
+    }
+    return value;
+  });
+
+  let arpSteps: number | undefined;
+  if (periodText !== '') {
+    if (!/^\d+(?:\.\d+)?$/.test(periodText)) {
+      throw new ScoreError(`${where}: ${JSON.stringify(periodText)} is not an arp period`);
+    }
+    arpSteps = Number.parseFloat(periodText);
+    if (arpSteps < 0.05 || arpSteps > 8) {
+      throw new ScoreError(`${where}: arp period must be between 0.05 and 8 steps, got ${arpSteps}`);
+    }
+  }
+
+  return {
+    arpSemitones,
+    ...(arpSteps === undefined ? {} : { arpSteps }),
+  };
+}
+
 function parseEffectParams(
   effect: Effect,
   argsText: string | undefined,
   where: string,
 ): EffectParams | undefined {
   if (argsText === undefined) return undefined;
+
+  if (effect === 6 || effect === 7) {
+    return parseArpParams(argsText, where);
+  }
 
   if (effect === 2) {
     const parts = argsText.split(',').map((part) => part.trim());
@@ -1009,6 +1120,67 @@ function parseDrumParamSuffix(
   return { toneHz: value };
 }
 
+/** `~drag` is late and `~push` is early; both values are unsigned milliseconds. */
+function isTimingSuffixName(name: string): boolean {
+  const normalised = name.trim().toLowerCase();
+  return normalised === 'drag' || normalised === 'push';
+}
+
+/** `~pan`/`~send` are reserved spatial suffixes, not envelope names. */
+function isSpatialSuffixName(name: string): boolean {
+  const normalised = name.trim().toLowerCase();
+  return normalised === 'pan' || normalised === 'send';
+}
+
+function parseTimingSuffix(
+  rawName: string,
+  argsText: string | undefined,
+  where: string,
+): EffectSuffix | undefined {
+  const name = rawName.trim().toLowerCase();
+  if (name !== 'drag' && name !== 'push') return undefined;
+  if (argsText === undefined) {
+    throw new ScoreError(`${where}: ~${name} needs a value in milliseconds, e.g. ~${name}(15)`);
+  }
+  const value = parseNumberArguments(argsText, where, 1)[0] ?? 0;
+  if (value < 0) {
+    const opposite = name === 'drag' ? 'push' : 'drag';
+    throw new ScoreError(
+      `${where}: ~${name} takes an unsigned value; write ~${opposite}(${-value}) for the other direction`,
+    );
+  }
+  if (value > 200) {
+    throw new ScoreError(`${where}: ~${name} must be between 0 and 200 ms, got ${value}`);
+  }
+  return { kind: 'timing', offsetMs: name === 'drag' ? value : -value };
+}
+
+/** `~pan(-1)` and `~send(0.5)` override only this note's spatial placement. */
+function parseSpatialSuffix(
+  rawName: string,
+  argsText: string | undefined,
+  where: string,
+): EffectSuffix | undefined {
+  const name = rawName.trim().toLowerCase();
+  if (name !== 'pan' && name !== 'send') return undefined;
+  if (argsText === undefined) {
+    throw new ScoreError(
+      `${where}: ~${name} needs a value, e.g. ~${name}(${name === 'pan' ? '-0.5' : '0.4'})`,
+    );
+  }
+  const value = parseNumberArguments(argsText, where, 1)[0] ?? 0;
+  if (name === 'pan') {
+    if (value < -1 || value > 1) {
+      throw new ScoreError(`${where}: ~pan must be between -1 and 1, got ${value}`);
+    }
+    return { kind: 'spatial', pan: value };
+  }
+  if (value < 0 || value > 1) {
+    throw new ScoreError(`${where}: ~send must be between 0 and 1, got ${value}`);
+  }
+  return { kind: 'spatial', send: value };
+}
+
 function parseEffectSuffix(text: string, where: string): EffectSuffix {
   const raw = text.trim();
   if (raw === '') {
@@ -1024,6 +1196,10 @@ function parseEffectSuffix(text: string, where: string): EffectSuffix {
   const argsText = match[2];
   const effect = parseEffect(name);
   if (effect === undefined) {
+    const timing = parseTimingSuffix(name, argsText, where);
+    if (timing !== undefined) return timing;
+    const spatial = parseSpatialSuffix(name, argsText, where);
+    if (spatial !== undefined) return spatial;
     const drum = parseDrumEffectSuffix(name, argsText, where);
     if (drum !== undefined) return { kind: 'drum', drum };
     const drumParams = parseDrumParamSuffix(name, argsText, where);
@@ -1061,8 +1237,12 @@ function parsePatternToken(token: string, where: string): PatternToken {
   let effectParams: EffectParams | undefined;
   let drumEffect: DrumEffect | undefined;
   let drumParams: DrumParams | undefined;
+  let offsetMs: number | undefined;
+  let pan: number | undefined;
+  let send: number | undefined;
   let namedSuffix: string | undefined;
   let sawEffect = false;
+  let sawTiming = false;
   for (const part of suffixParts.slice(1)) {
     const suffix = parseEffectSuffix(part, where);
     if (suffix.kind === 'effect') {
@@ -1091,6 +1271,29 @@ function parsePatternToken(token: string, where: string): PatternToken {
         throw new ScoreError(`${where}: use at most one ~${name} suffix`);
       }
       drumParams = { ...drumParams, ...suffix.drumParams };
+      continue;
+    }
+    if (suffix.kind === 'timing') {
+      if (sawTiming) {
+        throw new ScoreError(`${where}: use at most one timing suffix (~drag or ~push)`);
+      }
+      offsetMs = suffix.offsetMs;
+      sawTiming = true;
+      continue;
+    }
+    if (suffix.kind === 'spatial') {
+      if (suffix.pan !== undefined) {
+        if (pan !== undefined) {
+          throw new ScoreError(`${where}: use at most one ~pan suffix`);
+        }
+        pan = suffix.pan;
+      }
+      if (suffix.send !== undefined) {
+        if (send !== undefined) {
+          throw new ScoreError(`${where}: use at most one ~send suffix`);
+        }
+        send = suffix.send;
+      }
       continue;
     }
     if (namedSuffix !== undefined) {
@@ -1142,6 +1345,9 @@ function parsePatternToken(token: string, where: string): PatternToken {
     ...(effectParams === undefined ? {} : { effectParams }),
     ...(drumEffect === undefined ? {} : { drumEffect }),
     ...(drumParams === undefined ? {} : { drumParams }),
+    ...(offsetMs === undefined ? {} : { offsetMs }),
+    ...(pan === undefined ? {} : { pan }),
+    ...(send === undefined ? {} : { send }),
     ...(namedSuffix === undefined ? {} : { namedSuffix }),
   };
 }
@@ -1152,6 +1358,12 @@ function formatEffectParams(effect: Effect, params: EffectParams): string {
   }
   if (effect === 1) {
     return `(${String(params.slideSteps ?? 1)})`;
+  }
+  if (effect === 6 || effect === 7) {
+    const semitones = params.arpSemitones?.join(',') ?? '';
+    const period = params.arpSteps === undefined ? '' : `;${String(params.arpSteps)}`;
+    if (semitones === '' && period === '') return '';
+    return semitones === '' ? `(;${String(params.arpSteps)})` : `(${semitones}${period})`;
   }
   return '';
 }
@@ -1171,6 +1383,11 @@ function formatDrumParams(params: DrumParams | undefined): string {
   return `${pitch}${decay}${tone}`;
 }
 
+function formatTimingSuffix(offsetMs: number | undefined): string {
+  if (offsetMs === undefined) return '';
+  return offsetMs < 0 ? `~push(${String(-offsetMs)})` : `~drag(${String(offsetMs)})`;
+}
+
 function formatPatternToken(token: PatternToken): string {
   const gate = token.gateSteps === undefined ? '' : `g${token.gateSteps}`;
   const volume = token.volume === undefined ? '' : `@${token.volume}`;
@@ -1178,8 +1395,10 @@ function formatPatternToken(token: PatternToken): string {
   const effect = token.effect === 0 ? '' : `~${EFFECT_NAMES[token.effect]}${params}`;
   const drumEffect = formatDrumEffect(token.drumEffect);
   const drumParams = formatDrumParams(token.drumParams);
+  const timing = formatTimingSuffix(token.offsetMs);
+  const spatial = `${token.pan === undefined ? '' : `~pan(${String(token.pan)})`}${token.send === undefined ? '' : `~send(${String(token.send)})`}`;
   const named = token.namedSuffix === undefined ? '' : `~${token.namedSuffix}`;
-  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${drumParams}${named}`;
+  return `${token.noteText}:${token.steps}${gate}${volume}${effect}${drumEffect}${drumParams}${timing}${spatial}${named}`;
 }
 
 type MotifTransformName = 'transpose' | 'invert' | 'retrograde' | 'augment' | 'diminish';
@@ -1505,6 +1724,12 @@ function parsePattern(
       if (parsed.drumParams !== undefined) {
         throw new ScoreError(`${where}: a rest cannot carry ~pitch, ~decay, or ~tone`);
       }
+      if (parsed.offsetMs !== undefined) {
+        throw new ScoreError(`${where}: a rest cannot carry ~drag or ~push`);
+      }
+      if (parsed.pan !== undefined || parsed.send !== undefined) {
+        throw new ScoreError(`${where}: a rest cannot carry ~pan or ~send`);
+      }
       cursor += steps;
       return;
     }
@@ -1559,6 +1784,9 @@ function parsePattern(
       ...(effectParams === undefined ? {} : { effectParams }),
       ...(parsed.drumEffect === undefined ? {} : { drumEffect: parsed.drumEffect }),
       ...(parsed.drumParams === undefined ? {} : { drumParams: parsed.drumParams }),
+      ...(parsed.offsetMs === undefined ? {} : { offsetMs: parsed.offsetMs }),
+      ...(parsed.pan === undefined ? {} : { pan: parsed.pan }),
+      ...(parsed.send === undefined ? {} : { send: parsed.send }),
       ...(envelope === undefined ? {} : { envelope }),
     };
 
@@ -1819,6 +2047,9 @@ function parseTrack(
       'pan',
       'send',
       'duck',
+      'offsetMs',
+      'swing',
+      'humanize',
       'filter',
       'highpassHz',
       'lowShelf',
@@ -1919,6 +2150,11 @@ function parseTrack(
   const send = parsedSend.amount;
   const duck =
     value.duck === undefined ? (preset?.duck ?? 0) : readNumber(value.duck, `${path}.duck`, 0, 0, 1);
+  const offsetMs =
+    value.offsetMs === undefined ? undefined : readNumber(value.offsetMs, `${path}.offsetMs`, 0, -200, 200);
+  const swing =
+    value.swing === undefined ? undefined : readNumber(value.swing, `${path}.swing`, 0, -0.5, 0.5);
+  const trackHumanize = parseTrackHumanize(value.humanize, `${path}.humanize`);
   const filter =
     value.filter === undefined ? preset?.filter : parseTrackFilter(value.filter, `${path}.filter`);
   const highpassHz =
@@ -2025,6 +2261,9 @@ function parseTrack(
       ...(parsedSend.bus === undefined ? {} : { sendBus: parsedSend.bus }),
       ...(parsedSend.stereo === undefined ? {} : { sendStereo: parsedSend.stereo }),
       duck,
+      ...(offsetMs === undefined ? {} : { offsetMs }),
+      ...(swing === undefined ? {} : { swing }),
+      ...(trackHumanize === undefined ? {} : { humanize: trackHumanize }),
       ...(filter === undefined ? {} : { filter }),
       ...(highpassHz === undefined ? {} : { highpassHz }),
       ...(lowShelf === undefined ? {} : { lowShelf }),
@@ -2568,7 +2807,13 @@ function parseEnvelopes(value: unknown): ReadonlyMap<string, Envelope> {
     if (!ENVELOPE_NAME_RE.test(name)) {
       throw new ScoreError(`envelopes.${name}: names use letters, digits, "_" or "-"`);
     }
-    if (parseEffect(name) !== undefined || isDrumEffectName(name) || DRUM_PARAM_RE.test(name)) {
+    if (
+      parseEffect(name) !== undefined ||
+      isDrumEffectName(name) ||
+      DRUM_PARAM_RE.test(name) ||
+      isTimingSuffixName(name) ||
+      isSpatialSuffixName(name)
+    ) {
       throw new ScoreError(
         `envelopes.${name}: name collides with the ${name} effect; choose another envelope name`,
       );
@@ -2627,6 +2872,28 @@ function parseArticulationEffectParams(
     rejectUnknownKeys(value, ['slideSteps'], path);
     if (value.slideSteps === undefined) return undefined;
     return { slideSteps: readNumber(value.slideSteps, `${path}.slideSteps`, 1, 0.05, 8) };
+  }
+  if (effect === 6 || effect === 7) {
+    rejectUnknownKeys(value, ['arpSemitones', 'arpSteps'], path);
+    let arpSemitones: readonly number[] | undefined;
+    if (value.arpSemitones !== undefined) {
+      if (!Array.isArray(value.arpSemitones) || value.arpSemitones.length < 1 || value.arpSemitones.length > 8) {
+        throw new ScoreError(`${path}.arpSemitones must be an array of 1-8 integer semitone offsets`);
+      }
+      arpSemitones = value.arpSemitones.map((entry, index) => {
+        const number = readRequiredNumber(entry, `${path}.arpSemitones[${index}]`, -24, 24, true);
+        return number;
+      });
+    }
+    const arpSteps =
+      value.arpSteps === undefined
+        ? undefined
+        : readNumber(value.arpSteps, `${path}.arpSteps`, 1, 0.05, 8);
+    if (arpSemitones === undefined && arpSteps === undefined) return undefined;
+    return {
+      ...(arpSemitones === undefined ? {} : { arpSemitones }),
+      ...(arpSteps === undefined ? {} : { arpSteps }),
+    };
   }
   throw new ScoreError(`${path}: ~${EFFECT_NAMES[effect]} takes no parameters`);
 }
@@ -2707,7 +2974,13 @@ function parseArticulations(
     if (!ENVELOPE_NAME_RE.test(name)) {
       throw new ScoreError(`articulations.${name}: names use letters, digits, "_" or "-"`);
     }
-    if (parseEffect(name) !== undefined || isDrumEffectName(name) || DRUM_PARAM_RE.test(name)) {
+    if (
+      parseEffect(name) !== undefined ||
+      isDrumEffectName(name) ||
+      DRUM_PARAM_RE.test(name) ||
+      isTimingSuffixName(name) ||
+      isSpatialSuffixName(name)
+    ) {
       throw new ScoreError(
         `articulations.${name}: name collides with the ${name} effect; choose another articulation name`,
       );
@@ -2909,6 +3182,8 @@ const GROUP_KEYS = [
   'lowShelf',
   'highShelf',
   'delay',
+  'saturate',
+  'compress',
   'reverb',
   'room',
   'damp',
@@ -2928,9 +3203,36 @@ const GROUP_REVERB_KEYS = [
   'modRateHz',
 ] as const;
 
+function parseGroupSaturation(value: unknown, path: string): GroupSaturation {
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with drive and mix; use {} for the defaults`);
+  }
+  rejectUnknownKeys(value, ['drive', 'mix'], path);
+  return {
+    drive: readNumber(value.drive, `${path}.drive`, 0.3, 0, 1),
+    mix: readNumber(value.mix, `${path}.mix`, 0.5, 0, 1),
+  };
+}
+
+function parseGroupCompressor(value: unknown, path: string): GroupCompressor {
+  if (!isRecord(value)) {
+    throw new ScoreError(
+      `${path} must be an object with thresholdDb, ratio, attack, release, and makeupDb; use {} for the defaults`,
+    );
+  }
+  rejectUnknownKeys(value, ['thresholdDb', 'ratio', 'attack', 'release', 'makeupDb'], path);
+  return {
+    thresholdDb: readNumber(value.thresholdDb, `${path}.thresholdDb`, -18, -60, 0),
+    ratio: readNumber(value.ratio, `${path}.ratio`, 2, 1, 40),
+    attackSeconds: readNumber(value.attack, `${path}.attack`, 0.01, 0.0005, 1),
+    releaseSeconds: readNumber(value.release, `${path}.release`, 0.15, 0.01, 2),
+    makeupDb: readNumber(value.makeupDb, `${path}.makeupDb`, 0, -12, 24),
+  };
+}
+
 function parseGroup(value: unknown, name: string, path: string): ScoreGroup {
   if (!isRecord(value)) {
-    throw new ScoreError(`${path} must be an object with gain, pan, send, filter, or reverb`);
+    throw new ScoreError(`${path} must be an object with gain, pan, send, filter, saturate, compress, or reverb`);
   }
   rejectUnknownKeys(value, [...GROUP_KEYS], path);
   const directReverbKeys = GROUP_REVERB_KEYS.filter((key) => value[key] !== undefined);
@@ -2968,6 +3270,12 @@ function parseGroup(value: unknown, name: string, path: string): ScoreGroup {
     ...(value.delay === undefined
       ? {}
       : { delay: parseTrackDelay(value.delay, `${path}.delay`) }),
+    ...(value.saturate === undefined
+      ? {}
+      : { saturate: parseGroupSaturation(value.saturate, `${path}.saturate`) }),
+    ...(value.compress === undefined
+      ? {}
+      : { compress: parseGroupCompressor(value.compress, `${path}.compress`) }),
     ...(reverb === undefined ? {} : { reverb }),
   };
 }
@@ -3004,6 +3312,28 @@ function parseHumanize(value: unknown): Humanize {
   return {
     timingMs: readNumber(value.timingMs, 'humanize.timingMs', 0, 0, 150),
     velocity: readNumber(value.velocity, 'humanize.velocity', 0, 0, 1),
+  };
+}
+
+/** Track overrides keep absent fields absent so the score depth still applies. */
+function parseTrackHumanize(value: unknown, path: string): TrackHumanize | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new ScoreError(`${path} must be an object with optional timingMs and velocity`);
+  }
+  rejectUnknownKeys(value, ['timingMs', 'velocity'], path);
+  const timingMs =
+    value.timingMs === undefined
+      ? undefined
+      : readNumber(value.timingMs, `${path}.timingMs`, 0, 0, 150);
+  const velocity =
+    value.velocity === undefined
+      ? undefined
+      : readNumber(value.velocity, `${path}.velocity`, 0, 0, 1);
+  if (timingMs === undefined && velocity === undefined) return undefined;
+  return {
+    ...(timingMs === undefined ? {} : { timingMs }),
+    ...(velocity === undefined ? {} : { velocity }),
   };
 }
 
@@ -3155,6 +3485,7 @@ export function parseScore(input: string | unknown): Score {
       'stepsPerBeat',
       'beatsPerBar',
       'swing',
+      'swingUnit',
       'seed',
       'envelopes',
       'articulations',
@@ -3164,6 +3495,7 @@ export function parseScore(input: string | unknown): Score {
       'instruments',
       'samples',
       'drumSamples',
+      'drumChoke',
       'mode',
       'arrangement',
       'inheritSections',
@@ -3180,10 +3512,16 @@ export function parseScore(input: string | unknown): Score {
   );
 
   const bpm = readNumber(raw.bpm, 'bpm', DEFAULTS.bpm, 30, 300);
-  const stepsPerBeat = readNumber(raw.stepsPerBeat, 'stepsPerBeat', DEFAULTS.stepsPerBeat, 1, 8, true);
+  const stepsPerBeat = readNumber(raw.stepsPerBeat, 'stepsPerBeat', DEFAULTS.stepsPerBeat, 1, 24, true);
   const beatsPerBar = readNumber(raw.beatsPerBar, 'beatsPerBar', DEFAULTS.beatsPerBar, 1, 16, true);
   const stepsPerBar = stepsPerBeat * beatsPerBar;
   const swing = readNumber(raw.swing, 'swing', 0, -0.5, 0.5);
+  const swingUnit = readNumber(raw.swingUnit, 'swingUnit', 1, 1, stepsPerBeat, true);
+  if (stepsPerBeat % swingUnit !== 0) {
+    throw new ScoreError(
+      `swingUnit must divide stepsPerBeat (${stepsPerBeat}); got ${swingUnit}`,
+    );
+  }
   const seed = readNumber(raw.seed, 'seed', 0, 0, 2147483647, true);
   const humanize = parseHumanize(raw.humanize);
   const tuning = parseTuning(raw.tuning);
@@ -3204,6 +3542,7 @@ export function parseScore(input: string | unknown): Score {
     raw.groups !== undefined ? 'groups' : 'buses',
   );
   const drumSamples = parseDrumSamples(raw.drumSamples, samples);
+  const drumChoke = parseDrumChoke(raw.drumChoke);
   const hasArrangement = raw.arrangement !== undefined;
   const mode = parseMode(raw.mode, hasArrangement);
 
@@ -3336,6 +3675,7 @@ export function parseScore(input: string | unknown): Score {
     stepSeconds,
     durationSeconds,
     swing,
+    swingUnit,
     seed,
     humanize,
     tuning,
@@ -3346,6 +3686,7 @@ export function parseScore(input: string | unknown): Score {
     tailSeconds,
     samples,
     drumSamples,
+    drumChoke,
     warnings,
   };
 }

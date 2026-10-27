@@ -12,6 +12,8 @@ export {
   resolveSectionBounds,
   sectionReadings,
 } from './analyze.ts';
+export { compareAnalyses, formatComparison } from './compare.ts';
+export type { Comparison, ComparisonRow } from './compare.ts';
 export { checkAssertions, formatAssertionCheck, formatAssertionLine, resolveAssertions } from './assert.ts';
 export { integratedLufs, loudnessRange, loudnessSummary, MAX_SAFE_LUFS } from './loudness.ts';
 export {
@@ -54,6 +56,7 @@ export type {
   SectionBound,
   SectionReading,
   StemReading,
+  StemSectionReading,
   TargetCheck,
   TargetReading,
 } from './analyze.ts';

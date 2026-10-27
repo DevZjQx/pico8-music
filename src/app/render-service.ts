@@ -1,16 +1,17 @@
 import { mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
-import { musicXmlOf } from '../features/musicxml/feature.ts';
-import { parseScore, type SampleFileSpec, type Score } from '../features/score/feature.ts';
+import { excerptOf, parseScore, type SampleFileSpec, type Score, type ScoreExcerpt } from '../features/score/feature.ts';
 import {
   MAX_SAFE_LUFS,
   PRESETS,
   analyseAudio,
+  compareAnalyses,
   createDitherState,
   decodeWav,
   encodeWavFrames,
   encodeWavHeader,
   formatAssertionCheck,
+  formatComparison,
   formatProbe,
   formatReport,
   probeTrack,
@@ -55,18 +56,17 @@ export interface RenderArgs {
   readonly wet?: number;
   readonly toneHz?: number;
   readonly minutes?: number;
+  /** Section names to render as a contiguous excerpt; song mode only. */
+  readonly sections?: readonly string[];
+  /** Track names or roles to keep audible; absent keeps every track. */
+  readonly solo?: readonly string[];
+  /** Track names or roles to silence; applied after solo. */
+  readonly mute?: readonly string[];
   readonly out?: string;
   /** `summary` (default) or `raw`: write the complete render report beside the WAV. */
   readonly detail?: string;
-}
-
-export interface ExportArgs {
-  /** Inline score JSON. Mutually exclusive with `scoreFile`. */
-  readonly score?: string;
-  /** Workspace-relative path to a JSON score file. Mutually exclusive with `score`. */
-  readonly scoreFile?: string;
-  /** Workspace-relative output path ending in `.musicxml`; default `pico8-music.musicxml`. */
-  readonly out?: string;
+  /** Compare this render with the previous cached render and return a delta table. */
+  readonly compare?: boolean;
 }
 
 export interface ProbeArgs {
@@ -97,8 +97,13 @@ export interface ProbeArgs {
 
 export interface AnalyzeArgs {
   readonly path: string;
-  /** `summary` (default) or `raw`: write the complete analysis beside the WAV. */
+  /**
+   * `summary` (default), `raw`, or `compare`. Compare needs `against` and returns
+   * a delta table instead of a second summary.
+   */
   readonly detail?: string;
+  /** Workspace-relative WAV to compare against; required for `detail: compare`. */
+  readonly against?: string;
   /** Optional target profile name or inline ranges; validated by the render feature. */
   readonly target?: unknown;
   /** Optional hard ranges; a miss aborts the call after measurement. */
@@ -127,15 +132,54 @@ function workspaceDirectory(exec: ToolExecution): string {
   return typeof cwd === 'string' && cwd.trim() !== '' ? cwd : process.cwd();
 }
 
+/** Workspace-local slot for the previous render's analysis. */
+const COMPARE_CACHE = '.p8-compare.json';
+
+interface CompareCache {
+  readonly path?: string;
+  readonly analysis: Analysis;
+}
+
+function isAnalysis(value: unknown): value is Analysis {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { seconds?: unknown }).seconds === 'number' &&
+    typeof (value as { lufs?: unknown }).lufs === 'number'
+  );
+}
+
+async function readCompareCache(path: string): Promise<CompareCache | undefined> {
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+  try {
+    // The artifact replacer writes non-finite measurements as null. A silent
+    // render's LUFS is -Infinity, so restore that before comparing facts.
+    const parsed: unknown = JSON.parse(text, (_key, value) => (value === null ? -Infinity : value));
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const record = parsed as { path?: unknown; analysis?: unknown };
+    if (!isAnalysis(record.analysis)) return undefined;
+    return {
+      ...(typeof record.path === 'string' ? { path: record.path } : {}),
+      analysis: record.analysis,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Labels with a fixed extension; `path` is left to the caller's format check. */
 const PATH_EXTENSIONS = {
   out: '.wav',
-  musicxml: '.musicxml',
   scoreFile: '.json',
   sample: '.wav',
   probe: '.json',
 } as const;
-type PathLabel = 'out' | 'musicxml' | 'path' | 'scoreFile' | 'sample' | 'probe';
+type PathLabel = 'out' | 'path' | 'scoreFile' | 'sample' | 'probe';
 
 /** One sample asset cap; a huge file is a budget error, not a silent memory spike. */
 const MAX_SAMPLE_FILE_BYTES = 32 * 1024 * 1024;
@@ -503,6 +547,58 @@ async function scoreJsonOf(
   return json;
 }
 
+/**
+ * Resolve a solo/mute list against track names first and roles second, matching
+ * how section `mute` already resolves targets. A role can name several tracks;
+ * the renderer receives the resolved names so it never has to re-resolve roles.
+ */
+function resolveTrackSet(
+  score: Score,
+  values: readonly string[] | undefined,
+  field: 'solo' | 'mute',
+): ReadonlySet<string> | undefined {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values)) throw new Error(`${field} must be an array of track names or roles`);
+  const names = new Set<string>();
+  for (const raw of values) {
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      throw new Error(`${field} entries must be non-empty track names or roles`);
+    }
+    const value = raw.trim();
+    const byName = score.tracks.filter((track) => track.name === value);
+    const matches =
+      byName.length > 0
+        ? byName
+        : score.tracks.filter((track) => track.role.toLowerCase() === value.toLowerCase());
+    if (matches.length === 0) {
+      const tracks = score.tracks.map((track) => track.name).join(', ');
+      const roles = [...new Set(score.tracks.map((track) => track.role))].join(', ');
+      throw new Error(
+        `${field}: unknown track or role ${JSON.stringify(value)}; tracks: ${tracks}; roles: ${roles}`,
+      );
+    }
+    for (const track of matches) names.add(track.name);
+  }
+  return names;
+}
+
+function isAudibleTrack(
+  trackName: string,
+  solo: ReadonlySet<string> | undefined,
+  mute: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    (solo === undefined || solo.size === 0 || solo.has(trackName)) &&
+    (mute === undefined || !mute.has(trackName))
+  );
+}
+
+/** Turn a section selection into a derived score and the report header facts. */
+function selectExcerpt(score: Score, sections: readonly string[] | undefined): ScoreExcerpt | undefined {
+  if (sections === undefined) return undefined;
+  return excerptOf(score, sections);
+}
+
 /** Shared by both host adapters: validate, render, write, summarise, report. */
 export async function executeRender(args: RenderArgs, exec: ToolExecution = {}): Promise<string> {
   if (exec.signal?.aborted) throw new Error('render aborted');
@@ -510,9 +606,46 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
   if (detail !== 'summary' && detail !== 'raw') {
     throw new Error('detail must be summary or raw');
   }
+  if (args.compare !== undefined && typeof args.compare !== 'boolean') {
+    throw new Error('compare must be true or false');
+  }
 
   const cwd = workspaceDirectory(exec);
-  const score = parseScore(await scoreJsonOf(args, cwd));
+  const parsed = parseScore(await scoreJsonOf(args, cwd));
+  const excerpt = selectExcerpt(parsed, args.sections);
+  let score = excerpt?.score ?? parsed;
+  const solo = resolveTrackSet(score, args.solo, 'solo');
+  const mute = resolveTrackSet(score, args.mute, 'mute');
+  const audibleCount = score.tracks.filter((track) =>
+    isAudibleTrack(track.name, solo, mute),
+  ).length;
+  if (audibleCount === 0) {
+    throw new Error('solo/mute leaves no audible tracks; nothing to render');
+  }
+  const auditionNotes: string[] = [];
+  let excerptHeader: string | undefined;
+  if (excerpt !== undefined) {
+    const stepsPerBar = Math.max(1, score.stepsPerBeat * score.beatsPerBar);
+    const firstBar = Math.floor(excerpt.startStep / stepsPerBar) + 1;
+    const lastBar = Math.ceil(excerpt.endStep / stepsPerBar);
+    excerptHeader = `excerpt ${excerpt.label} · bars ${firstBar}-${lastBar} · ${score.bars} bars, ${score.durationSeconds.toFixed(1)} s of music`;
+    auditionNotes.push(
+      `excerpt: ${excerpt.label} (bars ${firstBar}-${lastBar}); the report describes only this excerpt, not the whole song`,
+    );
+  }
+  if (solo !== undefined) {
+    auditionNotes.push(
+      `solo: ${[...solo].join(', ')} (${audibleCount}/${score.tracks.length} tracks audible); levels are an audition, not a mix judgement`,
+    );
+  }
+  if (mute !== undefined) {
+    auditionNotes.push(
+      `mute: ${[...mute].join(', ')} (${audibleCount}/${score.tracks.length} tracks audible); levels are an audition, not a mix judgement`,
+    );
+  }
+  if (auditionNotes.length > 0) {
+    score = { ...score, warnings: [...score.warnings, ...auditionNotes] };
+  }
   const sampleBank = await loadSampleBank(score, cwd);
   const preset = presetOf(args.preset);
   const style = styleOf(args.style);
@@ -533,6 +666,8 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
     ...(target === undefined ? {} : { target }),
     ...(assertions === undefined ? {} : { assertions }),
     minutes: optionalNumber(args.minutes, 'minutes'),
+    ...(solo === undefined ? {} : { solo }),
+    ...(mute === undefined ? {} : { mute }),
     signal: exec.signal,
     samples: sampleBank,
     withWav: false,
@@ -553,6 +688,26 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
   await mkdir(dirname(outputPath), { recursive: true });
   await writeWaveFile(outputPath, output, exec.signal);
 
+  const compareLines: string[] = [];
+  if (args.compare === true) {
+    const cachePath = workspacePath(COMPARE_CACHE, 'scoreFile', cwd);
+    const previous = await readCompareCache(cachePath);
+    compareLines.push(
+      ...(previous === undefined
+        ? ['compare: no previous render cached; this render is now the baseline']
+        : formatComparison(compareAnalyses(previous.analysis, output.report)).split('\n')),
+    );
+    await writeFile(
+      cachePath,
+      JSON.stringify(
+        { path: outputPath, analysis: output.report },
+        (_key, value) => (typeof value === 'number' && !Number.isFinite(value) ? null : value),
+        2,
+      ),
+      'utf8',
+    );
+  }
+
   const repeats = output.repeats;
   const chain = chainLabel(args, style, preset);
   const sectionBpms = [...new Set(score.sections.map((section) => section.bpm))];
@@ -560,15 +715,23 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
     sectionBpms.length === 0 || (sectionBpms.length === 1 && sectionBpms[0] === score.bpm)
       ? `${score.bpm} bpm`
       : `${score.bpm} bpm base, sections ${sectionBpms.join('/')}`;
+  const soloHeader =
+    solo === undefined ? undefined : `solo ${[...solo].join(', ')} · ${audibleCount}/${score.tracks.length} tracks audible`;
+  const muteHeader =
+    mute === undefined ? undefined : `mute ${[...mute].join(', ')} · ${audibleCount}/${score.tracks.length} tracks audible`;
   const lines = [
     `Rendered ${outputPath}`,
     `duration ${output.durationSeconds.toFixed(1)} s · loop ${output.loopSeconds.toFixed(2)} s × ${repeats} · ${output.rate} Hz stereo`,
     `mode ${score.mode} · ${chain.mode} · speed ${output.speed.toFixed(2)} · score ${tempo}, ${score.bars} bars, ${score.tracks.length} tracks`,
+    ...(excerptHeader === undefined ? [] : [excerptHeader]),
+    ...(soloHeader === undefined ? [] : [soloHeader]),
+    ...(muteHeader === undefined ? [] : [muteHeader]),
     ...(score.samples.size === 0
       ? []
       : [`samples ${score.samples.size} · ${[...score.samples.keys()].join(', ')}`]),
     `post ${chain.post}`,
     formatReport(output.report),
+    ...compareLines,
   ];
   if (detail === 'raw') {
     // Render-time data (stems, dry) cannot be reconstructed from a WAV, so the
@@ -579,7 +742,32 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
     await writeFile(
       rawPath,
       JSON.stringify(
-        { path: outputPath, rate: output.rate, analysis: output.report },
+        {
+          path: outputPath,
+          rate: output.rate,
+          analysis: output.report,
+          ...(excerpt === undefined
+            ? {}
+            : {
+                excerpt: {
+                  label: excerpt.label,
+                  startStep: excerpt.startStep,
+                  endStep: excerpt.endStep,
+                  startSeconds: excerpt.startSeconds,
+                  endSeconds: excerpt.endSeconds,
+                },
+              }),
+          ...(solo === undefined && mute === undefined
+            ? {}
+            : {
+                audition: {
+                  ...(solo === undefined ? {} : { solo: [...solo] }),
+                  ...(mute === undefined ? {} : { mute: [...mute] }),
+                  audibleTracks: audibleCount,
+                  totalTracks: score.tracks.length,
+                },
+              }),
+        },
         (_key, value) => (typeof value === 'number' && !Number.isFinite(value) ? null : value),
         2,
       ),
@@ -590,30 +778,6 @@ export async function executeRender(args: RenderArgs, exec: ToolExecution = {}):
   return lines.join('\n');
 }
 
-/** Writes the score as uncompressed MusicXML 4.0 partwise XML. */
-export async function executeExport(
-  args: ExportArgs,
-  exec: ToolExecution = {},
-): Promise<string> {
-  if (exec.signal?.aborted) throw new Error('export aborted');
-  const cwd = workspaceDirectory(exec);
-  const score = parseScore(await scoreJsonOf(args, cwd));
-  const outputPath = workspacePath(args.out ?? 'pico8-music.musicxml', 'musicxml', cwd, 'out');
-  const xml = musicXmlOf(score);
-
-  if (exec.signal?.aborted) throw new Error('export aborted');
-  await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, xml, 'utf8');
-
-  const drums = score.tracks.filter((track) => track.isDrums).length;
-  const sections = score.sections.length;
-  return [
-    `Exported ${outputPath}`,
-    `MusicXML 4.0 partwise (uncompressed) · ${score.bars} bars · ${score.tracks.length} parts${drums === 0 ? '' : ` (${drums} percussion)`} · ${score.bpm} bpm${sections === 0 ? '' : `, ${sections} sections`}`,
-    `source ${args.scoreFile === undefined ? 'inline score' : args.scoreFile}`,
-  ].join('\n');
-}
-
 /** Analyses an existing WAV so the model can re-check a render without redoing it. */
 export async function executeAnalyze(args: AnalyzeArgs, exec: ToolExecution = {}): Promise<string> {
   if (exec.signal?.aborted) throw new Error('analyze aborted');
@@ -621,11 +785,18 @@ export async function executeAnalyze(args: AnalyzeArgs, exec: ToolExecution = {}
     throw new Error('path must point at a 16-bit PCM WAV file');
   }
   const detail = args.detail ?? 'summary';
-  if (detail !== 'summary' && detail !== 'raw') {
-    throw new Error('detail must be summary or raw');
+  if (detail !== 'summary' && detail !== 'raw' && detail !== 'compare') {
+    throw new Error('detail must be summary or raw, or compare');
+  }
+  if (detail === 'compare' && (typeof args.against !== 'string' || args.against.trim() === '')) {
+    throw new Error('detail: compare requires against: a workspace-relative WAV path');
+  }
+  if (detail !== 'compare' && args.against !== undefined) {
+    throw new Error('against is only used with detail: compare');
   }
 
-  const inputPath = workspacePath(args.path, 'path', workspaceDirectory(exec));
+  const cwd = workspaceDirectory(exec);
+  const inputPath = workspacePath(args.path, 'path', cwd);
   const bytes = await readFile(inputPath);
   const decoded = decodeWav(bytes);
   const target = targetOf(args.target);
@@ -648,6 +819,22 @@ export async function executeAnalyze(args: AnalyzeArgs, exec: ToolExecution = {}
     ...(assertions === undefined ? {} : { assertions }),
   });
   assertionFailure(analysis);
+  if (detail === 'compare') {
+    const againstPath = workspacePath(args.against ?? '', 'path', cwd);
+    const againstBytes = await readFile(againstPath);
+    const againstDecoded = decodeWav(againstBytes);
+    const againstAnalysis = analyseAudio(
+      againstDecoded.left,
+      againstDecoded.right,
+      againstDecoded.rate,
+    );
+    const lines = [
+      `Compared ${inputPath} against ${againstPath}`,
+      `duration ${againstAnalysis.seconds.toFixed(1)} s -> ${analysis.seconds.toFixed(1)} s · ${againstDecoded.rate} Hz vs ${decoded.rate} Hz`,
+      formatComparison(compareAnalyses(againstAnalysis, analysis)),
+    ];
+    return lines.join('\n');
+  }
   const lines = [
     `Analyzed ${inputPath}`,
     `duration ${analysis.seconds.toFixed(1)} s · ${decoded.rate} Hz ${decoded.channels === 1 ? 'mono' : 'stereo'}`,

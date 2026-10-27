@@ -11,20 +11,27 @@ named ADSR envelopes, note effects and their parameters), the instrument layer
 per-note filter envelopes, opt-in velocity-to-timbre (filter opening, drive,
 and FM index), sample pitch/region/loop/gain, key and velocity zone selection,
 and drum sample replacement), polyphonic event scheduling (chords and legato
-gates overlap without voice stealing), swing offsets, deterministic
-`humanize` timing/velocity, the score's per-section tempo map (events, gates,
+gates overlap without voice stealing), swing offsets (score or per-track, with
+`swingUnit` groups), authored micro-timing (`offsetMs`, `~drag`/`~push`, summed
+and clamped to 0.49 of the local step with a deduplicated `timing-clamped`
+warning), deterministic `humanize` timing/velocity (score defaults with
+track-level field overrides), parameterised arps (semitones and period), the
+score's per-section tempo map (events, gates,
 swing, slides, arps, section filters, and risers resolve through absolute
 seconds), an opt-in `quality: "clean"` band-limited chip/FM
 path, synthetic drum voices and their articulations
-(`ghost`, `flam`, `roll`) and per-hit `pitch` / `decay` / `tone`, arrangement
+(`ghost`, `flam`, `roll`), per-hit `pitch` / `decay` / `tone`, and the opt-in
+`drumChoke` fade that cuts a ringing voice from a later trigger, arrangement
 `riser` sweeps, song-end `tail` extension, song timelines, section `energy`
 gain/filter scaling, section `space` send scaling, section `width` automation,
-per-section per-track gain/pan/send/filter state, per-track
-buffers and the mix stage (state-variable low-pass with LFO and resonance,
+per-section per-track gain/pan/send/filter state, per-note `~pan`/`~send`
+layers (plain, pan-only, send-only, and both, processed through the same track
+chain), per-track buffers and the mix stage (state-variable low-pass with LFO and resonance,
 per-track high-pass and low/high shelves, step-timed feedback delay,
 kick-triggered ducking, equal-power pan, stereo reverb sends), named
-groups/submixes with their own fader, pan, filter, EQ, delay, duck, and stereo
-return, section filtering
+groups/submixes with their own fader, pan, filter, EQ, delay, duck, saturate,
+compress, and stereo return, solo/mute audition filtering (track names resolved
+before roles, with the kick sidechain following the audible drums), section filtering
 and filter sweeps, resampling for the slowed pitch drop, tone shaping,
 Freeverb-style reverb with optional send predelay, wet low/high cut, and slow
 delay modulation, master width/low-band mono, steady-state loop extraction, a shared peak ceiling
@@ -38,9 +45,11 @@ style-level quality/master defaults), optional target profiles and their
 range checks, optional `assert` ranges, BS.1770 integrated loudness, the render
 report (sample peak, 4x true peak, RMS, spectrum, width, L/R correlation and
 balance, onsets, per-section level/width/correlation/balance/centroid/low-mid/2-5k/onsets,
-warnings, per-stem summaries, a pre-post snapshot, the symbolic structure
+warnings, per-stem summaries and per-section stem RMS (measurements, not audio stems; export is a proposed
+app contract, see `docs/forms-and-exports.md`), a pre-post snapshot, the symbolic structure
 reading, and attributed findings),
-the dry single-note timbre probe (spectral slope, odd/even harmonics,
+the delta table between two analyses (`compare.ts`, used by `p8_music`
+`compare` and `p8_analyze detail: compare`), the dry single-note timbre probe (spectral slope, odd/even harmonics,
 attack/decay, high-frequency decay, FM sidebands, and measured parameter
 sensitivity), cooperative abort checks, and WAV decoding for `p8_analyze`.
 
@@ -105,7 +114,12 @@ sample-exact rule as a normal one-shot. Each track renders into its own buffer
 before filters, delay, ducking, pan, and send, so those parameters never leak
 across tracks. Humanize is a stateless hash of `(seed, track, event, voice)`:
 the offset wraps on the loop seam and the depth-zero case skips the multiply
-altogether, which keeps old scores sample-identical. A track's step delay is
+altogether, which keeps old scores sample-identical. Authored timing is
+separate and shared by melodic notes and drum hits: track offset plus token
+offset, clamped to 0.49 of the step length at the event's section, rounded to
+samples, then humanize added. The clamp only moves the onset; gate, pattern
+cursor, and duck trigger stay tied to the event that moved. `structure` ignores
+the offset and the probe zeroes it. A track's step delay is
 timed against the top-level `bpm` by default, so its read offset is constant
 for the whole stem. With `delay.follow: "section"` the read point is
 `secondsAtStep(stepAtTime(t) - steps)`: it stays continuous and monotonic, so
@@ -207,5 +221,4 @@ the file bytes and score, like every other voice.
 
 **Boundary evidence.** Deleting this folder breaks `app/render-service.ts`, `app/dsh-plugin.ts`, and `app/pi-extension.ts`; the app adapters reach it through `render-service.ts`.
 A second audio output format (FLAC, MP3) belongs here, next to `wav.ts`, not in
-the app layer. Symbolic notation export (MusicXML) is not an audio format and
-belongs to the separate `musicxml` feature.
+the app layer.

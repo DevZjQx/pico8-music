@@ -27,7 +27,7 @@ Status: **implemented**.
 - `name`, `role`, `pan`, `send`, `aliasRisk`
 - `rmsDb`, `peakDb`, `centroidHz`, five bands, `lowMid`, `harsh`, `onsetPerSecond`
 
-These summaries go into `report.stems`. `renderScore` memory stays O(one track); a 32-track score does not keep 32 full audio buffers.
+These summaries go into `report.stems`. `renderScore` memory stays O(one track); a 32-track score does not keep 32 full audio buffers. They are measurements, not exported audio stems: a bounce/export contract is a separate, unimplemented plan (see `docs/forms-and-exports.md`).
 
 ### 2. pre-post vs post delta
 
@@ -205,9 +205,9 @@ The model chooses, instead of the plug-in deciding for it.
 
 ### 3. raw artifact index
 
-Status: **symbolic index landed, per-frame audio index still planned.**
+Status: **symbolic index and per-section stem levels landed, per-frame audio index still planned.**
 
-`analysis.json` gains a queryable index that the model reads on demand instead of pushing everything into context at once. The symbolic half is implemented: `analysis.structure` carries the per-bar grid, per-track entropy/motion/repetition, per-section density, register overlaps, and the harmony reading (one bass note per bar, its change rate, and the declared key's diatonic share), all computed from the score timeline. The audio half (per-frame spectra) remains planned and is deliberately not the default: a frame matrix cannot attribute a cell to a track or a knob, so the report keeps a summary and one finding per outlier instead.
+`analysis.json` gains a queryable index that the model reads on demand instead of pushing everything into context at once. The symbolic half is implemented: `analysis.structure` carries the per-bar grid, per-track entropy/motion/repetition, per-section density, register overlaps, and the harmony reading (one bass note per bar, its change rate, and the declared key's diatonic share), all computed from the score timeline. Each raw `analysis.stems[]` entry also carries a `sections[]` RMS list, so "loud in the drop" can be attributed to a track without a frame matrix. The audio half (per-frame spectra) remains planned and is deliberately not the default: a frame matrix cannot attribute a cell to a track or a knob, so the report keeps a summary and one finding per outlier instead.
 
 The index is what makes the "sparse heatmap" question cheap: a model that wants bar-level detail reads `structure.grid` from the artifact, while the summary stays at four lines. A two-dimensional audio heatmap is still a non-goal for the reasons in `docs/features/structure.md`.
 

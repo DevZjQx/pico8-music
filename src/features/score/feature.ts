@@ -4,6 +4,7 @@
 // (steps, tempo, bars, and the absolute timeline), while render turns that
 // schedule into sound.
 export { parseScore, ScoreError } from './parse.ts';
+export { excerptOf, type ScoreExcerpt } from './excerpt.ts';
 export { secondsAtStep, sectionAtStep, stepSecondsAt } from './timing.ts';
 export { timelineOf } from './timeline.ts';
 export { SCORE_BRIEF, SCORE_HELP } from './help.ts';
@@ -15,6 +16,8 @@ export type {
   DrumParams,
   Effect,
   EffectParams,
+  GroupCompressor,
+  GroupSaturation,
   Envelope,
   FmOperator,
   Humanize,
@@ -39,6 +42,7 @@ export type {
   TemperamentName,
   TrackDelay,
   TrackFilter,
+  TrackHumanize,
   TrackPattern,
   TrackShelf,
   Tuning,

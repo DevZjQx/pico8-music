@@ -104,6 +104,14 @@ export interface StemReading {
   readonly send: number;
   /** Chip pulse/saw/organ whose highest note is at or above C6. */
   readonly aliasRisk: boolean;
+  /** Per-section RMS of the same stem, in arrangement order; raw artifacts only. */
+  readonly sections?: readonly StemSectionReading[];
+}
+
+/** One section's stem level, measured before pan/send but after the track chain. */
+export interface StemSectionReading {
+  readonly name: string;
+  readonly rmsDb: number;
 }
 
 export type FindingKind =
@@ -489,6 +497,8 @@ export interface StemOptions {
   readonly pan: number;
   readonly send: number;
   readonly aliasRisk: boolean;
+  /** Arrangement windows in frames; absent for loop renders. */
+  readonly sections?: readonly { readonly name: string; readonly startFrame: number; readonly endFrame: number }[];
 }
 
 /**
@@ -511,6 +521,22 @@ export function analyseStem(
     if (magnitude > peak) peak = magnitude;
     squares += value * value;
   }
+  const sections =
+    options.sections === undefined
+      ? undefined
+      : options.sections.map((section) => {
+          const start = Math.max(0, Math.min(mono.length, section.startFrame));
+          const end = Math.max(start, Math.min(mono.length, section.endFrame));
+          let sectionSquares = 0;
+          for (let i = start; i < end; i += 1) {
+            const value = mono[i] ?? 0;
+            sectionSquares += value * value;
+          }
+          return {
+            name: section.name,
+            rmsDb: dbOf(Math.sqrt(sectionSquares / Math.max(1, end - start))),
+          };
+        });
   return {
     name: options.name,
     role: options.role,
@@ -524,6 +550,7 @@ export function analyseStem(
     pan: options.pan,
     send: options.send,
     aliasRisk: options.aliasRisk,
+    ...(sections === undefined ? {} : { sections }),
   };
 }
 

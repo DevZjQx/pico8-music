@@ -742,6 +742,170 @@ test('swing delays odd steps deterministically', () => {
   );
 });
 
+test('track offset and token timing move only the onset', () => {
+  const render = (track: Record<string, unknown>) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          tracks: [{ waveform: 'triangle', pattern: '-:1 C4:1g1 -:14', ...track }],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+
+  const neutral = firstAudibleSample(render({}));
+  assert.equal(firstAudibleSample(render({ offsetMs: 20 })) - neutral, 882);
+  assert.equal(firstAudibleSample(render({ offsetMs: -20 })) - neutral, -882);
+  assert.equal(
+    firstAudibleSample(render({ pattern: '-:1 C4:1g1~drag(20) -:14' })) - neutral,
+    882,
+  );
+  assert.equal(
+    firstAudibleSample(render({ pattern: '-:1 C4:1g1~push(20) -:14' })) - neutral,
+    -882,
+  );
+  assert.equal(
+    firstAudibleSample(
+      render({ offsetMs: 10, pattern: '-:1 C4:1g1~drag(10) -:14' }),
+    ) - neutral,
+    882,
+  );
+});
+
+test('micro-timing clamps to the local half-step and warns once per track', () => {
+  const score = parseScore({
+    bpm: 120,
+    stepsPerBeat: 4,
+    bars: 1,
+    tracks: [{ name: 'bass', waveform: 'triangle', offsetMs: 200, pattern: 'C2:4 C2:4 C2:4 C2:4' }],
+  });
+  const output = renderLoop(score, { post: [], withWav: false });
+  assert.match(
+    output.report.warnings.join(' | '),
+    /timing-clamped: track bass asked for 200\.0 ms but this section's half-step is 61\.25 ms/,
+  );
+});
+
+test('track swing replaces the score value and swingUnit moves whole groups', () => {
+  const straight = monoOf(
+    renderLoop(
+      parseScore({
+        bpm: 120,
+        stepsPerBeat: 4,
+        bars: 1,
+        swing: 0.5,
+        tracks: [{ waveform: 'triangle', swing: 0, pattern: '-:1 C4:1g1 -:14' }],
+      }),
+      { post: [], minutes: 0.05 },
+    ).wav,
+  );
+  const global = monoOf(
+    renderLoop(
+      parseScore({
+        bpm: 120,
+        stepsPerBeat: 4,
+        bars: 1,
+        swing: 0.5,
+        tracks: [{ waveform: 'triangle', pattern: '-:1 C4:1g1 -:14' }],
+      }),
+      { post: [], minutes: 0.05 },
+    ).wav,
+  );
+  assert.ok(
+    firstAudibleSample(global) - firstAudibleSample(straight) > 2000,
+    `straight ${firstAudibleSample(straight)}, global ${firstAudibleSample(global)}`,
+  );
+
+  const at24 = (swing: number, swingUnit: number) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 24,
+          swingUnit,
+          swing,
+          bars: 1,
+          tracks: [{ waveform: 'triangle', pattern: '-:12 C4:1g1 -:11' }],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+  const straight24 = firstAudibleSample(at24(0, 1));
+  const swung24 = firstAudibleSample(at24(0.5, 12));
+  assert.ok(
+    swung24 - straight24 > 5000,
+    `straight24 ${straight24}, swung24 ${swung24}`,
+  );
+  assert.equal(firstAudibleSample(at24(0.5, 1)), straight24);
+});
+
+test('track humanize overrides one score depth without resetting the other', () => {
+  const render = (scoreHumanize: unknown, trackHumanize: unknown) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          seed: 7,
+          humanize: scoreHumanize,
+          tracks: [
+            {
+              waveform: 'triangle',
+              humanize: trackHumanize,
+              pattern: '-:1 C4:1g1 -:14',
+            },
+          ],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+
+  const neutral = render(undefined, { timingMs: 0 });
+  const jittered = render(undefined, { timingMs: 25 });
+  assert.notEqual(firstAudibleSample(jittered), firstAudibleSample(neutral));
+  assert.deepEqual(Array.from(render(undefined, { timingMs: 25 })), Array.from(jittered));
+  // A track timing override keeps the score's velocity depth.
+  assert.notDeepEqual(
+    Array.from(render({ timingMs: 0, velocity: 1 }, { timingMs: 10 })),
+    Array.from(render({ timingMs: 0, velocity: 0 }, { timingMs: 10 })),
+  );
+});
+
+test('a parameterised arp plays the authored semitone list', () => {
+  const render = (effect: string) =>
+    monoOf(
+      renderLoop(
+        parseScore({
+          bpm: 120,
+          stepsPerBeat: 4,
+          bars: 1,
+          tracks: [{ waveform: 'triangle', pattern: `C4:8~${effect}` }],
+        }),
+        { post: [], minutes: 0.05 },
+      ).wav,
+    );
+
+  const custom = render('arpfast(0,7;1)');
+  const fixed = render('arpfast(0;1)');
+  assert.ok(
+    magnitudeAt(custom, 391.9954) > magnitudeAt(fixed, 391.9954) * 5,
+    `custom G ${magnitudeAt(custom, 391.9954)}, fixed ${magnitudeAt(fixed, 391.9954)}`,
+  );
+  assert.deepEqual(
+    Array.from(render('arpfast')),
+    Array.from(render('arpfast(0,4,7,12;0.5)')),
+    'the parameterless arp must equal its historical defaults',
+  );
+  assert.deepEqual(
+    Array.from(render('arpslow')),
+    Array.from(render('arpslow(0,4,7,12;1)')),
+  );
+});
+
 test('renders the M2 chord, gate, and swing example', async () => {
   const raw = await readFile(new URL('../examples/m2-chords-gate-swing.json', import.meta.url), 'utf8');
   const example = parseScore(raw);

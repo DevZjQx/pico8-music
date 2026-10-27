@@ -7,30 +7,6 @@ import { Type } from 'typebox';
  */
 export const helpParameters = Type.Object({}, { additionalProperties: false });
 
-export const exportParameters = Type.Object(
-  {
-    score: Type.Optional(
-      Type.String({
-        description:
-          'inline JSON score string (composition only); provide this or scoreFile, not both; call p8_help for the DSL',
-      }),
-    ),
-    scoreFile: Type.Optional(
-      Type.String({
-        description:
-          'workspace-relative path to a JSON score file (.json is appended when omitted); provide this or score, not both',
-      }),
-    ),
-    out: Type.Optional(
-      Type.String({
-        description:
-          'workspace-relative output path ending in .musicxml (uncompressed MusicXML); default pico8-music.musicxml',
-      }),
-    ),
-  },
-  { additionalProperties: false },
-);
-
 const targetProfile = Type.Object(
   {
     lowMidMax: Type.Optional(
@@ -193,9 +169,15 @@ export const analyzeParameters = Type.Object(
       description: 'workspace-relative path to a 16-bit PCM WAV, usually a previous p8_music output',
     }),
     detail: Type.Optional(
-      Type.Union([Type.Literal('summary'), Type.Literal('raw')], {
+      Type.Union([Type.Literal('summary'), Type.Literal('raw'), Type.Literal('compare')], {
         description:
-          'summary (default) or raw: write the complete analysis to a sibling .analysis.json and return its path',
+          'summary (default), raw (write the complete analysis to a sibling .analysis.json), or compare (delta against the WAV in against)',
+      }),
+    ),
+    against: Type.Optional(
+      Type.String({
+        description:
+          'workspace-relative WAV to compare against; required for detail: compare, rejected otherwise',
       }),
     ),
     sections: Type.Optional(
@@ -453,6 +435,27 @@ export const musicParameters = Type.Object(
         description: 'loop output length in minutes, default 2; ignored in song mode',
       }),
     ),
+    sections: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        description:
+          'song mode only: render a contiguous excerpt by section name (e.g. ["drop","break"]); report marks it as an excerpt',
+      }),
+    ),
+    solo: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        description:
+          'audition only these track names or roles; other tracks are skipped, and the report marks the result as an audition',
+      }),
+    ),
+    mute: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        description:
+          'silence these track names or roles; applied after solo, so mute wins on a conflict',
+      }),
+    ),
     out: Type.Optional(
       Type.String({ description: 'workspace-relative output .wav path; default pico8-music.wav' }),
     ),
@@ -460,6 +463,12 @@ export const musicParameters = Type.Object(
       Type.Union([Type.Literal('summary'), Type.Literal('raw')], {
         description:
           'summary (default) or raw: write the complete render report, including stems and dry facts, to a sibling .analysis.json',
+      }),
+    ),
+    compare: Type.Optional(
+      Type.Boolean({
+        description:
+          'compare this render with the previous one cached in .p8-compare.json and append a delta table; default false',
       }),
     ),
   },

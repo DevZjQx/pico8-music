@@ -8,9 +8,12 @@ effect names, per-note volume (`@volume`), track and named ADSR envelopes,
 reusable melodic articulations (`articulations`, resolved into gate/volume/
 envelope/effect at parse time), reusable sound presets (`presets`, instrument
 plus track sound defaults), slot vs gate (`C4:4g2`), explicit and named chords (`[C4,E4,G4]`, `Cmaj7`,
-`Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`),
-score-level `swing` and `seed`, the grid (`stepsPerBeat`, `beatsPerBar`, and
-whole-bar patterns), deterministic `humanize` timing/velocity
+`Fm/E`, `{C7}`), parameterised effect suffixes (`~vib(0.4,6)`, `~slide(0.5)`,
+`~arpfast(0,4,7,11;0.25)`), token timing suffixes (`~drag(15)`, `~push(10)`),
+per-note spatial overrides (`~pan(-1)`, `~send(0.4)`),
+score-level `swing`/`swingUnit` and `seed`, per-track `offsetMs`, `swing`, and
+field-level `humanize` overrides, the grid (`stepsPerBeat` 1-24, `beatsPerBar`,
+and whole-bar patterns), deterministic `humanize` timing/velocity
 depths, the top-level `tuning` reference (`a4`, built-in temperament, and
 per-note cents), the opt-in `key` declaration (a tonic and a mode, normalised
 to a pitch class plus its authored spelling), motif definitions and transforms
@@ -19,9 +22,10 @@ to a pitch class plus its authored spelling), motif definitions and transforms
 top-level `instruments` table (including the opt-in `velocity` cutoff/drive
 mapping) and per-track `instrument` references, the
 top-level `samples` table (workspace WAV paths with root/loop/gain plus
-optional region, reverse, loop-point, and key/velocity zone fields) and
-`drumSamples` replacements, the top-level `groups`/`buses` table and track
-`group`/`bus` routing (named stereo submixes, each with its own send return),
+optional region, reverse, loop-point, and key/velocity zone fields),
+`drumSamples` replacements, and the opt-in top-level `drumChoke` map, the top-level `groups`/`buses` table and track
+`group`/`bus` routing (named stereo submixes with their own filter, EQ, delay,
+duck, saturation, compression, and send return),
 loop vs song mode, named patterns, arrangement
 resolution (sections, mute, gain, filter and filter sweeps, `energy`, `space`,
 `width`, `fill` pattern replacement, `riser` bars, per-track section state and
@@ -29,11 +33,14 @@ opt-in section inheritance, and per-section `bpm` with a resolved
 step-to-seconds tempo map), the song-end `tail`, the mix-stage
 fields a track exposes (`pan`, `send`, `duck`, `filter`, `highpassHz`,
 `lowShelf`, `highShelf`, `delay`, `group`), the
-model-facing wire-format reference (`help.ts`), the absolute timeline expansion
+model-facing wire-format reference (`help.ts`), section-level excerpt rebasing
+(`excerptOf`: whole contiguous sections shifted to zero, with original event
+indices kept for deterministic seeds), the absolute timeline expansion
 (`timelineOf`: one rule shared by the renderer and the symbolic structure
 reading), and the normalised `Score` the renderer consumes.
 
-**Does not own.** Reading sample WAV files: `score` validates the reference,
+**Does not own.** Choosing which sections to audition, and applying
+`solo`/`mute`: that is the app/tool layer. Reading sample WAV files: `score` validates the reference,
 path shape, and playback metadata, while `app` resolves and decodes files and
 `render` plays the decoded PCM. How anything sounds. Tempo becomes seconds here, but the
 waveform, instrument, and drum generators, envelope *interpretation*, section
@@ -72,8 +79,9 @@ eight voices, while named qualities stay capped at four. A digit
 quality that is also an octave (`C7`, `C5`, `C6`, `C9`) is shadowed by the
 note parser, so the brace form (`{C7}`) forces the chord reading; `G7/B` is
 safe because the slash rules out a note. Envelope and articulation names may
-not collide with each other, an effect name, or the drum vocabulary, which is
-what keeps `~name` unambiguous; named articulations are melodic-only, while
+not collide with each other, an effect name, a timing suffix (`drag`/`push`), or
+the drum vocabulary, which is what keeps `~name` unambiguous; named
+articulations are melodic-only, while
 drum tracks keep their fixed `~ghost` / `~flam` / `~roll`. A preset is a
 score-level sound default, not the p8_music `preset` argument (a post-chain
 shortcut outside the score), and a track field always overrides it. `group`
@@ -83,19 +91,25 @@ membership is routing, not a sound preset, so it is not inherited from
 `presets`. Group sends are stereo and each group resolves to its own return,
 which is why the old single mono send bus no longer bounds the mix. Motif pitch transforms
 (`transpose`/`invert`) reject chord tokens; time/order transforms still work.
-A sounding token's slot is 1-64 steps and its gate 1-256; a rest may span
-1-256 steps because it only advances the pattern cursor, so a long rest can pad
-a pattern without adding render work. `key`/`scale`, voice leading, and tuplets
-remain deferred: tuplets
-would turn the integer step grid into a fractional one across parse,
-arrangement, and loop seams. Non-4/4 meters are expressible with
+A sounding token's slot is 1-2048 steps and its gate 1-4096; a rest may span
+1-4096 steps because it only advances the pattern cursor, so a long rest can pad
+a pattern without adding render work. `stepsPerBeat` accepts 1-24, so 16th
+notes and 8th/16th triplets fit on one integer grid without fractional steps;
+`swingUnit` must divide it and defaults to the historical 1. True 5/7 tuplets
+and per-section meters remain deferred because they would make the grid's unit
+section-dependent. Micro-timing is absolute rather than grid-based: track
+`offsetMs` and a token's `~drag`/`~push` add, then the renderer clamps the sum
+to 0.49 of the event's local step; the symbolic timeline still stores only the
+integer step.
+
+`key`/`scale` and voice leading remain deferred. Non-4/4 meters are expressible with
 `beatsPerBar` (for example 3 for 3/4, or 6 with `stepsPerBeat: 2` for 6/8);
 fractional meters and tuplets are not. Track count is a render-budget cap (1-32), not a
 musical rule; `score` validates that cap together with the 256-section and
 15-minute budgets, and leaves the musical shape to the model. A section `bpm`
 changes the tempo only at a section boundary; the step grid stays integral, so
 patterns, fills, and swing keep their existing semantics. Loop mode remains a
-single tempo. Section `tracks` keys resolve by track name first and by role
+single tempo. `mode` is closed to `loop` / `song` here; a proposed `cue` form and audio stem export are not part of this contract until implemented (see `docs/forms-and-exports.md`). Section `tracks` keys resolve by track name first and by role
 second, then normalise to one entry per track name; `gain` overrides the legacy
 section `gains`, and `mute:false` overrides a section `mute` entry. Inheritance
 is opt-in (`inheritSections` or a section `inherit`) so omitting it keeps the

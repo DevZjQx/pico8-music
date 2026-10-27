@@ -103,9 +103,9 @@ renderScore
 | [鼓与打击乐](#p0-1-鼓与打击乐) | P0 | 基础鼓、`~ghost`/`~flam`/`~roll` 与 per-hit `~pitch`/`~decay`/`~tone` 已实现 |
 | [段落与编曲](#p0-2-段落与编曲) | P0 | 基础段落、`fill`、`energy`、`riser`、`tail` 已实现 |
 | [复音与和声](#p0-3-复音与和声) | P0 | 显式与命名和弦、更多轨数已实现；`voices`、`key`/`scale`、voice leading 未做 |
-| [发音法、门限、动态](#p0-4-发音法门限动态) | P0 | slot/gate、命名包络、参数化 slide/vib、力度到 cutoff/drive 已实现；参数化 arp 未做 |
+| [发音法、门限、动态](#p0-4-发音法门限动态) | P0 | slot/gate、命名包络、参数化 slide/vib、力度到 cutoff/drive、参数化 arp 已实现 |
 | [旋律、动机与乐句](#p0-5-旋律动机与乐句) | P0 | motif 引用与变换已实现，乐句级与和声进行未做 |
-| [Groove、humanize、tuplet](#p1-1-groovehumanizetuplet) | P1 | swing、seed、humanize 已实现；tuplet 未做 |
+| [Groove、humanize、tuplet](#p1-1-groovehumanizetuplet) | P1 | swing/swingUnit、seed、humanize、24 PPQN 已实现；5/7 tuplet 未做 |
 | [滤波、自动化、sidechain](#p1-2-滤波自动化sidechain) | P1 | 部分实现（M3） |
 | [分层、立体声、空间](#p1-3-分层立体声空间) | P1 | pan/send/delay、unison（M6）、track group/bus 与立体声 send 已实现 |
 | [转场 FX](#p1-4-转场-fx) | P1 | 段落 `riser` 与 song `tail` 已实现；独立 impact/sub_drop FX 未做 |
@@ -163,12 +163,12 @@ renderScore
 
 - 每轨增加 `voices: 1–4`，或支持 chord token：`[C4,E4,G4]:8`、`C4maj7:8`。
 - 增加 `key` / `scale`，可选的 chord 展开和简单 voice leading；模型只写和弦符号，引擎负责 voicing。
-- 保留 `pico` 模式（4 轨、8 波形）作为风格约束；新增 `studio` 模式允许更多轨道/voice。
+- 当时建议保留 `pico` 模式（4 轨、8 波形）作为风格约束；新增 `studio` 模式允许更多轨道/voice。**最终未采纳：** 没有引入能力上限模式，4 轨/8 波形只是默认建议，`studio` / `lofi` 改为 `style` 的取值（见「现状」与 5.3）。
 - 复音需要每 voice 独立 phase/envelope，不能共用 track 的单个 `phase`。
 
 **验收：** 三和弦渲染出三个预期基频峰；voice stealing 不产生 click；和弦轨与鼓/贝斯轨可同时存在。
 
-**现状：显式和弦与命名和弦已实现，轨数不再锁死在 4。** `[C4,E4,G4]:4` 展开成同一 step 的三个 `NoteEvent`，每个声部独立振荡器和包络；显式 voicing 最多 8 个音，命名和弦仍最多 4 个音。命名和弦（`Cmaj7`、`Fm/E`、`{C7}`）与斜杠低音在解析期展开成 midi，渲染路径与显式写法完全一致。`tracks` 现在是 1-32：4 是默认建议而不是音乐规则。`voices` 字段、`key`/`scale`、voice leading 和 `studio` 模式仍不做。
+**现状：显式和弦与命名和弦已实现，轨数不再锁死在 4。** `[C4,E4,G4]:4` 展开成同一 step 的三个 `NoteEvent`，每个声部独立振荡器和包络；显式 voicing 最多 8 个音，命名和弦仍最多 4 个音。命名和弦（`Cmaj7`、`Fm/E`、`{C7}`）与斜杠低音在解析期展开成 midi，渲染路径与显式写法完全一致。`tracks` 现在是 1-32：4 是默认建议而不是音乐规则。`voices` 字段、`key`/`scale`、voice leading 与 `studio` 能力模式仍不做。
 
 #### P0-4 发音法、门限、动态
 
@@ -190,7 +190,7 @@ renderScore
 
 **验收：** gate 变短会降低 RMS 但不改变事件起点；slide 在指定时间内到达目标音高；vibrato 的 rate/depth 可测量；ghost note 的频谱重心低于正常 hit。
 
-**现状：slot/gate 分离、per-note ADSR 与力度到音色已实现。** `C4:4g2` / `C4:4g6` 分别覆盖 staccato 和 legato；音高和事件起点不变。顶层 `envelopes` + `~pluck` 提供命名 per-note ADSR；`~slide(steps)`（0.05–8）与 `~vib(depth[,rate])`（0–2 半音，0.1–20 Hz）已参数化，无参数时行为与旧版一致。乐器可以写 `velocity: {cutoffOctaves 0-6, drive 0-1}`，让 `@力度` 在乘振幅之外还打开滤波 cutoff 并叠加 drive；不写或全 0 时旧 score 逐样本不变，`cutoffOctaves` 需要 `filter`，`sample` 乐器不接受该字段。humanize 的力度起伏也会参与映射。后续已补：力度映射到 FM index（`velocity.indexScale`）；仍不做参数化 arp（只有固定的 `arpfast` / `arpslow`）与力度映射到 envelope decay。
+**现状：slot/gate 分离、per-note ADSR 与力度到音色已实现。** `C4:4g2` / `C4:4g6` 分别覆盖 staccato 和 legato；音高和事件起点不变。顶层 `envelopes` + `~pluck` 提供命名 per-note ADSR；`~slide(steps)`（0.05–8）与 `~vib(depth[,rate])`（0–2 半音，0.1–20 Hz）已参数化，无参数时行为与旧版一致。乐器可以写 `velocity: {cutoffOctaves 0-6, drive 0-1}`，让 `@力度` 在乘振幅之外还打开滤波 cutoff 并叠加 drive；不写或全 0 时旧 score 逐样本不变，`cutoffOctaves` 需要 `filter`，`sample` 乐器不接受该字段。humanize 的力度起伏也会参与映射。后续已补：力度映射到 FM index（`velocity.indexScale`）；W1 补了参数化 arp（`~arpfast(0,4,7,11;0.25)`）。仍不做力度映射到 envelope decay。
 
 #### P0-5 旋律、动机与乐句
 
@@ -227,7 +227,7 @@ renderScore
 
 **验收：** swing 后奇数 16 分偏移可测量；同一 seed 渲染完全一致；三连 pattern 的总步数正确。
 
-**现状：swing、seed 与 humanize 已实现。** `swing: -0.5..0.5` 偏移奇数 step（正数延后、负数提前），渲染确定；`seed` 影响 noise 波形、鼓的噪声瞬态、humanize 与段落 riser，用来生成同谱变体。`humanize: {timingMs: 0-150, velocity: 0-1}` 由 `(seed, track, event, voice)` 的无状态哈希决定，偏移在 loop 接缝处回绕，所以同一 pass 内变化、每个 pass 之间逐样本一致；默认 0 时旧 score 不变。tuplet 与 probability/ratchet 仍不做：tuplet 需要分数 step 网格，会同时改 parser、swing、段落对齐和循环接缝，成本远高于收益。
+**现状：swing、seed 与 humanize 已实现。** `swing: -0.5..0.5` 偏移奇数 step（正数延后、负数提前），渲染确定；`seed` 影响 noise 波形、鼓的噪声瞬态、humanize 与段落 riser，用来生成同谱变体。`humanize: {timingMs: 0-150, velocity: 0-1}` 由 `(seed, track, event, voice)` 的无状态哈希决定，偏移在 loop 接缝处回绕，所以同一 pass 内变化、每个 pass 之间逐样本一致；默认 0 时旧 score 不变。W1 把 `stepsPerBeat` 放宽到 24 并加入 `swingUnit`，16 分与 8/16 分三连可以同网格共存；5/7 连音与 probability/ratchet 仍不做：前者需要分数网格或 pattern 级 tuplet，后者需要新的确定性 token 语法。
 
 #### P1-2 滤波、自动化、sidechain
 
@@ -262,7 +262,7 @@ renderScore
 
 **验收：** pan 改变 L/R 能量比；unison 的 side 能量 > 0；send 改变尾音长度而不影响干声。
 
-**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。命名 `group`/`bus` 子混音与组级 gain/pan/filter/EQ/delay/duck/send 已实现，每个组拥有自己的返回，因此不再被单条 mono send 总线限制。宽度验收改由 pan + send 的左右声道差异间接覆盖；报告现在另给 `correlation` / `balance`，但宽度验收不以它作为通过条件。
+**现状：部分实现（M3）。** `pan`（等功率，居中增益 1）、`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）、`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）已实现；M6 又补了 `unison`/`detune`。命名 `group`/`bus` 子混音与组级 gain/pan/filter/EQ/delay/duck/saturate/compress/send 已实现，每个组拥有自己的返回，因此不再被单条 mono send 总线限制。宽度验收改由 pan + send 的左右声道差异间接覆盖；报告现在另给 `correlation` / `balance`，但宽度验收不以它作为通过条件。
 
 #### P1-4 转场 FX
 
@@ -410,8 +410,8 @@ renderScore
 - `slow`/`tape` 与 `reverb` 分开；可以只 slow、只 reverb、都不做。
 - `speed` 与 `pitch` 分开：`tape` 是耦合的（像现在），`timeStretch` 只改速度，`varispeed` 只改音高。
 - `preset` 保留为 `post` 的快捷方式；新增 `style` 作为「作曲/音色/混音默认值」的快捷方式。两者不要混在一起。
-- 三个概念分开：`mode`（`pico` / `studio`）是能力上限，`style`（`chip` / `hitech` / `ambient` / `studio` / `lofi`）只填默认值，`preset` 只管 post 链。`style` 不改变 `mode`；显式字段 > `style` > 内置默认值。
-- style 用 `chip` 而不是 `pico`，因为 `pico` 已经是 `mode` 的取值；`style: "chip"` 表达的是「按 PICO-8 约束做干声」的默认值组合，不是新的能力上限。
+- 三个概念分开：`mode` 只描述曲式（最终实现为 `loop` / `song`），`quality`（`pico` / `clean`）选渲染精度，`style`（`chip` / `hitech` / `ambient` / `studio` / `lofi` / `soft`）只填默认值，`preset` 只管 post 链。`style` 不改变 `mode`；显式字段 > `style` > 内置默认值。
+- **当时设想的 `mode: "pico"` / `mode: "studio"` 没有采纳**：能力上限由 `quality`、轨数预算和 `instrument` 表达，避免 `mode`、`style`、`quality` 三处出现同名值。style 用 `chip` 而不是 `pico`，因为 `pico` 已是 `quality` 的取值；`style: "chip"` 表达的是「按 PICO-8 约束做干声」的默认值组合。
 
 ## 6. 架构调整
 
@@ -475,7 +475,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 - M2.5 追加：顶层 `envelopes` + `~pluck` 命名 per-note ADSR；参数化 `~vib(depth[,rate])` / `~slide(steps)`；`seed`。命名和弦在解析期展开成 midi，渲染与显式写法逐样本一致；包络和效果参数只改 `renderMelodicNote` 的取值，没有新增渲染路径。
 - 验收：三和弦基频峰、staccato/legato 尾部 RMS、swing onset 偏移、命名/显式和弦逐样本一致、命名包络尾部 RMS、slide 到达时间、seed 的确定性与差异性都有测试。
 - 示例：`examples/m2-chords-gate-swing.json`、`examples/m2.5-harmony-envelope.json`。
-- 仍不做：`key`/`scale` 度数记谱、voice leading、参数化 arp、tuplet。`key` 的收益被命名和弦覆盖大半，且与显式音名存在语义冲突；voice leading 需要跨 section 的和声状态，效果主观难验收；tuplet 会击穿整数 step 模型。humanize 已在 M8 实现。
+- 仍不做：`key`/`scale` 度数记谱、voice leading、5/7 tuplet。`key` 的收益被命名和弦覆盖大半，且与显式音名存在语义冲突；voice leading 需要跨 section 的和声状态，效果主观难验收；5/7 tuplet 需要分数网格或 pattern 级 tuplet。参数化 arp 与 24 PPQN 已在 W1 补上。
 - 验证：当前测试全过。
 
 ### 7.3 M3：能写出「有运动、有空间」的段落
@@ -490,7 +490,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 - 重构：`renderScore()` 先给每条 track 一个独立 buffer，再做滤波、延迟、duck、pan、send，最后求和。per-track 处理不再是「接在总线上」的近似。
 - 已实现：per-track `filter`（TPT 状态变量低通，`resonance`/`q` 0.05-20，`lfoHz` + `lfoDepth` 八度调制）；section `filter` 支持 `{from,to}` 指数扫频，riser/sweep 直接用这个；`pan`（等功率，居中增益 1）；`send`（立体声返回 + 独立混响，loop 模式取 3 遍稳态）；`duck`（所有 kick 触发，5 ms 启动 / 110 ms 释放）；`delay`（按 step 计时，可选 `follow: "section"` 跟随段落网格，loop 模式 3 遍预热）。
 - 验收：filter 静态开合的高频带能量比、LFO 的窗口能量起伏、段落扫频的首尾高频带比、pan 的左右 RMS、duck 的 kick 窗口 RMS、send 的尾音、delay 的偏移窗口 RMS 都有测试；示例 `examples/m3-space-motion.json`。
-- M6 已补 `unison`；后续又补了命名 `group`/`bus` 子混音、组级处理和每组独立的立体声返回。仍不做任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖；报告现在另给 `correlation` / `balance`，但宽度验收不以它作为通过条件。
+- M6 已补 `unison`；后续又补了命名 `group`/`bus` 子混音、组级处理（含 bus 饱和/压缩）和每组独立的立体声返回。仍不做任意 sidechain 源（目前只有 kick）、独立的 impact/sub_drop FX 与采样 FX；这些属于后续里程碑。bus compressor/EQ/limiter/LUFS 在 M4 补齐。宽度验收改由 pan + send 的左右声道差异间接覆盖；报告现在另给 `correlation` / `balance`，但宽度验收不以它作为通过条件。
 
 ### 7.4 M4：能「混音」和「自检」
 
@@ -500,7 +500,7 @@ score -> renderSong(score) -> AudioBuffer (stereo, sections)
 2. bus compressor、saturation、EQ、limiter、LUFS（P2-1）。
 3. style presets：`chip`（PICO-8 约束下的干声默认值）、`hitech`（鼓+sidechain+宽）、`ambient`（slow+reverb）。
 
-`style` 只填默认值，不改变 `mode`；风格名用 `chip` 而不是 `pico`，避免与 `mode: "pico"` 同名。
+`style` 只填默认值，不改变 `mode`；风格名用 `chip` 而不是 `pico`，避免与 `quality: "pico"` 同名。`mode` 的 `pico` / `studio` 取值最终没有采纳（见 5.3）。
 
 **验收：** 响度达标、无削波、报告能指出「太暗/太窄/太稀」。
 
@@ -565,6 +565,7 @@ M7 让模型用振幅 + 相位设计周期波形，但 additive 仍然只有「�
 
 ## 延伸阅读
 
+- [`expression-ceiling-plan.md`](./expression-ceiling-plan.md)：表现力天花板——从量化音符到可演奏、可炫技的 score，W1-W3 分波计划。
 - [`evaluation.md`](./evaluation.md)：曲目评分维度——六个维度、测试策略、盲听清单。
 - [`design-boundaries.md`](./design-boundaries.md)：设计边界与风险——产品、模块、兼容、资源四类边界。
 - [`features/score.md`](./features/score.md)、[`features/render.md`](./features/render.md)：两个 feature 的 owns / does-not-own 契约。

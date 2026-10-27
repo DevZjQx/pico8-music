@@ -107,6 +107,10 @@ export interface RenderOptions {
   readonly toneHz?: number;
   /** Requested output length in minutes for loop mode. */
   readonly minutes?: number;
+  /** Track names to keep audible; an empty/absent set keeps every track. */
+  readonly solo?: ReadonlySet<string>;
+  /** Track names to silence; applied after `solo`, so mute wins on a conflict. */
+  readonly mute?: ReadonlySet<string>;
   /** Decoded workspace WAVs keyed by the score's `samples` names. */
   readonly samples?: SampleBank;
   /** Cooperative cancellation checked between render stages and inner loops. */

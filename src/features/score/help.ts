@@ -14,7 +14,7 @@ export const SCORE_BRIEF =
 export const SCORE_HELP = `PICO-8 score reference
 
 Pass \`score\` as a JSON string, not a nested object, or pass \`scoreFile\` with a workspace-relative path to a JSON score file (.json is appended when omitted). Provide exactly one of them; a scoreFile is read on every render, so editing the file changes the next output.
-The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes and out are p8_music arguments passed next to score/scoreFile; p8_export also reads score/scoreFile and takes out.
+The score JSON holds composition only. post, preset, style, speed, wet, toneHz, minutes, sections, solo, mute, out, compare and detail are p8_music arguments passed next to score/scoreFile.
 track, note, volume, seconds, style, bypassFilter, sensitivity and detail are p8_probe arguments. Putting any tool argument inside the score JSON is an error.
 
 Scope: this is the wire format — fields, tokens, ranges, defaults and what fails. The pico8-songwriter skill owns how to compose: form, track layout, arrangement, mix decisions, the revise loop. Read this reference before writing a field the skill does not name; it is authoritative on every range.
@@ -58,10 +58,11 @@ Song mode adds patterns and an arrangement:
 | --- | --- | --- |
 | mode | loop or song; song requires an arrangement, and an arrangement requires song (or omit mode) | song when arrangement is present, else loop |
 | bpm | 30-300; the default tempo for loop mode and for every arrangement section | 90 |
-| stepsPerBeat | integer 1-8 | 4 |
+| stepsPerBeat | integer 1-24; 24 gives 16th, 8th-triplet, 16th-triplet and 32nd notes on one integer grid | 4 |
 | beatsPerBar | integer 1-16; 3 is 3/4, 6 with stepsPerBeat 2 is 6/8 | 4 |
 | bars | loop 1-64; song sections are 1-64 each, and the optional total is 1-256 and must equal the sum | 4 in loop mode |
-| swing | -0.5..0.5; positive delays odd steps, negative pushes them earlier | 0 |
+| swing | -0.5..0.5; positive delays odd swing groups, negative pushes them earlier | 0 |
+| swingUnit | integer 1..stepsPerBeat that divides it; 1 is the historical odd-step swing, 12 at stepsPerBeat 24 gives eighth-note swing | 1 |
 | seed | integer 0-2147483647; varies noise timbres, drum transients, humanize and section risers | 0 |
 | humanize | {timingMs 0-150, velocity 0-1}: deterministic timing and gain variation; 0 is neutral | 0 and 0 |
 | tuning | {a4, temperament, cents}; see Tuning | A4=440 equal |
@@ -78,6 +79,7 @@ Song mode adds patterns and an arrangement:
 | instruments | top-level name -> voice; see Instruments | empty |
 | samples | top-level name -> WAV spec; see Samples | empty |
 | drumSamples | drum voice -> sample name, e.g. {"kick":"hit"}; unmapped voices stay synthetic | empty |
+| drumChoke | trigger voice -> array of voices it cuts, e.g. {"hat":["openhat"],"crash":["crash"]}; an 8 ms fade avoids clicks | empty |
 | arrangement | array of sections; see Arrangement | none |
 
 ### Tuning
@@ -95,10 +97,10 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 
 ### Articulations
 \`{"articulations":{"spiccato":{"gateScale":0.5,"volume":6,"envelope":"pluck","effect":"vibrato","effectParams":{"vibratoDepth":0.2}}}}\` defines a reusable performance shape, played as \`~spiccato\` on a melodic token.
-- gateScale 0.05-8 multiplies the slot; the result is rounded to 1-256 steps. A token's own gGATE wins.
+- gateScale 0.05-8 multiplies the slot; the result is rounded to 1-4096 steps. A token's own gGATE wins.
 - volume 0-7 sets the default note volume; a token's @volume still wins.
 - envelope is an inline ADSR or the name of a top-level envelope.
-- effect is one pitched effect: slide, vibrato, drop, fadein, fadeout, arpfast, or arpslow. effectParams is {vibratoDepth, vibratoRate} for vibrato or {slideSteps} for slide. A token's own ~effect wins.
+- effect is one pitched effect: slide, vibrato, drop, fadein, fadeout, arpfast, or arpslow. effectParams is {vibratoDepth, vibratoRate} for vibrato, {slideSteps} for slide, or {arpSemitones, arpSteps} for an arp. A token's own ~effect wins.
 - a track's articulation is the default for its tokens that carry no ~name.
 - names follow the envelope rules and may not collide with an envelope, an effect, or the drum vocabulary. Named articulations are melodic only; drums use ~ghost, ~flam, and ~roll.
 
@@ -111,8 +113,10 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 
 ### Groups and stereo sends
 \`{"groups":{"drums":{"gain":0.9,"pan":0.1,"send":0.25,"reverb":{"room":0.8,"damp":0.4}}}}\` defines a named submix; a track joins it with \`"group":"drums"\`.
-- group fields: gain 0-4, pan -1..1, send 0..1, duck 0..1, filter, highpassHz, lowShelf, highShelf, delay, and reverb {room 0-0.98, damp 0-1, predelayMs 0-200, lowCutHz 20-1000, highCutHz 1000-20000, modDepth 0-1, modRateHz 0.05-5}; the reverb fields may also be written directly on the group. Neutral defaults are gain 1, pan/send/duck 0, and no filter/delay/reverb.
-- members render into one stereo subgroup before the group fader, pan, filter, delay, and duck; one group therefore shares one bus treatment and one send instead of every track owning its own. A member send follows its source group's fader and pan.
+- group fields: gain 0-4, pan -1..1, send 0..1, duck 0..1, filter, highpassHz, lowShelf, highShelf, delay, saturate, compress, and reverb.
+- saturate is {drive 0-1, mix 0-1}; compress is {thresholdDb -60..0, ratio 1-40, attack 0.0005-1 s, release 0.01-2 s, makeupDb -12..24}; both run once on the summed group, saturation before compression.
+- reverb is {room 0-0.98, damp 0-1, predelayMs 0-200, lowCutHz 20-1000, highCutHz 1000-20000, modDepth 0-1, modRateHz 0.05-5}; these fields may also be written directly on the group. Neutral defaults are gain 1, pan/send/duck 0, and no filter/delay/saturate/compress/reverb.
+- members render into one stereo subgroup before the group fader, pan, filter, delay, duck, saturate, and compress; one group therefore shares one bus treatment and one send instead of every track owning its own. Saturation runs before the stereo-linked compressor, and the fader stays last. A member send follows its source group's fader and pan.
 - sends are stereo: a track send keeps its pan (a hard-left part returns on the left) instead of feeding one mono sum. Member sends and group.send both feed that group's own return; ungrouped tracks use the default return. Each group's reverb settings apply only to its return, so groups do not share one reverb.
 - write send: {amount, stereo:false} to restore the old pre-pan mono send; a pan+send score from before this change otherwise returns on its panned side.
 - group and bus are synonyms: top-level groups/buses and track group/bus. Define one table and one track field, not both spellings in the same score.
@@ -146,6 +150,9 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 | pan | -1 left .. 1 right; equal power, centred leaves the level unchanged | 0 |
 | send | 0..1 stereo send into the track's return, or {amount 0..1, bus/group/to return name, stereo false for the old mono feed} | 0 |
 | duck | 0..1 kick sidechain depth | 0 |
+| offsetMs | -200..200 ms for the whole track; positive is late, negative early; clamped to 0.49 of the local step and reported as timing-clamped | 0 |
+| swing | -0.5..0.5; replaces the score swing for this track | score swing |
+| humanize | {timingMs 0-150, velocity 0-1}; each field replaces the score depth, omitted fields inherit | score humanize |
 | filter | a cutoff number (100-20000 Hz) or {cutoffHz (alias cutoff), resonance (alias q) 0.05-20, lfoHz 0-20, lfoDepth 0-4 octaves} | none |
 | highpassHz | 20-4000 Hz, 12 dB/oct high-pass on this track only | none |
 | lowShelf | a gain in dB (-24..24) at 250 Hz, or {hz 20-20000, gainDb}; 0 is a no-op | none |
@@ -159,26 +166,30 @@ Named envelopes live in the top-level envelopes table and are referenced as "C4:
 ## Pattern tokens
 Space-separated tokens: NOTE:STEPS[gGATE] on melodic tracks, DRUM:STEPS on drum tracks.
 - notes are C4, F#3, Bb2 within C1-C8.
-- STEPS is 1-64 for a sounding token and 1-256 for a rest; GATE is 1-256 and defaults to the slot.
+- STEPS is 1-2048 for a sounding token and 1-4096 for a rest; GATE is 1-4096 and defaults to the slot.
 - a gate shorter than the slot is staccato; longer is legato and sounds into the next slot.
 - when a section length is not a multiple of the pattern length the parser warns (pattern-misaligned) and truncates the last repetition; the bar length in steps is stepsPerBeat * beatsPerBar.
 
 | Suffix | Meaning |
 | --- | --- |
-| - | rest: no @volume, effect, envelope or drum suffix, and up to 1-256 steps |
+| - | rest: no @volume, effect, timing, envelope or drum suffix, and up to 1-4096 steps |
 | @volume | 0-7, one decimal allowed, overrides the track volume; order with ~ is free ("@6~slide" or "~slide@6") |
 | ~effect | one pitched effect; see Effects |
+| ~drag(ms) / ~push(ms) | one timing offset, 0-200 ms; drag is late, push is early; adds to track offsetMs, then clamps to 0.49 of the local step |
+| ~pan(-1..1) | one per-note equal-power pan; overrides the track/section pan for this token |
+| ~send(0..1) | one per-note reverb send; overrides the track/section send for this token, and 0 is dry |
 | ~name | one named envelope or articulation from the top-level tables |
 | drum suffix | articulations and per-hit parameters; see Drums |
 
-At most one @volume, one ~effect, one named suffix and one drum articulation per token; each drum parameter also appears at most once.
+At most one @volume, one ~effect, one timing suffix, one ~pan, one ~send, one named suffix and one drum articulation per token; each drum parameter also appears at most once. A chord-level timing, pan, or send suffix applies to every voice. A per-note ~pan/~send does not turn off the track mix for other notes.
 
 ### Effects
 | Effect | Parameters | Default |
 | --- | --- | --- |
 | slide | steps 0.05-8, time to reach the target | 1 |
 | vibrato or vib | depth 0-2 semitones, optional rateHz 0.1-20 | 0.5 and 7.5 |
-| drop, fadein, fadeout, arpfast, arpslow | none | - |
+| arpfast / arpslow | optional semitone list and period: (s1,...,s8;steps), 1-8 semitones -24..24, period 0.05-8 steps | [0,4,7,12] and 0.5 / 1 step |
+| drop, fadein, fadeout | none | - |
 
 Drum tracks use articulations instead of pitched effects, and pitched effects are invalid on drum tokens.
 
@@ -334,18 +345,15 @@ Example: \`[{"type":"tape","speed":0.8},{"type":"reverb","wet":0.4},{"type":"lou
 | wet | 0-1 | preset or post |
 | toneHz | 100-22050 | preset or post |
 | minutes | 0.05-15; used in loop mode and ignored in song mode | 2 |
+| sections | song mode only: array of contiguous section names, e.g. ["drop","break"]; renders only that excerpt and marks the report as one | none |
+| solo | array of track names or roles to keep audible; other tracks are skipped, their stems and structure readings are omitted, and the report is marked as an audition | none |
+| mute | array of track names or roles to silence; applied after solo, so mute wins on a conflict | none |
 | out | workspace-relative path ending in .wav | pico8-music.wav |
 | detail | summary or raw; raw writes a sibling .analysis.json and returns its path | summary |
+| compare | true compares this render with the previous one cached in .p8-compare.json and appends a delta table; no score or total | false |
 
-### MusicXML export (p8_export arguments, outside the score JSON)
-\`p8_export\` writes the same score as uncompressed MusicXML 4.0 partwise XML: one part per track, one measure grid per bar, chords as <chord/>, notes that cross a bar line as tied notes, rests for silent slots, section rehearsal names and tempo changes, and drum tracks as percussion with GM drum instruments.
-It never renders audio, so post/preset/style/minutes do not apply. The written pitch uses sharps unless the declared key is flat; score tuning is kept as a fractional <alter> (for example A4=442 becomes +0.0785 semitones), so microtonal scores are not silently forced to 12-TET.
-The exported file is plain XML (.musicxml), never the zipped .mxl container.
+An excerpt starts at its section boundary: a note already sounding from the previous section, slide/legato state, and delay/reverb tails from before the excerpt are not carried in. It is mastered independently (peak safety net and limiter run on the excerpt), so do not compare its LUFS with the full song.
 
-| Argument | Values | Default |
-| --- | --- | --- |
-| score / scoreFile | exactly one; same input contract as p8_music | required |
-| out | workspace-relative path ending in .musicxml | pico8-music.musicxml |
 
 ### Timbre probe (p8_probe arguments, outside the score JSON)
 \`p8_probe\` renders one melodic track as one fixed note, dry: no post chain, no track EQ/filter/delay/duck/send, and no WAV. Use it after a render when you need to change an envelope, filter, additive shape, or FM index. Pass the same \`style\` you rendered with when the track relies on role instruments; an explicit \`track.instrument\` still wins, and \`quality\` defaults to the style's choice.
@@ -395,24 +403,30 @@ loudness-flat means a song sits on one level (LRA under 4 LU, sections within 6 
 
 Warnings loud (above -12 LUFS) and unsafe (above -9 LUFS) cover listening comfort; a render above -9 LUFS fails instead of writing the file.
 
-Both tools accept detail: "raw". p8_music writes the full render report (including stems and dry) as <out>.analysis.json (the .wav suffix is replaced); p8_analyze appends, so loop.wav becomes loop.wav.analysis.json. A WAV has no stems or dry snapshot, because attribution has to happen during the render.
+Both tools accept detail: "raw". p8_music writes the full render report (including stems and dry) as <out>.analysis.json (the .wav suffix is replaced); each raw stem also carries a sections list of per-section RMS values. p8_analyze appends, so loop.wav becomes loop.wav.analysis.json. A WAV has no stems or dry snapshot, because attribution has to happen during the render.
+
+p8_analyze detail: "compare" needs against, another workspace WAV, and returns the same delta rows as p8_music compare: the measured facts before and after, never a score. The p8_music cache is a workspace-local .p8-compare.json kept only when compare is true.
 
 ## Rules that fail or warn
 | Mistake | Result |
 | --- | --- |
-| post, preset, style, quality, width, monoBelowHz, target, speed, wet, toneHz, minutes, out, p8_probe arguments (track, note, volume, seconds, style, bypassFilter, sensitivity), or p8_export out inside the score JSON | unknown-field error; pass them next to score |
+| post, preset, style, quality, width, monoBelowHz, target, speed, wet, toneHz, minutes, out, or p8_probe arguments (track, note, volume, seconds, style, bypassFilter, sensitivity) inside the score JSON | unknown-field error; pass them next to score |
 | pan, send, duck, filter, highpassHz, lowShelf, highShelf or delay nested under "mix" | unknown-field error; they are flat track fields |
 | mode "song" without an arrangement, or an arrangement without song mode | error |
 | tail in loop mode | error; a loop must repeat seamlessly |
 | a note or chord voice outside C1-C8 | error |
 | a key that is not a tonic, e.g. "H", "Am7", "A dorian" | error; write the tonic and an optional maj/min |
-| a pitched effect or drum suffix on a rest | error |
+| a pitched effect, timing, ~pan/~send, or drum suffix on a rest | error |
+| ~pan outside -1..1 or ~send outside 0..1 | error |
+| an unknown drumChoke voice, an empty target list, or a duplicated trigger after aliasing | error |
 | a pitched effect on a drum track, or a drum suffix on a melodic track | error |
 | a chord on a drum track | error; use one hit per step |
 | an envelope name that collides with an effect, a drum articulation or a drum parameter | error |
 | an absolute or escaping sample path, or a non-.wav sample | error before rendering |
 | a pattern that does not divide the loop or section length | warning (pattern-misaligned) and a truncated last repetition |
 | a step delay left on the base bpm while sections change tempo | warning (delay-base-tempo); set delay.follow to "section" or accept a constant echo time |
+| sections on a loop, an unknown section, a duplicate, or a non-contiguous pick | error; an excerpt is a contiguous run of song sections |
+| a solo/mute name that matches no track or role, or a filter that leaves no audible track | error; names resolve by track first, then role |
 | section space set while every track and group has send 0 | warning (space-no-send); space scales the send buses and cannot be heard |
 | an unknown group name, or both groups/buses or group/bus spellings | error; define one groups table and name a group that exists |
 | a finished mix above -9 LUFS, or a loudness step hotter than -9 | error (hearing-safety ceiling); lower track volumes or use -14..-16 LUFS |`;

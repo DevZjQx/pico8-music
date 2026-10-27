@@ -307,3 +307,68 @@ test('space scales grouped sends and no longer warns when only a group has send'
   assert.ok(far !== undefined && near !== undefined);
   assert.ok(far.width > near.width, `far ${far.width} near ${near.width}`);
 });
+
+test('group saturation and compression parse and change only that subgroup', () => {
+  const score = (group: Record<string, unknown>) =>
+    parseScore({
+      groups: { drums: { ...group } },
+      tracks: [
+        { name: 'kick', role: 'drums', group: 'drums', pattern: 'K:1 -:1 S:1 -:1' },
+        { name: 'bass', role: 'bass', pattern: 'C2:4 G1:4 C2:8' },
+      ],
+    });
+
+  const parsed = score({
+    saturate: { drive: 0.8, mix: 0.9 },
+    compress: { thresholdDb: -20, ratio: 3.5, attack: 0.005, release: 0.2, makeupDb: 1.5 },
+  });
+  assert.deepEqual(parsed.groups.get('drums')?.saturate, { drive: 0.8, mix: 0.9 });
+  assert.deepEqual(parsed.groups.get('drums')?.compress, {
+    thresholdDb: -20,
+    ratio: 3.5,
+    attackSeconds: 0.005,
+    releaseSeconds: 0.2,
+    makeupDb: 1.5,
+  });
+
+  const flat = renderLoop(score({}), { post: [], withWav: false });
+  const driven = renderLoop(score({ saturate: { drive: 0.8, mix: 0.9 } }), {
+    post: [],
+    withWav: false,
+  });
+  const glued = renderLoop(
+    score({ compress: { thresholdDb: -24, ratio: 4, attack: 0.005, release: 0.15 } }),
+    { post: [], withWav: false },
+  );
+  assert.notDeepEqual(driven.left, flat.left);
+  assert.notDeepEqual(glued.left, flat.left);
+  assert.ok(driven.left.every((sample) => Number.isFinite(sample)));
+  assert.ok(glued.left.every((sample) => Number.isFinite(sample)));
+});
+
+test('group saturation and compression reject unknown fields and bad ranges', () => {
+  assert.throws(
+    () =>
+      parseScore({
+        groups: { drums: { saturate: { drive: 2 } } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /saturate\.drive/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        groups: { drums: { compress: { ratio: 0 } } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /compress\.ratio/,
+  );
+  assert.throws(
+    () =>
+      parseScore({
+        groups: { drums: { compress: { attackMs: 10 } } },
+        tracks: [{ pattern: 'C4:4' }],
+      }),
+    /unknown field|attackMs/,
+  );
+});

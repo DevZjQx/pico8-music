@@ -96,6 +96,7 @@ export function applyCompressor(
   right: Float32Array,
   settings: CompressorSettings,
   rate: number,
+  passes = 1,
 ): void {
   const threshold = dbToGain(settings.thresholdDb);
   const makeup = dbToGain(settings.makeupDb);
@@ -104,15 +105,22 @@ export function applyCompressor(
   const release = timeCoefficient(settings.releaseSeconds, rate);
   let envelope = 0;
 
-  for (let i = 0; i < left.length; i += 1) {
-    const peak = Math.max(Math.abs(left[i] ?? 0), Math.abs(right[i] ?? 0));
-    envelope += (peak > envelope ? attack : release) * (peak - envelope);
+  // `passes` > 1 lets a loop bus reach a steady detector state without
+  // allocating a repeated buffer: earlier passes read the same input and carry
+  // the envelope forward, and only the last pass writes the samples.
+  for (let pass = 0; pass < passes; pass += 1) {
+    const write = pass === passes - 1;
+    for (let i = 0; i < left.length; i += 1) {
+      const peak = Math.max(Math.abs(left[i] ?? 0), Math.abs(right[i] ?? 0));
+      envelope += (peak > envelope ? attack : release) * (peak - envelope);
 
-    let gain = 1;
-    if (envelope > threshold) gain = (envelope / threshold) ** (1 / ratio - 1);
-    const applied = gain * makeup;
-    left[i] = (left[i] ?? 0) * applied;
-    right[i] = (right[i] ?? 0) * applied;
+      let gain = 1;
+      if (envelope > threshold) gain = (envelope / threshold) ** (1 / ratio - 1);
+      if (!write) continue;
+      const applied = gain * makeup;
+      left[i] = (left[i] ?? 0) * applied;
+      right[i] = (right[i] ?? 0) * applied;
+    }
   }
 }
 

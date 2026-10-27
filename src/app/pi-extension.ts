@@ -2,17 +2,14 @@ import type { ExtensionAPI, ExtensionToolContext } from '@earendil-works/pi-codi
 import { SCORE_BRIEF, SCORE_HELP } from '../features/score/feature.ts';
 import {
   executeAnalyze,
-  executeExport,
   executeProbe,
   executeRender,
   type AnalyzeArgs,
-  type ExportArgs,
   type ProbeArgs,
   type RenderArgs,
 } from './render-service.ts';
 import {
   analyzeParameters,
-  exportParameters,
   helpParameters,
   musicParameters,
   probeParameters,
@@ -63,11 +60,11 @@ export default function pico8Music(pi: PiApi): void {
       'Compose a PICO-8-flavoured loop or arranged song and render it as a WAV. The pico8-songwriter skill covers composing; p8_help covers every field and range.',
     promptSnippet: 'Render a PICO-8-style loop or song to a WAV file',
     promptGuidelines: [
-      'Follow the pico8-songwriter skill; p8_help has field ranges.',
-      'Use post: [] for dry output.',
-      'Read findings/post-delta; target reports deviations; assert fails declared ranges.',
-      'Use p8_probe to tune source timbre.',
-      'Revise dark, narrow, sparse, or low-mid-heavy mixes.',
+      'Follow the skill; p8_help has ranges.',
+      'post: [] is dry.',
+      'Read findings; target/assert check ranges; compare:true diffs the last render.',
+      'p8_probe tunes timbre.',
+      'Revise dark/narrow/sparse/low-mid-heavy mixes.',
     ],
     parameters: musicParameters,
     // Two calls targeting the same `out` path must not overlap.
@@ -90,36 +87,10 @@ export default function pico8Music(pi: PiApi): void {
   });
 
   pi.registerTool({
-    name: 'p8_export',
-    label: 'PICO-8 score exporter',
-    description:
-      'Export a score as uncompressed MusicXML 4.0 (.musicxml): one part per track, section tempo changes, chords, ties, rests, and drum percussion. p8_help covers every score field.',
-    promptSnippet: 'Export a score as uncompressed MusicXML',
-    parameters: exportParameters,
-    // Two exports writing the same `out` path must not overlap.
-    executionMode: 'sequential',
-    async execute(
-      _toolCallId: string,
-      args: ExportArgs,
-      signal?: AbortSignal,
-      _onUpdate?: unknown,
-      ctx?: PiToolContext,
-    ): Promise<PiToolResult> {
-      try {
-        const text = await executeExport(args, { signal, cwd: ctx?.cwd });
-        return { content: [{ type: 'text', text }], details: { text } };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`${message} (call p8_help for the wire format)`);
-      }
-    },
-  });
-
-  pi.registerTool({
     name: 'p8_analyze',
     label: 'PICO-8 render report',
     description:
-      'Measure an existing 16-bit PCM WAV: sample and true peak, RMS, LUFS/LRA, spectrum, width, L/R correlation and balance, onsets, findings, and warnings. Optional sections split the file; target ranges report deviations, assert ranges fail the call. detail:raw writes the full analysis to a sibling .analysis.json.',
+      'Measure an existing 16-bit PCM WAV: sample and true peak, RMS, LUFS/LRA, spectrum, width, L/R correlation and balance, onsets, findings, and warnings. Optional sections split the file; target ranges report deviations, assert ranges fail the call. detail:raw writes the full analysis to a sibling .analysis.json; detail:compare with against returns a delta table.',
     parameters: analyzeParameters,
     execute(
       _toolCallId: string,

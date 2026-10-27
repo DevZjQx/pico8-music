@@ -9,8 +9,7 @@ This file is **how to compose**: form, grid, track layout, arrangement, mix
 decisions, and the revise loop. `p8_help` is the **wire format**: fields, tokens,
 ranges, defaults, and every error. Read `p8_help` before writing a field this
 file does not name; where they disagree, `p8_help` wins. `p8_analyze` measures a
-WAV that already exists. `p8_export` writes the score as uncompressed MusicXML
-for notation software; it does not render audio.
+WAV that already exists.
 
 ## Workflow
 
@@ -25,6 +24,10 @@ for notation software; it does not render audio.
    uses.
 6. Render, read `warnings`, then `findings`, then revise. Keep the score in a
    workspace `.json` file and pass `scoreFile`.
+7. For a long song, audition with `sections: ["drop","break"]` and isolate a
+   part with `solo`/`mute` (track name or role). Those are auditions, not a
+   final mix: an excerpt is mastered on its own, and muting a kick removes its
+   ducking trigger. Re-render the whole song before judging levels.
 
 ## Pick the form
 
@@ -79,7 +82,15 @@ cursor.
 
 - Kick on 1 and 3, snare on 2 and 4, hats on the subdivision you want felt.
 - Write bass as chord roots in `:2`/`:4`, not one `:16`, or the rhythm vanishes.
-- `swing` for a lilt, `humanize` for small timing/velocity drift.
+- `swing` for a lilt (`swingUnit` 12 at `stepsPerBeat` 24 is eighth-note swing),
+  `humanize` for small timing/velocity drift.
+- For triplets, set `stepsPerBeat: 24`: 16th is `:6`, 8th-triplet `:8`,
+  16th-triplet `:4`, 32nd `:3`. Keep writing named patterns; 24 PPQN makes
+  every token longer, so do not spell out every 32nd by hand.
+- Feeling: a track `offsetMs` sets a part's baseline, and `~drag(ms)` /
+  `~push(ms)` accents one note. Stay within about 20 ms and use it on the
+  snare, bass, or one lead phrase, not on every token. Both are clamped to
+  half a step and the render warns when the clamp bites.
 - 3/4 is `beatsPerBar: 3`; 6/8 is `beatsPerBar: 6` with `stepsPerBeat: 2`.
 
 ## Track layout
@@ -108,11 +119,17 @@ K:2 -:2 S:2 -:2 H:1 H:1 H:2 K:2 H:2
 - Hats carry the subdivision (`H:1` or `H:2`), not `H:4`.
 - `~ghost` on a hat, `~flam` in a fill, `~roll` at a section edge.
 - One or two kicks per bar beat a wall of `K:1`.
+- Use `drumChoke` when an open hat should stop under a closed hat:
+  `{"drumChoke":{"hat":["openhat"]}}`. Leave it out when overlapping tails are
+  the sound; the default is empty.
 
 ## Harmony and variation
 
 - Named chords (`Am7`, `Fmaj7`, `G7/B`) for progressions; `[C4,E4,G4]:4` for a
   specific voicing or more than four notes.
+- An arp is a held note plus a shape: `~arpfast(0,4,7,11;0.25)` cycles the
+  authored semitones and period. Use it for broken chords instead of writing
+  every 16th as a separate token; keep the shape to 3-5 notes.
 - Slash bass moves the low line without adding a track.
 - One or two chords per bar; change faster only at a section edge.
 - Write a phrase once in `motifs`, then transform it per section:
@@ -176,6 +193,8 @@ register.
 - `riser` takes no track and ends at the section boundary.
 - `energy` alone only changes level; add a `filter` when the section should also get darker.
 - `space` is a multiplier on every stereo send bus (needs at least one track or group send); `width` is a multiplier on the finished side signal. Both default to 1, so they are opt-in.
+- A group can glue its members with `saturate: {drive, mix}` then `compress: {thresholdDb, ratio, attack, release, makeupDb}`; the fader still has the final say, and both run once on the summed group, not per track.
+- Use `sections` to render one contiguous run of song sections, and `solo`/`mute` to hear one part. An excerpt is not the whole-song master, so do not compare its LUFS with the full render.
 - A section `tracks` entry moves one part without moving the rest: `{"bass":{"filter":{"from":300,"to":3000},"gain":0.9},"lead":{"mute":true}}`. It accepts `gain`, `pan`, `send`, `mute`, and `filter`; the filter is track-local, not the section-wide filter.
 - `inheritSections: true` (or `"inherit": true` on one section) makes an omitted field reuse the previous section. Write `tracks:{}` to clear inherited track state; `fill`, `riser`, `bars`, and `name` never inherit.
 - Tempo changes only at boundaries; loop mode keeps one tempo, and song mode
@@ -187,10 +206,12 @@ register.
 | --- | --- |
 | separate two parts | `pan` ±0.3–0.6 |
 | depth without a wash | `send` 0.1–0.3 (stereo: a panned part keeps its side) |
+| one note placed away from its track | token `~pan(-0.6)` / `~send(0.5)`; unmarked notes keep the track value |
 | one fader/filter/return for several parts | a named `group` with `gain`, `pan`, `filter`, and `reverb` |
 | move distance between sections | section `space` 0.5–1.8 |
 | open or close the image between sections | section `width` 0.6–1.4 |
 | kick cutting through | `duck` 0.3–0.6 on bass and pads |
+| glue a drum or keys bus | group `saturate` then `compress` |
 | mud in one part | `highpassHz` on that part |
 | darker or brighter part | `filter`, or a shelf |
 | filter only one part in one section | section `tracks.<name>.filter` |
@@ -324,14 +345,18 @@ route around it.
    the chain caused it.
 4. `post-delta` shows what the chain did to the dry render; when a finding
    appears only there, fix the chain, not the score.
-5. When the fix is a timbre parameter, run `p8_probe` on that track first: read
+5. When revising a previous render, add `compare: true` and read the delta
+   rows instead of guessing whether a knob helped; it compares measurements,
+   not a score. For two saved WAVs, use `p8_analyze` with
+   `detail: "compare"` and `against`.
+6. When the fix is a timbre parameter, run `p8_probe` on that track first: read
    the source metrics and the measured sensitivity, then change one knob and
    probe again. Do not tune FM or an envelope from the mix report alone.
-6. For a song, read the per-section `w` (width), `c` (correlation), `b`
+7. For a song, read the per-section `w` (width), `c` (correlation), `b`
    (balance), `low-mid`, `2-5k`, and `Hz` in `report sections`: if
    `flat-space` fires, neither width nor brightness moves between sections.
-7. Fix in order: arrangement → levels and pan → filters → reverb/delay → master.
-8. `target` adds profile range checks; it reports, it is never a score to
+8. Fix in order: arrangement → levels and pan → filters → reverb/delay → master.
+9. `target` adds profile range checks; it reports, it is never a score to
    maximise. `assert` is stricter: a declared range miss fails the tool call,
    so use it only when the requirement is objective (peak/true-peak, LUFS,
    sections, correlation).

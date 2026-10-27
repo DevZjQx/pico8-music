@@ -370,6 +370,7 @@ function probeScore(
     stepSeconds: options.seconds / PROBE_STEPS,
     durationSeconds: options.seconds,
     swing: 0,
+    swingUnit: 1,
     seed: score.seed,
     humanize: { timingMs: 0, velocity: 0 },
     tuning: score.tuning,
@@ -379,6 +380,7 @@ function probeScore(
     tailSeconds: 0,
     samples: score.samples,
     drumSamples: new Map(),
+    drumChoke: new Map(),
     warnings: [],
   };
 }

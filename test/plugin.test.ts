@@ -107,13 +107,6 @@ test('registers p8_music and p8_help as DSH tools', () => {
   assert.ok(music?.parameters?.properties?.assert);
   assert.match(analyze?.description ?? '', /LUFS/);
 
-  const exportTool = captured.tools.get('p8_export');
-  assert.ok(exportTool?.parameters?.properties?.score);
-  assert.ok(exportTool?.parameters?.properties?.scoreFile);
-  assert.ok(exportTool?.parameters?.properties?.out);
-  assert.match(exportTool?.description ?? '', /MusicXML/);
-  assert.equal(exportTool?.isConcurrencySafe?.({}), false);
-
   const probe = captured.tools.get('p8_probe');
   assert.equal(probe?.parameters?.properties?.score?.type, 'string');
   assert.equal(probe?.parameters?.required, undefined);
@@ -190,7 +183,7 @@ test('a host without a command surface still gets the tools', () => {
       },
     },
   });
-  assert.deepEqual([...captured.tools.keys()], ['p8_help', 'p8_music', 'p8_export', 'p8_probe', 'p8_analyze']);
+  assert.deepEqual([...captured.tools.keys()], ['p8_help', 'p8_music', 'p8_probe', 'p8_analyze']);
 });
 
 test('a bad score points the model at p8_help', async () => {

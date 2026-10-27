@@ -13,6 +13,7 @@ import { throwIfAborted } from './abort.ts';
 import { analyseStem, type StemReading } from './analyze.ts';
 import { renderDrumHit } from './drums.ts';
 import { applyAutomatedLowpass, applyTrackEq, filterTrack } from './filters.ts';
+import { applyCompressor, applySaturation } from './master.ts';
 import { addSectionRisers } from './fx.ts';
 import { InstrumentVoice } from './instrument.ts';
 import {
@@ -38,6 +39,64 @@ interface StereoBus {
   readonly right: Float32Array;
 }
 
+/**
+ * Per-note spatial routing. The plain mono buffer keeps the historical path;
+ * the other layers exist only when a token writes `~pan` or `~send`, so a score
+ * without those suffixes allocates and processes exactly one buffer per track.
+ */
+interface TrackBuffers {
+  readonly plain: Float32Array;
+  panOnly?: StereoBus;
+  sendOnly?: Float32Array;
+  both?: StereoBus;
+  send?: StereoBus;
+  /** Raw pre-pan copy, allocated only when a spatial override needs stems. */
+  stem?: Float32Array;
+  sendUsed: boolean;
+}
+
+/**
+ * One scheduled note's destinations. `mono` is either the plain track buffer or
+ * the send-override-only buffer, which still receives the track pan at mix.
+ * `left`/`right` are already panned per note. `sendLeft`/`sendRight` bake the
+ * authored per-note send so the track-level send is not applied twice.
+ */
+interface NoteOutput {
+  readonly length: number;
+  readonly mono?: Float32Array;
+  readonly left?: Float32Array;
+  readonly right?: Float32Array;
+  readonly sendLeft?: Float32Array;
+  readonly sendRight?: Float32Array;
+  readonly dryLeftGain: number;
+  readonly dryRightGain: number;
+  readonly sendLeftGain: number;
+  readonly sendRightGain: number;
+  readonly send: number;
+  readonly stem?: Float32Array;
+}
+
+function writeNoteSample(out: NoteOutput, index: number, value: number): void {
+  if (out.mono !== undefined) {
+    out.mono[index] = (out.mono[index] ?? 0) + value;
+  }
+  if (out.left !== undefined) {
+    out.left[index] = (out.left[index] ?? 0) + value * out.dryLeftGain;
+  }
+  if (out.right !== undefined) {
+    out.right[index] = (out.right[index] ?? 0) + value * out.dryRightGain;
+  }
+  if (out.sendLeft !== undefined && out.send > 0) {
+    out.sendLeft[index] = (out.sendLeft[index] ?? 0) + value * out.send * out.sendLeftGain;
+  }
+  if (out.sendRight !== undefined && out.send > 0) {
+    out.sendRight[index] = (out.sendRight[index] ?? 0) + value * out.send * out.sendRightGain;
+  }
+  if (out.stem !== undefined) {
+    out.stem[index] = (out.stem[index] ?? 0) + value;
+  }
+}
+
 /** One stereo send destined for a reverb return. */
 export interface SendBusAudio extends StereoBus {
   /** Group return settings; absent is the default send return. */
@@ -56,6 +115,8 @@ export interface SongAudio {
   readonly sendBuses: readonly SendBusAudio[];
   /** Per-track measurements taken before pan/sum; no track audio is retained. */
   readonly stems: readonly StemReading[];
+  /** Render-time timing advisories, deduplicated per track. */
+  readonly warnings: readonly string[];
 }
 
 function stereoBus(length: number): StereoBus {
@@ -105,12 +166,44 @@ function buildTimeline(score: Score, track: ScoreTrack, signal?: AbortSignal): r
 }
 
 /**
- * Positive swing delays odd steps, negative swing pushes them earlier. The
- * parser caps the magnitude at half a step, so an odd step can never cross
- * the even step before it.
+ * Positive swing delays odd swing groups, negative swing pushes them earlier.
+ * `swingUnit` is 1 for the historical odd-step swing; 12 at 24 PPQN gives
+ * eighth-note swing. A track's own swing replaces the score value instead of
+ * adding to it, so a global lilt plus one straight part stays explainable.
  */
-function swingSeconds(score: Score, step: number): number {
-  return score.swing !== 0 && step % 2 === 1 ? score.swing * stepSecondsAt(score, step) : 0;
+function swingSeconds(score: Score, track: ScoreTrack, step: number): number {
+  const swing = track.swing ?? score.swing;
+  if (swing === 0) return 0;
+  const group = Math.floor(step / score.swingUnit);
+  return group % 2 === 1 ? swing * score.swingUnit * stepSecondsAt(score, step) : 0;
+}
+
+type TimingWarnings = Map<string, string>;
+
+/**
+ * The one place that turns authored milliseconds into samples. Track offset and
+ * token offset add; the sum is clamped to 0.49 of the local step so two
+ * neighbouring events can never swap places. Humanize is added afterwards and
+ * stays outside this clamp, matching its pre-existing behaviour.
+ */
+function eventOffsetSamples(
+  score: Score,
+  track: ScoreTrack,
+  event: NoteEvent,
+  rate: number,
+  warnings: TimingWarnings,
+): number {
+  const authoredMs = (track.offsetMs ?? 0) + (event.offsetMs ?? 0);
+  if (authoredMs === 0) return 0;
+  const limitMs = 0.49 * stepSecondsAt(score, event.step) * 1000;
+  const clampedMs = Math.max(-limitMs, Math.min(limitMs, authoredMs));
+  if (clampedMs !== authoredMs && !warnings.has(track.name)) {
+    warnings.set(
+      track.name,
+      `timing-clamped: track ${track.name} asked for ${authoredMs.toFixed(1)} ms but this section's half-step is ${limitMs.toFixed(2)} ms; clamped to ${clampedMs.toFixed(2)} ms`,
+    );
+  }
+  return Math.round(clampedMs * 0.001 * rate);
 }
 
 /** Folds the score seed into a per-event seed without losing integer precision. */
@@ -147,25 +240,29 @@ function humanizeUnit(
 
 function humanizeTimingSamples(
   score: Score,
+  track: ScoreTrack,
   trackIndex: number,
   eventIndex: number,
   voice: number,
   rate: number,
 ): number {
-  if (score.humanize.timingMs <= 0) return 0;
+  const timingMs = track.humanize?.timingMs ?? score.humanize.timingMs;
+  if (timingMs <= 0) return 0;
   const unit = humanizeUnit(score, trackIndex, eventIndex, voice, HUMANIZE_TIMING_SALT);
-  return Math.round((unit * 2 - 1) * score.humanize.timingMs * 0.001 * rate);
+  return Math.round((unit * 2 - 1) * timingMs * 0.001 * rate);
 }
 
 function humanizeGain(
   score: Score,
+  track: ScoreTrack,
   trackIndex: number,
   eventIndex: number,
   voice: number,
 ): number {
-  if (score.humanize.velocity <= 0) return 1;
+  const velocity = track.humanize?.velocity ?? score.humanize.velocity;
+  if (velocity <= 0) return 1;
   const unit = humanizeUnit(score, trackIndex, eventIndex, voice, HUMANIZE_VELOCITY_SALT);
-  return Math.max(0, Math.min(1.5, 1 + (unit * 2 - 1) * score.humanize.velocity * 0.5));
+  return Math.max(0, Math.min(1.5, 1 + (unit * 2 - 1) * velocity * 0.5));
 }
 
 interface MelodicNote {
@@ -195,6 +292,7 @@ function buildMelodicNotes(
   track: ScoreTrack,
   trackIndex: number,
   instrument: Instrument | undefined,
+  warnings: TimingWarnings,
   signal?: AbortSignal,
 ): readonly MelodicNote[] {
   const notes: MelodicNote[] = [];
@@ -204,25 +302,29 @@ function buildMelodicNotes(
 
   events.forEach((event, eventIndex) => {
     const voice = event.voice ?? 0;
+    // Excerpts keep the full-song event index; an unedited timeline falls back
+    // to the loop position, so legacy renders keep their exact seeds.
+    const seedIndex = event.sourceIndex ?? eventIndex;
     const eventStepSeconds = stepSecondsAt(score, event.step);
-    const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, event.step);
+    const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, track, event.step);
     const gateSteps = Math.max(1, event.gateSteps ?? event.steps);
     notes.push({
       track,
       event,
-      eventIndex,
+      eventIndex: seedIndex,
       trackIndex,
       startSample:
         Math.round(startSeconds * rate) +
-        humanizeTimingSamples(score, trackIndex, eventIndex, voice, rate),
+        eventOffsetSamples(score, track, event, rate, warnings) +
+        humanizeTimingSamples(score, track, trackIndex, seedIndex, voice, rate),
       gateSamples: Math.min(
         maxGateSamples,
         Math.max(1, Math.round(gateSteps * eventStepSeconds * rate)),
       ),
       stepSeconds: eventStepSeconds,
       slideFrom: lastFrequency.get(voice) ?? event.frequency,
-      seed: seedFor(score, (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + 1),
-      humanizeGain: humanizeGain(score, trackIndex, eventIndex, voice),
+      seed: seedFor(score, (trackIndex + 1) * 0x9e3779b9 + seedIndex * 131 + 1),
+      humanizeGain: humanizeGain(score, track, trackIndex, seedIndex, voice),
       ...(instrument === undefined ? {} : { instrument }),
     });
     lastFrequency.set(voice, event.frequency);
@@ -236,7 +338,7 @@ function buildMelodicNotes(
  * which is what makes overlapping chord voices and legato gates independent.
  */
 function renderMelodicNote(
-  samples: Float32Array,
+  out: NoteOutput,
   note: MelodicNote,
   score: Score,
   rate: number,
@@ -281,14 +383,14 @@ function renderMelodicNote(
     ? ((note.startSample % loopSamples) + loopSamples) % loopSamples
     : Math.max(0, note.startSample);
 
-  if (!wrap && start >= samples.length) return;
+  if (!wrap && start >= out.length) return;
 
   for (let i = 0; i < note.gateSamples; i += 1) {
     if ((i & 8191) === 0) throwIfAborted(signal);
     let index = start + i;
     if (wrap) {
       if (index >= loopSamples) index %= loopSamples;
-    } else if (index >= samples.length) {
+    } else if (index >= out.length) {
       break;
     }
     if (index < 0) continue;
@@ -323,9 +425,12 @@ function renderMelodicNote(
         break;
       case 6:
       case 7: {
-        const period = event.effect === 6 ? note.stepSeconds / 2 : note.stepSeconds;
-        const arpIndex = Math.floor(noteSeconds / period) % ARP_SEMITONES.length;
-        frequency = event.frequency * 2 ** ((ARP_SEMITONES[arpIndex] ?? 0) / 12);
+        const semitones = event.effectParams?.arpSemitones ?? ARP_SEMITONES;
+        const periodSteps =
+          event.effectParams?.arpSteps ?? (event.effect === 6 ? 0.5 : 1);
+        const period = periodSteps * note.stepSeconds;
+        const arpIndex = Math.floor(noteSeconds / period) % semitones.length;
+        frequency = event.frequency * 2 ** ((semitones[arpIndex] ?? 0) / 12);
         break;
       }
     }
@@ -334,12 +439,16 @@ function renderMelodicNote(
     if (gain <= 0) continue;
 
     if (sampleVoice !== undefined) {
-      samples[index] = (samples[index] ?? 0) + sampleVoice.sample(frequency) * gain;
+      writeNoteSample(out, index, sampleVoice.sample(frequency) * gain);
       continue;
     }
 
     if (voice !== undefined) {
-      samples[index] = (samples[index] ?? 0) + voice.sample(frequency, noteSeconds, noteDuration) * gain;
+      writeNoteSample(
+        out,
+        index,
+        voice.sample(frequency, noteSeconds, noteDuration) * gain,
+      );
       continue;
     }
 
@@ -348,8 +457,11 @@ function renderMelodicNote(
     wave.phase = phase;
 
     const key = Math.min(63, Math.max(0, event.midi - 36));
-    samples[index] =
-      (samples[index] ?? 0) + sampleWaveformAt(quality, track.waveform, wave, key, frequency / rate) * gain;
+    writeNoteSample(
+      out,
+      index,
+      sampleWaveformAt(quality, track.waveform, wave, key, frequency / rate) * gain,
+    );
   }
 }
 
@@ -363,6 +475,11 @@ interface DrumHit {
   readonly pitchSemitones?: number;
   /** Present when `drumSamples` maps this voice to a persisted WAV. */
   readonly sample?: SampleSource;
+  /** Authored per-hit spatial overrides; absent keeps the track value. */
+  readonly pan?: number;
+  readonly send?: number;
+  /** Samples until a later choke trigger fades this hit out. */
+  readonly chokeSamples?: number;
 }
 
 function buildDrumHits(
@@ -371,28 +488,35 @@ function buildDrumHits(
   track: ScoreTrack,
   trackIndex: number,
   sampleBank: SampleBank | undefined,
+  warnings: TimingWarnings,
   signal?: AbortSignal,
 ): readonly DrumHit[] {
   const hits: DrumHit[] = [];
   buildTimeline(score, track, signal).forEach((event, eventIndex) => {
     const drum = event.drum;
     if (!drum) return;
+    const seedIndex = event.sourceIndex ?? eventIndex;
     const mappedSample = score.drumSamples.get(drum);
     const sampleEntry = mappedSample === undefined ? undefined : sampleBank?.get(mappedSample);
     if (mappedSample !== undefined && sampleEntry === undefined) {
       throw new Error(`sample ${JSON.stringify(mappedSample)} for drum ${drum} is missing from the render bank`);
     }
-    const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, event.step);
+    const startSeconds = secondsAtStep(score, event.step) + swingSeconds(score, track, event.step);
     const slotSeconds = Math.max(0, event.steps * stepSecondsAt(score, event.step));
+    const onsetOffsetSamples = eventOffsetSamples(score, track, event, rate, warnings);
     const effect = event.drumEffect;
     const params = event.drumParams;
-    const seedBase = (trackIndex + 1) * 0x9e3779b9 + eventIndex * 131 + event.midi;
+    const seedBase = (trackIndex + 1) * 0x9e3779b9 + seedIndex * 131 + event.midi;
 
-    let velocity = (event.volume / 7) * (event.gain ?? 1) * humanizeGain(score, trackIndex, eventIndex, event.voice ?? 0);
+    let velocity =
+      (event.volume / 7) *
+      (event.gain ?? 1) *
+      humanizeGain(score, track, trackIndex, seedIndex, event.voice ?? 0);
     const timingSamples = humanizeTimingSamples(
       score,
+      track,
       trackIndex,
-      eventIndex,
+      seedIndex,
       event.voice ?? 0,
       rate,
     );
@@ -416,7 +540,10 @@ function buildDrumHits(
           ? undefined
           : selectSampleSource(sampleEntry, event.midi, Math.min(1, level));
       hits.push({
-        offset: Math.round((startSeconds + offsetSeconds) * rate) + timingSamples,
+        offset:
+          Math.round((startSeconds + offsetSeconds) * rate) +
+          onsetOffsetSamples +
+          timingSamples,
         drum,
         velocity: level,
         seed: seedFor(score, seedBase + hitIndex * 17),
@@ -424,6 +551,8 @@ function buildDrumHits(
         ...(toneHz === undefined ? {} : { toneHz }),
         ...(pitchSemitones === undefined ? {} : { pitchSemitones }),
         ...(sample === undefined ? {} : { sample }),
+        ...(event.pan === undefined ? {} : { pan: event.pan }),
+        ...(event.send === undefined ? {} : { send: event.send }),
       });
     };
 
@@ -451,8 +580,8 @@ function buildDrumHits(
  * keeps every repeated pass identical and the seam sample-exact.
  */
 function addDrumHits(
-  samples: Float32Array,
   hits: readonly DrumHit[],
+  outputFor: (pan: number | undefined, send: number | undefined) => NoteOutput,
   rate: number,
   loopSamples: number,
   wrap: boolean,
@@ -463,7 +592,7 @@ function addDrumHits(
     const start = wrap
       ? ((hit.offset % loopSamples) + loopSamples) % loopSamples
       : Math.max(0, hit.offset);
-    if (!wrap && start >= samples.length) continue;
+    if (!wrap && start >= loopSamples) continue;
 
     const audio =
       hit.sample === undefined
@@ -480,13 +609,26 @@ function addDrumHits(
             hit.toneHz,
             hit.decayScale,
           );
+
+    // A choke is a short fade, not a hard truncation: an open hat cut at a
+    // non-zero sample would click and spray broadband energy into the mix.
+    if (hit.chokeSamples !== undefined) {
+      const cut = Math.max(0, hit.chokeSamples);
+      const fade = Math.max(1, Math.round(0.008 * rate));
+      for (let i = cut; i < audio.length; i += 1) {
+        const remaining = i - cut;
+        audio[i] = (audio[i] ?? 0) * (remaining >= fade ? 0 : 1 - remaining / fade);
+      }
+    }
+
+    const out = outputFor(hit.pan, hit.send);
     for (let i = 0; i < audio.length; i += 1) {
       let index = start + i;
       if (index >= loopSamples) {
         if (!wrap) break;
         index %= loopSamples;
       }
-      samples[index] = (samples[index] ?? 0) + (audio[i] ?? 0);
+      writeNoteSample(out, index, audio[i] ?? 0);
     }
   }
 }
@@ -555,21 +697,92 @@ function applySectionSend(samples: Float32Array, score: Score, rate: number): vo
   }
 }
 
-function collectKickOffsets(
+/** Builds every audible drum track once; the kick sidechain and render reuse it. */
+function collectDrumHits(
   score: Score,
   rate: number,
   sampleBank: SampleBank | undefined,
+  audible: (track: ScoreTrack) => boolean,
+  warnings: TimingWarnings,
   signal?: AbortSignal,
-): readonly number[] {
-  const offsets: number[] = [];
+): Map<number, readonly DrumHit[]> {
+  const byTrack = new Map<number, readonly DrumHit[]>();
   score.tracks.forEach((track, index) => {
-    if (!track.isDrums) return;
-    for (const hit of buildDrumHits(score, rate, track, index, sampleBank, signal)) {
+    if (!track.isDrums || !audible(track)) return;
+    byTrack.set(
+      index,
+      buildDrumHits(score, rate, track, index, sampleBank, warnings, signal),
+    );
+  });
+  return byTrack;
+}
+
+function kickOffsetsOf(hitsByTrack: ReadonlyMap<number, readonly DrumHit[]>): readonly number[] {
+  const offsets: number[] = [];
+  for (const hits of hitsByTrack.values()) {
+    for (const hit of hits) {
       if (hit.drum === 'kick') offsets.push(hit.offset);
     }
-  });
+  }
   offsets.sort((a, b) => a - b);
   return offsets;
+}
+
+/**
+ * Scores every hit with the first later choke trigger that targets it. The map
+ * is global across drum tracks, so a closed hat on one track can cut an open
+ * hat on another. A loop trigger that lands after the seam is measured one pass
+ * later, which keeps every repeated pass identical.
+ */
+function applyDrumChoke(
+  hitsByTrack: ReadonlyMap<number, readonly DrumHit[]>,
+  choke: ReadonlyMap<DrumName, readonly DrumName[]>,
+  rate: number,
+  loopSamples: number,
+  wrap: boolean,
+): Map<number, readonly DrumHit[]> {
+  if (choke.size === 0) return new Map(hitsByTrack);
+  const triggers = new Map<DrumName, number[]>();
+  for (const hits of hitsByTrack.values()) {
+    for (const hit of hits) {
+      const targets = choke.get(hit.drum);
+      if (targets === undefined) continue;
+      for (const target of targets) {
+        const offsets = triggers.get(target);
+        if (offsets === undefined) triggers.set(target, [hit.offset]);
+        else offsets.push(hit.offset);
+      }
+    }
+  }
+  for (const offsets of triggers.values()) offsets.sort((a, b) => a - b);
+
+  const nextTrigger = (target: DrumName, after: number): number | undefined => {
+    const offsets = triggers.get(target);
+    if (offsets === undefined || offsets.length === 0) return undefined;
+    let low = 0;
+    let high = offsets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if ((offsets[middle] ?? 0) <= after) low = middle + 1;
+      else high = middle;
+    }
+    if (low < offsets.length) return offsets[low];
+    return wrap ? (offsets[0] ?? 0) + loopSamples : undefined;
+  };
+
+  const output = new Map<number, readonly DrumHit[]>();
+  for (const [trackIndex, hits] of hitsByTrack) {
+    output.set(
+      trackIndex,
+      hits.map((hit) => {
+        const trigger = nextTrigger(hit.drum, hit.offset);
+        if (trigger === undefined) return hit;
+        const samples = Math.round(trigger - hit.offset);
+        return samples > 0 ? { ...hit, chokeSamples: samples } : hit;
+      }),
+    );
+  }
+  return output;
 }
 
 /**
@@ -612,6 +825,40 @@ function aliasRiskOf(track: ScoreTrack, quality: Quality): boolean {
   return false;
 }
 
+/** Runs the track insert chain once for one mono or one channel of a layer. */
+function applyTrackChain(
+  samples: Float32Array,
+  track: ScoreTrack,
+  score: Score,
+  rate: number,
+  loopSamples: number,
+  wrap: boolean,
+  kicks: readonly number[],
+  hasTrackSections: boolean,
+  signal?: AbortSignal,
+): void {
+  if (track.filter) filterTrack(samples, track.filter, rate);
+  if (track.highpassHz !== undefined || track.lowShelf !== undefined || track.highShelf !== undefined) {
+    applyTrackEq(
+      samples,
+      {
+        ...(track.highpassHz === undefined ? {} : { highpassHz: track.highpassHz }),
+        ...(track.lowShelf === undefined ? {} : { lowShelf: track.lowShelf }),
+        ...(track.highShelf === undefined ? {} : { highShelf: track.highShelf }),
+      },
+      rate,
+    );
+  }
+  if (track.delay) {
+    applyDelay(samples, track.delay, score, rate, loopSamples, wrap, signal);
+  }
+  if (track.duck > 0) applyDuck(samples, kicks, track.duck, rate, loopSamples, wrap, signal);
+  // A section can filter this track alone; it runs after the track's own
+  // filter/EQ/delay/duck and before pan/send, so neighboring tracks keep
+  // their highs when one part closes.
+  if (hasTrackSections) applyTrackSectionFilter(samples, score, track, rate);
+}
+
 /**
  * Renders one sample-exact pass of the score. Each track gets its own buffer so
  * filters, panning, delay, ducking, and sends stay per-track; the buffers are
@@ -624,6 +871,8 @@ export function renderScore(
   roleInstruments?: RoleInstruments,
   sampleBank?: SampleBank,
   quality: Quality = 'pico',
+  solo?: ReadonlySet<string>,
+  mute?: ReadonlySet<string>,
 ): SongAudio {
   const musicSamples = Math.max(1, Math.round(score.durationSeconds * rate));
   const tailSamples = score.mode === 'song' ? Math.max(0, Math.round(score.tailSeconds * rate)) : 0;
@@ -631,9 +880,29 @@ export function renderScore(
   const wrap = score.mode === 'loop';
   const left = new Float32Array(loopSamples);
   const right = new Float32Array(loopSamples);
+  // Solo is an audition filter, not a score edit: names come from the app layer
+  // after name-then-role resolution, and track indices stay stable so humanize
+  // and drums keep the same seed. Mute is applied after solo, so mute wins.
+  const audible = (track: ScoreTrack): boolean =>
+    (solo === undefined || solo.size === 0 || solo.has(track.name)) &&
+    (mute === undefined || !mute.has(track.name));
   // Section track state is a song-only add-on. Old scores have none, so every
   // extra scan and branch below is skipped for the common legacy path.
   const hasTrackSections = score.sections.some((section) => section.trackStates !== undefined);
+  // Stem levels per section are measured on the same buffer as the global
+  // stem, before pan/send. They cost one extra pass per track and are only
+  // surfaced in the raw artifact, where a model can attribute "loud in drop".
+  const stemSections =
+    score.sections.length === 0
+      ? undefined
+      : score.sections.map((section) => ({
+          name: section.name,
+          startFrame: Math.max(0, Math.round(section.startSeconds * rate)),
+          endFrame: Math.max(
+            0,
+            Math.round((section.startSeconds + section.durationSeconds) * rate),
+          ),
+        }));
   const groupBuffers = new Map<string, StereoBus>();
   const groupSends = new Map<string, StereoBus>();
   let defaultSend: StereoBus | undefined;
@@ -657,17 +926,87 @@ export function renderScore(
     return created;
   };
 
-  const kicks = collectKickOffsets(score, rate, sampleBank, signal);
+  const timingWarnings: TimingWarnings = new Map();
+  const drumHitsByTrack = collectDrumHits(
+    score,
+    rate,
+    sampleBank,
+    audible,
+    timingWarnings,
+    signal,
+  );
+  const kicks = kickOffsetsOf(drumHitsByTrack);
+  const chokedHits = applyDrumChoke(
+    drumHitsByTrack,
+    score.drumChoke,
+    rate,
+    loopSamples,
+    wrap,
+  );
   const stems: StemReading[] = [];
 
   score.tracks.forEach((track, trackIndex) => {
     throwIfAborted(signal);
-    const buffer = new Float32Array(loopSamples);
+    if (!audible(track)) return;
+    const layers: TrackBuffers = { plain: new Float32Array(loopSamples), sendUsed: false };
+
+    // Every scheduled note or hit picks its layer from the two spatial
+    // suffixes. Without either suffix this always returns the plain buffer,
+    // which is why old scores keep one allocation and one processing pass.
+    const outputFor = (pan: number | undefined, send: number | undefined): NoteOutput => {
+      const hasPan = pan !== undefined;
+      const hasSend = send !== undefined;
+      if (hasPan || hasSend) layers.stem ??= new Float32Array(loopSamples);
+
+      let mono: Float32Array | undefined;
+      let left: Float32Array | undefined;
+      let right: Float32Array | undefined;
+      if (hasPan) {
+        const target = hasSend
+          ? (layers.both ??= stereoBus(loopSamples))
+          : (layers.panOnly ??= stereoBus(loopSamples));
+        left = target.left;
+        right = target.right;
+      } else {
+        mono = hasSend ? (layers.sendOnly ??= new Float32Array(loopSamples)) : layers.plain;
+      }
+
+      let sendLeft: Float32Array | undefined;
+      let sendRight: Float32Array | undefined;
+      if (hasSend && send > 0) {
+        const target = layers.send ??= stereoBus(loopSamples);
+        sendLeft = target.left;
+        sendRight = target.right;
+        layers.sendUsed = true;
+      }
+
+      const [dryLeftGain, dryRightGain] = hasPan ? panGains(pan) : [1, 1];
+      // `send: {stereo:false}` keeps its old pre-pan mono feed. A per-note pan
+      // still chooses the note's own value; otherwise the track pan applies.
+      const sendPan = pan ?? track.pan;
+      const [sendLeftGain, sendRightGain] =
+        track.sendStereo === false ? [1, 1] : panGains(sendPan);
+
+      return {
+        length: loopSamples,
+        ...(mono === undefined ? {} : { mono }),
+        ...(left === undefined ? {} : { left }),
+        ...(right === undefined ? {} : { right }),
+        ...(sendLeft === undefined ? {} : { sendLeft }),
+        ...(sendRight === undefined ? {} : { sendRight }),
+        dryLeftGain,
+        dryRightGain,
+        sendLeftGain,
+        sendRightGain,
+        send: send ?? 0,
+        ...(layers.stem === undefined ? {} : { stem: layers.stem }),
+      };
+    };
 
     if (track.isDrums) {
       addDrumHits(
-        buffer,
-        buildDrumHits(score, rate, track, trackIndex, sampleBank, signal),
+        chokedHits.get(trackIndex) ?? [],
+        outputFor,
         rate,
         loopSamples,
         wrap,
@@ -675,41 +1014,74 @@ export function renderScore(
       );
     } else {
       const instrument = instrumentFor(track, roleInstruments);
-      for (const note of buildMelodicNotes(score, rate, track, trackIndex, instrument, signal)) {
-        renderMelodicNote(buffer, note, score, rate, loopSamples, wrap, sampleBank, quality, signal);
+      for (const note of buildMelodicNotes(
+        score,
+        rate,
+        track,
+        trackIndex,
+        instrument,
+        timingWarnings,
+        signal,
+      )) {
+        renderMelodicNote(
+          outputFor(note.event.pan, note.event.send),
+          note,
+          score,
+          rate,
+          loopSamples,
+          wrap,
+          sampleBank,
+          quality,
+          signal,
+        );
       }
     }
 
-    if (track.filter) filterTrack(buffer, track.filter, rate);
-    if (track.highpassHz !== undefined || track.lowShelf !== undefined || track.highShelf !== undefined) {
-      applyTrackEq(
-        buffer,
-        {
-          ...(track.highpassHz === undefined ? {} : { highpassHz: track.highpassHz }),
-          ...(track.lowShelf === undefined ? {} : { lowShelf: track.lowShelf }),
-          ...(track.highShelf === undefined ? {} : { highShelf: track.highShelf }),
-        },
+    const buffer = layers.plain;
+    applyTrackChain(buffer, track, score, rate, loopSamples, wrap, kicks, hasTrackSections, signal);
+    for (const stereo of [layers.panOnly, layers.both, layers.send]) {
+      if (stereo === undefined) continue;
+      applyTrackChain(stereo.left, track, score, rate, loopSamples, wrap, kicks, hasTrackSections, signal);
+      applyTrackChain(stereo.right, track, score, rate, loopSamples, wrap, kicks, hasTrackSections, signal);
+    }
+    if (layers.sendOnly !== undefined) {
+      applyTrackChain(
+        layers.sendOnly,
+        track,
+        score,
         rate,
+        loopSamples,
+        wrap,
+        kicks,
+        hasTrackSections,
+        signal,
       );
     }
-    if (track.delay) {
-      applyDelay(buffer, track.delay, score, rate, loopSamples, wrap, signal);
+    if (layers.stem !== undefined) {
+      applyTrackChain(
+        layers.stem,
+        track,
+        score,
+        rate,
+        loopSamples,
+        wrap,
+        kicks,
+        hasTrackSections,
+        signal,
+      );
     }
-    if (track.duck > 0) applyDuck(buffer, kicks, track.duck, rate, loopSamples, wrap, signal);
-    // A section can filter this track alone; it runs after the track's own
-    // filter/EQ/delay/duck and before pan/send, so neighboring tracks keep
-    // their highs when one part closes.
-    if (hasTrackSections) applyTrackSectionFilter(buffer, score, track, rate);
 
     // Measure the finished stem before pan/send: this is the only place where
     // the report can attribute a band to a track without keeping its audio.
+    // With spatial overrides, `stem` is the raw pre-pan sum of every layer.
     stems.push(
-      analyseStem(buffer, rate, {
+      analyseStem(layers.stem ?? buffer, rate, {
         name: track.name,
         role: track.role,
         pan: track.pan,
         send: track.send,
         aliasRisk: aliasRiskOf(track, quality),
+        ...(stemSections === undefined ? {} : { sections: stemSections }),
       }),
     );
 
@@ -731,7 +1103,8 @@ export function renderScore(
     const sendScaleLeft = group === undefined ? 1 : group.gain * groupLeftGain;
     const sendScaleRight = group === undefined ? 1 : group.gain * groupRightGain;
 
-    if (hasTrackSections && hasSectionTrackAutomation(score, track)) {
+    const sectionsAutomated = hasTrackSections && hasSectionTrackAutomation(score, track);
+    if (sectionsAutomated) {
       for (const segment of sectionTrackSegments(score, track, rate, loopSamples)) {
         const [leftGain, rightGain] = panGains(segment.pan);
         const send = segment.send > 0 ? sendForGroup(sendGroup) : undefined;
@@ -770,6 +1143,72 @@ export function renderScore(
         }
       }
     }
+
+    // Notes that wrote `~send` skip the track-level send: their wet share is
+    // already baked into the send layer, including `~send(0)` (which mutes the
+    // return for that note without touching the dry signal).
+    if (layers.sendOnly !== undefined) {
+      if (sectionsAutomated) {
+        for (const segment of sectionTrackSegments(score, track, rate, loopSamples)) {
+          const [leftGain, rightGain] = panGains(segment.pan);
+          for (let i = segment.start; i < segment.end; i += 1) {
+            const value = layers.sendOnly[i] ?? 0;
+            destination.left[i] = (destination.left[i] ?? 0) + value * leftGain;
+            destination.right[i] = (destination.right[i] ?? 0) + value * rightGain;
+          }
+        }
+      } else {
+        const [leftGain, rightGain] = panGains(track.pan);
+        for (let i = 0; i < loopSamples; i += 1) {
+          const value = layers.sendOnly[i] ?? 0;
+          destination.left[i] = (destination.left[i] ?? 0) + value * leftGain;
+          destination.right[i] = (destination.right[i] ?? 0) + value * rightGain;
+        }
+      }
+    }
+
+    // Panned notes already carry their equal-power gains; the track pan and
+    // section pan are deliberately not applied a second time.
+    const addPannedDry = (bus: StereoBus | undefined): void => {
+      if (bus === undefined) return;
+      for (let i = 0; i < loopSamples; i += 1) {
+        destination.left[i] = (destination.left[i] ?? 0) + (bus.left[i] ?? 0);
+        destination.right[i] = (destination.right[i] ?? 0) + (bus.right[i] ?? 0);
+      }
+    };
+    addPannedDry(layers.panOnly);
+    addPannedDry(layers.both);
+
+    // A pan-only note has no per-note send, so it follows the track (or
+    // section) send like the plain layer. A note with both overrides already
+    // sits in `layers.send`.
+    if (layers.panOnly !== undefined) {
+      const panned = layers.panOnly;
+      if (sectionsAutomated) {
+        for (const segment of sectionTrackSegments(score, track, rate, loopSamples)) {
+          if (segment.send <= 0) continue;
+          const send = sendForGroup(sendGroup);
+          for (let i = segment.start; i < segment.end; i += 1) {
+            send.left[i] = (send.left[i] ?? 0) + (panned.left[i] ?? 0) * segment.send * sendScaleLeft;
+            send.right[i] = (send.right[i] ?? 0) + (panned.right[i] ?? 0) * segment.send * sendScaleRight;
+          }
+        }
+      } else if (track.send > 0) {
+        const send = sendForGroup(sendGroup);
+        for (let i = 0; i < loopSamples; i += 1) {
+          send.left[i] = (send.left[i] ?? 0) + (panned.left[i] ?? 0) * track.send * sendScaleLeft;
+          send.right[i] = (send.right[i] ?? 0) + (panned.right[i] ?? 0) * track.send * sendScaleRight;
+        }
+      }
+    }
+
+    if (layers.sendUsed && layers.send !== undefined) {
+      const send = sendForGroup(sendGroup);
+      for (let i = 0; i < loopSamples; i += 1) {
+        send.left[i] = (send.left[i] ?? 0) + (layers.send.left[i] ?? 0) * sendScaleLeft;
+        send.right[i] = (send.right[i] ?? 0) + (layers.send.right[i] ?? 0) * sendScaleRight;
+      }
+    }
   });
 
   throwIfAborted(signal);
@@ -806,6 +1245,15 @@ export function renderScore(
     if (group.duck > 0) {
       applyDuck(bus.left, kicks, group.duck, rate, loopSamples, wrap, signal);
       applyDuck(bus.right, kicks, group.duck, rate, loopSamples, wrap, signal);
+    }
+    // Bus glue runs before the fader so the group gain stays the final trim.
+    // Saturation first (it adds harmonics and a little level), then the
+    // stereo-linked compressor that controls the result.
+    if (group.saturate !== undefined) {
+      applySaturation(bus.left, bus.right, group.saturate.drive, group.saturate.mix);
+    }
+    if (group.compress !== undefined) {
+      applyCompressor(bus.left, bus.right, group.compress, rate, wrap ? 3 : 1);
     }
 
     const [leftGain, rightGain] = panGains(group.pan);
@@ -851,5 +1299,12 @@ export function renderScore(
     });
   }
 
-  return { left, right, loopSamples, stems, sendBuses };
+  return {
+    left,
+    right,
+    loopSamples,
+    stems,
+    sendBuses,
+    warnings: [...timingWarnings.values()],
+  };
 }

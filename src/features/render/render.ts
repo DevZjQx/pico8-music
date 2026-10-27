@@ -1,4 +1,4 @@
-import type { Score } from '../score/feature.ts';
+import type { Score, ScoreTrack } from '../score/feature.ts';
 import { analyseScore } from '../structure/feature.ts';
 import { throwIfAborted } from './abort.ts';
 import { analyseAudio, measureAudio, sectionReadings, type AnalysisFacts } from './analyze.ts';
@@ -605,6 +605,8 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
     roleInstruments,
     options.samples,
     quality,
+    options.solo,
+    options.mute,
   );
   throwIfAborted(signal);
   if (song.sendBuses.length > 0) {
@@ -701,14 +703,31 @@ export function renderLoop(score: Score, options: RenderOptions = {}): RenderOut
     safetyGain < 0.7
       ? [`trimmed: peak safety net pulled the mix down ${(-gainToDb(safetyGain)).toFixed(1)} dB — lower track volumes to keep the authored balance`]
       : [];
+  // A solo/mute render is also an analysis audition: keep the symbolic reading
+  // on the same audible tracks as report.stems instead of describing parts the
+  // listener cannot hear. With no filter this is the original score object.
+  const analysisScore =
+    options.solo === undefined && options.mute === undefined
+      ? score
+      : {
+          ...score,
+          tracks: score.tracks.filter((track: ScoreTrack) => {
+            const soloed =
+              options.solo === undefined ||
+              options.solo.size === 0 ||
+              options.solo.has(track.name);
+            const muted = options.mute !== undefined && options.mute.has(track.name);
+            return soloed && !muted;
+          }),
+        };
   const report = analyseAudio(finalLeft, finalRight, RATE, {
     sections,
-    extraWarnings: [...score.warnings, ...trimmed],
+    extraWarnings: [...score.warnings, ...song.warnings, ...trimmed],
     stems: song.stems,
     // Symbolic facts about the score, computed once from the same timeline the
     // synth played. They describe the arrangement, so they stay attached to the
     // render report; a WAV alone cannot reconstruct them.
-    structure: analyseScore(score),
+    structure: analyseScore(analysisScore),
     ...(dry === undefined ? {} : { dry }),
     ...(options.target === undefined ? {} : { target: options.target }),
     ...(options.assertions === undefined ? {} : { assertions: options.assertions }),

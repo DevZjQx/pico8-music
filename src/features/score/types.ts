@@ -94,6 +94,10 @@ export interface EffectParams {
   readonly vibratoRate?: number;
   /** Slide time in steps, 0.05..8. Default 1: reach the target in one step. */
   readonly slideSteps?: number;
+  /** Arp semitone offsets, 1..8 values in -24..24. Default [0,4,7,12]. */
+  readonly arpSemitones?: readonly number[];
+  /** Arp period in steps, 0.05..8. Default 0.5 for arpfast, 1 for arpslow. */
+  readonly arpSteps?: number;
 }
 
 /**
@@ -381,10 +385,29 @@ export interface SendReverb {
   readonly modRateHz?: number;
 }
 
+/** Group-bus soft clip, applied before the group compressor and fader. */
+export interface GroupSaturation {
+  /** 0-1; 0 is the identity. */
+  readonly drive: number;
+  /** 0-1 dry/wet mix. */
+  readonly mix: number;
+}
+
+/** Stereo-linked group-bus compressor, applied after saturation. */
+export interface GroupCompressor {
+  readonly thresholdDb: number;
+  readonly ratio: number;
+  /** Ballistic time constant in seconds. */
+  readonly attackSeconds: number;
+  readonly releaseSeconds: number;
+  readonly makeupDb: number;
+}
+
 /**
  * A named subgroup. Tracks that name it are summed into one stereo buffer
- * before the group fader, pan, filter, delay, duck, and send. Each group owns
- * its own stereo send return, so groups do not share one reverb bus.
+ * before the group fader, pan, filter, delay, duck, saturation, compression,
+ * and send. Each group owns its own stereo send return, so groups do not share
+ * one reverb bus.
  */
 export interface ScoreGroup {
   readonly name: string;
@@ -401,6 +424,10 @@ export interface ScoreGroup {
   readonly lowShelf?: TrackShelf;
   readonly highShelf?: TrackShelf;
   readonly delay?: TrackDelay;
+  /** Subgroup soft clip, before the group compressor; absent is a no-op. */
+  readonly saturate?: GroupSaturation;
+  /** Subgroup compressor, after saturation; absent is a no-op. */
+  readonly compress?: GroupCompressor;
   /** Return reverb settings; absent uses the send defaults. */
   readonly reverb?: SendReverb;
 }
@@ -439,6 +466,11 @@ export interface NoteEvent {
   readonly gateSteps?: number;
   /** Voice index inside a chord; defaults to 0. Used to slide from the same voice. */
   readonly voice?: number;
+  /**
+   * Original position in the track timeline. Excerpts rebase steps but keep
+   * this, so noise/humanize seeds describe the same event in the full song.
+   */
+  readonly sourceIndex?: number;
   /** MIDI note number; C4 = 60. Drum voices use a nominal key. */
   readonly midi: number;
   /** Precomputed frequency in Hz, already resolved through the score `tuning`. */
@@ -456,6 +488,12 @@ export interface NoteEvent {
   readonly drumEffect?: DrumEffect;
   /** Present when a drum token carries `~pitch`, `~decay`, or `~tone`. */
   readonly drumParams?: DrumParams;
+  /** Authored token offset in milliseconds: positive is late, negative early. */
+  readonly offsetMs?: number;
+  /** Per-note equal-power pan, -1..1; absent keeps the track pan. */
+  readonly pan?: number;
+  /** Per-note reverb send, 0..1; absent keeps the track (or section) send. */
+  readonly send?: number;
   /** Section gain multiplier; defaults to 1 when absent. */
   readonly gain?: number;
 }
@@ -503,6 +541,12 @@ export interface ScoreTrack {
   readonly sendStereo?: boolean;
   /** 0..1 sidechain depth triggered by kick hits. */
   readonly duck: number;
+  /** Whole-track onset offset in milliseconds, -200..200; 0 is neutral. */
+  readonly offsetMs?: number;
+  /** This track's swing override; absent inherits the score. */
+  readonly swing?: number;
+  /** Field-level humanize overrides; absent fields inherit the score. */
+  readonly humanize?: TrackHumanize;
   readonly filter?: TrackFilter;
   /** 12 dB/oct high-pass, 20-4000 Hz; absent leaves the stem untouched. */
   readonly highpassHz?: number;
@@ -554,6 +598,15 @@ export interface Humanize {
   readonly velocity: number;
 }
 
+/**
+ * A track's humanize override. Each field is optional on purpose: writing only
+ * `timingMs` replaces that depth and keeps the score's velocity depth.
+ */
+export interface TrackHumanize {
+  readonly timingMs?: number;
+  readonly velocity?: number;
+}
+
 export interface Score {
   readonly mode: ScoreMode;
   readonly bpm: number;
@@ -566,8 +619,10 @@ export interface Score {
   readonly stepSeconds: number;
   /** Sum of the section durations in song mode, or `totalSteps * stepSeconds` in loop mode. */
   readonly durationSeconds: number;
-  /** 0..0.5; odd steps are delayed by this fraction of a step. */
+  /** 0..0.5; odd swing groups are delayed by this fraction of a group. */
   readonly swing: number;
+  /** Swing group length in steps, 1..stepsPerBeat; 1 is the historical odd step. */
+  readonly swingUnit: number;
   /** Deterministic variation seed for noise timbres, drums, and humanize. */
   readonly seed: number;
   /** Deterministic timing/velocity variation; zero depths are neutral. */
@@ -591,6 +646,11 @@ export interface Score {
   readonly samples: ReadonlyMap<string, SampleSpec>;
   /** Optional per-drum-voice sample replacements; unmapped voices stay synthetic. */
   readonly drumSamples: ReadonlyMap<DrumName, string>;
+  /**
+   * Opt-in choke map: a trigger voice cuts every target voice that is still
+   * ringing. Empty by default, so old scores keep their overlapping tails.
+   */
+  readonly drumChoke: ReadonlyMap<DrumName, readonly DrumName[]>;
   /** Parse-time advisories that are not fatal, e.g. a pattern that does not fill the section. */
   readonly warnings: readonly string[];
 }

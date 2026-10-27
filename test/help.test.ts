@@ -41,10 +41,6 @@ test('the help covers fields that fail or change a render', () => {
   assert.match(SCORE_HELP, /group and bus are synonyms/);
   assert.match(SCORE_HELP, /pico8-music\.wav/);
   assert.match(SCORE_HELP, /named suffix/);
-  // The second output format is uncompressed MusicXML, not a zipped container.
-  assert.match(SCORE_HELP, /p8_export/);
-  assert.match(SCORE_HELP, /uncompressed MusicXML/);
-  assert.match(SCORE_HELP, /never the zipped \.mxl/);
 });
 
 test('the help keeps both worked examples', () => {
